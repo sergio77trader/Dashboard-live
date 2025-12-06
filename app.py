@@ -1,121 +1,108 @@
 import streamlit as st
 import ccxt
 import pandas as pd
-import time
 
-# --- CONFIGURACIÓN DE PÁGINA ---
+# --- CONFIGURACIÓN INICIAL ---
 st.set_page_config(page_title="SystemaTrader Monitor", layout="wide")
-
 st.title("🦅 SYSTEMATRADER: LIVE MONITOR")
-st.markdown("### Datos Institucionales | Fuente: Bybit Futures (Derivados)")
+st.markdown("### Datos Institucionales | Fuente: KuCoin Futures")
 
-# --- FUNCIONES DE BACKEND (MOTOR BYBIT) ---
+# --- MOTOR DE DATOS (KUCOIN) ---
 @st.cache_data(ttl=60)
-def obtener_datos():
-    # Inicializamos Bybit en modo Swap (Perpetuos)
-    exchange = ccxt.bybit({
-        'enableRateLimit': True,
-        'options': {
-            'defaultType': 'swap',  # Forzar contratos perpetuos
-        }
-    })
+def obtener_datos_kucoin():
+    # Usamos KuCoin Futures (Suele permitir acceso desde servidores US)
+    exchange = ccxt.kucoinfutures()
     
-    my_bar = st.progress(0, text="Conectando a Bybit...")
-    
-    # 1. Cargar Mercados
-    markets = exchange.load_markets()
-    
-    # 2. Obtener Tickers (Precios y Volumen 24h)
-    tickers = exchange.fetch_tickers()
-    
-    data = []
-    
-    # Filtramos solo pares USDT que sean Perpetuos (Linear)
-    for symbol, ticker in tickers.items():
-        try:
-            # La nomenclatura de Bybit suele ser BTC/USDT:USDT
-            if '/USDT' in symbol and ticker['quoteVolume'] is not None:
+    try:
+        # 1. Cargar Mercados
+        exchange.load_markets()
+        
+        # 2. Obtener Tickers (Precios y Volumen)
+        tickers = exchange.fetch_tickers()
+        data = []
+        
+        # Barra de progreso
+        my_bar = st.progress(0, text="Escaneando KuCoin Futures...")
+        
+        # Filtramos pares USDT
+        for symbol, ticker in tickers.items():
+            if '/USDT' in symbol:
+                vol = ticker.get('quoteVolume')
+                if vol is None:
+                    vol = 0
+                
                 data.append({
                     'Symbol': symbol,
-                    'Volumen (24h)': ticker['quoteVolume'], # Volumen en USDT
+                    'Volumen': vol,
                     'Precio': ticker['last'],
-                    'Cambio 24h %': ticker['percentage']
+                    'Cambio %': ticker['percentage']
                 })
-        except:
-            continue
-    
-    # Ordenar por volumen y tomar Top 10
-    df = pd.DataFrame(data)
-    df = df.sort_values(by='Volumen (24h)', ascending=False).head(10)
-    top_symbols = df['Symbol'].tolist()
-    
-    my_bar.progress(50, text="Extrayendo Datos Forenses (OI & Funding)...")
-    
-    # 3. Extracción Profunda (OI + Funding)
-    final_data = []
-    for sym in top_symbols:
-        try:
-            # Open Interest
-            # Bybit entrega el OI en el ticker o via fetch_open_interest
-            oi_data = exchange.fetch_open_interest(sym)
-            oi_value = oi_data['openInterestValue'] # Valor en USDT directo
-            
-            # Funding Rate
-            funding_info = exchange.fetch_funding_rate(sym)
-            funding = funding_info['fundingRate'] * 100
-            
-            # Limpiamos el nombre del simbolo (Quitar :USDT)
-            clean_name = sym.split(':')[0]
-            
-            # Buscamos precio y volumen del paso anterior
-            row_prev = df[df['Symbol'] == sym].iloc[0]
-            
-            final_data.append({
-                'Ticker': clean_name,
-                'Precio ($)': f"{row_prev['Precio']:,.4f}",
-                'OI (Millones $)': f"${oi_value/1_000_000:,.2f}M",
-                'Funding Rate (%)': f"{funding:+.4f}%",
-                'Volumen 24h ($)': f"${row_prev['Volumen (24h)']/1_000_000:,.0f}M"
-            })
-            time.sleep(0.1) # Pequeña pausa para no saturar
-        except Exception as e:
-            # st.write(f"Error en {sym}: {e}") # Debug off
-            continue
-            
-    my_bar.empty()
-    return pd.DataFrame(final_data)
+        
+        # Top 10 por Volumen
+        df = pd.DataFrame(data)
+        df = df.sort_values(by='Volumen', ascending=False).head(10)
+        top_symbols = df['Symbol'].tolist()
+        
+        my_bar.progress(50, text="Extrayendo Funding & Open Interest...")
+        
+        # 3. Datos Forenses
+        final_data = []
+        for sym in top_symbols:
+            try:
+                # Funding Rate
+                funding_dict = exchange.fetch_funding_rate(sym)
+                funding = funding_dict['fundingRate'] * 100
+                
+                # Open Interest (Intentamos obtenerlo, si falla ponemos N/A)
+                # Nota: Algunas APIs limitan esto sin Key, pero probamos
+                oi_str = "N/A"
+                try:
+                    oi_dict = exchange.fetch_open_interest(sym)
+                    if oi_dict and 'openInterestValue' in oi_dict:
+                         oi_val = float(oi_dict['openInterestValue'])
+                         oi_str = f"${oi_val/1_000_000:,.2f}M"
+                except:
+                    pass
 
-# --- INTERFAZ DE USUARIO ---
-if st.button('🔄 ACTUALIZAR AHORA'):
+                # Recuperar datos previos
+                row_prev = df[df['Symbol'] == sym].iloc[0]
+                
+                final_data.append({
+                    'Ticker': sym,
+                    'Precio ($)': f"{row_prev['Precio']:,.4f}",
+                    'Funding Rate (%)': f"{funding:+.4f}%",
+                    'Volumen 24h ($)': f"${row_prev['Volumen']/1_000_000:,.0f}M",
+                    'Open Interest': oi_str
+                })
+                
+            except Exception as e:
+                continue
+        
+        my_bar.empty()
+        return pd.DataFrame(final_data)
+
+    except Exception as e:
+        st.error(f"Error de conexión con el Exchange: {e}")
+        return pd.DataFrame()
+
+# --- INTERFAZ VISUAL ---
+if st.button('🔄 ACTUALIZAR DATOS'):
     st.cache_data.clear()
 
-try:
-    df_final = obtener_datos()
+# Ejecución Principal
+df_resultado = obtener_datos_kucoin()
+
+if not df_resultado.empty:
+    # Métricas del Líder (Top 1)
+    top_coin = df_resultado.iloc[0]
+    col1, col2, col3 = st.columns(3)
+    col1.metric(f"{top_coin['Ticker']} Precio", top_coin['Precio ($)'])
+    col2.metric("Funding Rate", top_coin['Funding Rate (%)'])
+    col3.metric("Volumen 24h", top_coin['Volumen 24h ($)'])
     
-    if not df_final.empty:
-        # Métricas Rápidas (BTC)
-        btc_row = df_final[df_final['Ticker'] == 'BTC/USDT']
-        if not btc_row.empty:
-            col1, col2, col3 = st.columns(3)
-            col1.metric("BTC Precio", btc_row.iloc[0]['Precio ($)'])
-            col2.metric("BTC Funding", btc_row.iloc[0]['Funding Rate (%)'])
-            col3.metric("BTC Open Interest", btc_row.iloc[0]['OI (Millones $)'])
+    st.subheader("Radar de Mercado (KuCoin Futures)")
+    st.dataframe(df_resultado, use_container_width=True, hide_index=True)
+else:
+    st.warning("Esperando datos... Si esto persiste, intenta recargar la página.")
 
-        # Tabla Principal
-        st.subheader("Radar de Liquidez (Top 10 Bybit)")
-        
-        # Estilo visual para la tabla
-        st.dataframe(df_final, use_container_width=True, hide_index=True)
-    else:
-        st.warning("No se pudieron cargar datos. Intenta recargar.")
-
-except Exception as e:
-    st.error(f"Error Crítico: {e}")
-    st.info("Nota: Si persiste el error, Bybit también podría estar bloqueando la IP de Streamlit Cloud.")
-
-st.caption("SystemaTrader Architecture v2.0 | Bypass Protocol Active")
-
-except Exception as e:
-    st.error(f"Error de conexión: {e}")
-
-st.caption("SystemaTrader Architecture v1.0 | Serverless Deployment")
+st.caption("SystemaTrader Architecture v3.0 | KuCoin Protocol")
