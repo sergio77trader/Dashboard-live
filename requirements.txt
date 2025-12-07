@@ -5,3 +5,4 @@ pandas_ta
 yfinance
 plotly
 matplotlib
+curl_cffi
