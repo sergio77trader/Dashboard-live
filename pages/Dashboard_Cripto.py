@@ -6,28 +6,14 @@ import time
 import numpy as np
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="SystemaTrader - Pro Dashboard")
+st.set_page_config(layout="wide", page_title="SystemaTrader - Deep Matrix")
 
 st.markdown("""
 <style>
-    [data-testid="stMetricValue"] { font-size: 18px; }
+    [data-testid="stMetricValue"] { font-size: 16px; }
     .stProgress > div > div > div > div { background-color: #00CC96; }
 </style>
 """, unsafe_allow_html=True)
-
-# --- FUNCIONES TÉCNICAS ---
-def get_rsi(df, length=14):
-    """Calcula RSI seguro, evitando NaNs"""
-    if df.empty or len(df) < length: return 50.0
-    try:
-        rsi_series = df.ta.rsi(length=length)
-        if rsi_series is None or rsi_series.empty: return 50.0
-        
-        val = rsi_series.iloc[-1]
-        # Si el valor es NaN (Not a Number), devolvemos 50 (Neutro)
-        if pd.isna(val) or np.isinf(val): return 50.0
-        return float(val)
-    except: return 50.0
 
 # --- FACTORY DE CONEXIÓN ---
 def get_exchange(name):
@@ -38,163 +24,202 @@ def get_exchange(name):
         return ccxt.mexc(dict(opts, **{'options': {'defaultType': 'swap'}}))
     elif name == 'KuCoin':
         return ccxt.kucoinfutures(opts)
+    elif name == 'Binance': # Solo funcionará local, no en cloud
+        return ccxt.binance(dict(opts, **{'options': {'defaultType': 'future'}}))
     return None
 
-@st.cache_data(ttl=300)
-def get_top_pairs(exchange_name):
+# --- FUNCIONES MATEMÁTICAS ---
+def calculate_rsi(df, length=14):
+    if df.empty or len(df) < length: return 50.0
+    try:
+        val = df.ta.rsi(length=length).iloc[-1]
+        return float(val) if not pd.isna(val) else 50.0
+    except: return 50.0
+
+def get_change_pct(df):
+    """Calcula cambio % de la última vela"""
+    if df.empty: return 0.0
+    try:
+        # (Cierre - Apertura) / Apertura
+        open_p = df['open'].iloc[-1]
+        close_p = df['close'].iloc[-1]
+        if open_p == 0: return 0.0
+        return ((close_p - open_p) / open_p) * 100
+    except: return 0.0
+
+def get_volume_usd(df):
+    """Calcula volumen en USD de la última vela"""
+    if df.empty: return 0.0
+    try:
+        # En futuros, vol suele ser en moneda base, multiplicamos por cierre
+        vol = df['vol'].iloc[-1]
+        close = df['close'].iloc[-1]
+        return vol * close
+    except: return 0.0
+
+@st.cache_data(ttl=600)
+def get_targets(exchange_name, limit=10):
+    """Obtiene Top monedas por volumen"""
     try:
         exchange = get_exchange(exchange_name)
-        markets = exchange.load_markets()
         tickers = exchange.fetch_tickers()
         valid = []
-        
         for s in tickers:
-            # Filtro defensivo
-            if '/USDT' in s:
-                vol = tickers[s].get('quoteVolume', 0)
-                if vol is None: vol = 0
-                valid.append({'symbol': s, 'volume': vol})
+            if '/USDT' in s and tickers[s]['quoteVolume']:
+                valid.append({'symbol': s, 'vol': tickers[s]['quoteVolume']})
         
-        df = pd.DataFrame(valid)
-        if df.empty: return []
-        
-        df = df.sort_values('volume', ascending=False).head(15)
+        df = pd.DataFrame(valid).sort_values('vol', ascending=False).head(limit)
         return df['symbol'].tolist()
     except:
-        return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'BNB/USDT:USDT', 'XRP/USDT:USDT']
+        return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'XRP/USDT:USDT', 'BNB/USDT:USDT']
 
-def fetch_data(symbols, exchange_name):
+def fetch_deep_data(symbols, exchange_name):
     exchange = get_exchange(exchange_name)
     data_rows = []
-    total = len(symbols)
-    bar = st.progress(0, text=f"Leyendo datos de {exchange_name}...")
     
-    for i, symbol in enumerate(symbols):
-        display = symbol.split(':')[0]
-        bar.progress((i)/total, text=f"Analizando {display}...")
+    # Definimos qué temporalidades necesitamos para qué cosa
+    # Estructura: (Label Timeframe, CCXT Code, Calcular RSI?, Calcular Precio?, Calcular Volumen?)
+    TASKS = [
+        ('15m', '15m', True, False, False),  # Solo RSI
+        ('1H',  '1h',  True, True,  True),   # RSI + Precio + Vol
+        ('4H',  '4h',  True, True,  True),   # RSI + Precio + Vol
+        ('12H', '12h', True, True,  False),  # RSI + Precio (Volumen 12h a veces falla en APIs)
+        ('1D',  '1d',  True, True,  True),   # RSI + Precio + Vol
+        ('1W',  '1w',  True, False, False)   # Solo RSI
+    ]
+    
+    total_steps = len(symbols)
+    bar = st.progress(0, text="Iniciando escaneo profundo...")
+    
+    for idx, symbol in enumerate(symbols):
+        clean_name = symbol.split(':')[0]
+        bar.progress((idx)/total_steps, text=f"Escaneando {clean_name} ({idx+1}/{total_steps})...")
         
-        try:
-            # 1. Velas RSI
-            k_15m = exchange.fetch_ohlcv(symbol, '15m', limit=30)
-            rsi_15m = get_rsi(pd.DataFrame(k_15m, columns=['t','o','h','l','c','v']))
-            
-            k_1h = exchange.fetch_ohlcv(symbol, '1h', limit=30)
-            df_1h = pd.DataFrame(k_1h, columns=['t','o','h','l','c','v'])
-            rsi_1h = get_rsi(df_1h)
-            
-            # Obtener precio de forma segura
-            price_now = 0.0
-            if not df_1h.empty:
-                price_now = float(df_1h['c'].iloc[-1])
-            
-            k_4h = exchange.fetch_ohlcv(symbol, '4h', limit=30)
-            rsi_4h = get_rsi(pd.DataFrame(k_4h, columns=['t','o','h','l','c','v']))
-            
-            # 2. Funding
-            funding = 0.0
+        row = {'Activo': clean_name}
+        
+        # Iteramos sobre las temporalidades requeridas
+        for label, tf, calc_rsi, calc_price, calc_vol in TASKS:
             try:
-                f_data = exchange.fetch_funding_rate(symbol)
-                if f_data and 'fundingRate' in f_data and f_data['fundingRate'] is not None:
-                    funding = float(f_data['fundingRate']) * 100
-            except: pass
-            
-            # 3. OI
-            oi_usd = 0.0
-            try:
-                oi = exchange.fetch_open_interest(symbol)
-                if 'openInterestValue' in oi and oi['openInterestValue']:
-                    oi_usd = float(oi['openInterestValue'])
-                elif 'openInterestAmount' in oi and oi['openInterestAmount']:
-                     oi_usd = float(oi['openInterestAmount']) * price_now
-                elif 'openInterest' in oi and oi['openInterest']:
-                     oi_usd = float(oi['openInterest']) * price_now
-            except: pass
-
-            # 4. Cambio 24h
-            chg = 0.0
-            vol = 0.0
-            try:
-                tick = exchange.fetch_ticker(symbol)
-                if tick:
-                    chg = float(tick.get('percentage', 0) or 0)
-                    vol = float(tick.get('quoteVolume', 0) or 0)
-                    if abs(chg) < 1: chg = chg * 100 
-            except: pass
-
-            row = {
-                'Symbol': display,
-                'Precio': price_now,
-                'Chg 24h': chg / 100,
-                'Volumen': vol,
-                'RSI 15m': rsi_15m,
-                'RSI 1H': rsi_1h,
-                'RSI 4H': rsi_4h,
-                'Funding': funding / 100,
-                'OI ($)': oi_usd
-            }
-            data_rows.append(row)
-            
-        except Exception:
-            continue
-            
+                # Descargamos solo las velas necesarias (30 son suficientes para RSI y precio actual)
+                ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=30)
+                df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','vol'])
+                
+                if calc_rsi:
+                    row[f'RSI {label}'] = calculate_rsi(df)
+                
+                if calc_price:
+                    row[f'Chg {label} %'] = get_change_pct(df)
+                    # Guardamos precio actual solo una vez (usamos el de 1H)
+                    if label == '1H':
+                        row['Precio'] = df['close'].iloc[-1]
+                
+                if calc_vol:
+                    row[f'Vol {label} ($)'] = get_volume_usd(df)
+                    
+            except Exception:
+                # Si falla una temporalidad, rellenamos con 0 para no romper la tabla
+                if calc_rsi: row[f'RSI {label}'] = 50.0
+                if calc_price: row[f'Chg {label} %'] = 0.0
+                if calc_vol: row[f'Vol {label} ($)'] = 0.0
+                if label == '1H' and 'Precio' not in row: row['Precio'] = 0.0
+        
+        data_rows.append(row)
+        # Pausa para evitar baneo
+        time.sleep(0.1)
+        
     bar.empty()
     return pd.DataFrame(data_rows)
 
-# --- INTERFAZ ---
-st.title("💠 SystemaTrader: Pro Dashboard")
+# --- FRONTEND ---
+st.title("🧩 SystemaTrader: Deep Matrix")
+st.markdown("### Análisis Multi-Timeframe (Precio | Volumen | RSI)")
 
 with st.sidebar:
-    st.header("Fuente de Datos")
-    # KuCoin suele ser bueno, pero si falla prueba Gate.io
-    SOURCE = st.selectbox("Exchange:", ["KuCoin", "Gate.io", "MEXC"])
+    st.header("Motor de Datos")
+    SOURCE = st.selectbox("Exchange:", ["Gate.io", "MEXC", "KuCoin", "Binance"])
+    if SOURCE == "Binance":
+        st.warning("⚠️ Binance probablemente fallará en la nube (Error 451). Úsalo solo en local.")
+        
+    LIMIT = st.slider("Cantidad de Activos:", 5, 20, 10)
+    st.caption("Nota: Más activos = Más tiempo de carga (aprox 1s por activo).")
     
-    if st.button("🔄 RECARGAR", type="primary"):
+    if st.button("🔄 EJECUTAR ANÁLISIS", type="primary"):
         st.cache_data.clear()
         st.rerun()
 
-    st.info(f"Conectado a: **{SOURCE}**")
-
+# --- EJECUCIÓN ---
 try:
-    with st.spinner(f"Conectando satélite a {SOURCE}..."):
-        top_symbols = get_top_pairs(SOURCE)
+    with st.spinner(f"Obteniendo Top {LIMIT} activos de {SOURCE}..."):
+        targets = get_targets(SOURCE, LIMIT)
         
-    if not top_symbols:
-        st.error(f"Error conectando a {SOURCE}. Prueba cambiar a Gate.io o MEXC en el menú.")
+    if not targets:
+        st.error("No se pudo conectar. Cambia de Exchange.")
     else:
-        df = fetch_data(top_symbols, SOURCE)
-
+        df = fetch_deep_data(targets, SOURCE)
+        
         if not df.empty:
-            # --- LIMPIEZA CRÍTICA (SANITIZACIÓN) ---
-            # Esto evita el error "Out of range float / nan"
-            # Reemplazamos cualquier NaN o Infinito por 0
+            # SANITIZACIÓN (Anti-Crash)
             df = df.fillna(0)
             df = df.replace([np.inf, -np.inf], 0)
-
+            
+            # --- TABLA DE PRECIOS Y CAMBIOS ---
+            st.subheader("1. Estructura de Precio (%)")
             st.dataframe(
-                df,
+                df[['Activo', 'Precio', 'Chg 1H %', 'Chg 4H %', 'Chg 12H %', 'Chg 1D %']],
                 column_config={
-                    "Symbol": st.column_config.TextColumn("Activo", width="small"),
-                    "Precio": st.column_config.NumberColumn("Precio", format="$%.4f"),
-                    "Chg 24h": st.column_config.NumberColumn("24h %", format="%.2f%%"),
-                    "Volumen": st.column_config.ProgressColumn("Volumen", format="$%.0f", min_value=0, max_value=float(df['Volumen'].max())),
-                    "RSI 15m": st.column_config.NumberColumn("RSI 15m", format="%.0f"),
-                    "RSI 1H": st.column_config.NumberColumn("RSI 1H", format="%.0f"),
-                    "RSI 4H": st.column_config.NumberColumn("RSI 4H", format="%.0f"),
-                    "Funding": st.column_config.NumberColumn("Funding", format="%.4f%%"),
-                    "OI ($)": st.column_config.NumberColumn("Open Int. ($)", format="$%.0f")
+                    "Precio": st.column_config.NumberColumn(format="$%.4f"),
+                    "Chg 1H %": st.column_config.NumberColumn(format="%.2f%%"),
+                    "Chg 4H %": st.column_config.NumberColumn(format="%.2f%%"),
+                    "Chg 12H %": st.column_config.NumberColumn(format="%.2f%%"),
+                    "Chg 1D %": st.column_config.NumberColumn(format="%.2f%%"),
                 },
-                use_container_width=True,
-                hide_index=True,
-                height=750
+                use_container_width=True, hide_index=True
             )
             
-            c1, c2, c3 = st.columns(3)
-            c1.info("💡 **RSI:** >70 (Sobrecompra) | <30 (Sobreventa)")
-            c2.warning("⚡ **Funding:** Negativo = Posible Short Squeeze")
-            c3.success(f"📡 Fuente: {SOURCE}")
+            st.divider()
             
+            # --- TABLA DE RSI MULTI-TF ---
+            st.subheader("2. Matriz de Momentum (RSI)")
+            
+            # Estilo condicional para RSI
+            def color_rsi(val):
+                color = 'white'
+                if val >= 70: color = '#ff4b4b' # Rojo
+                elif val <= 30: color = '#00cc96' # Verde
+                return f'color: {color}; font-weight: bold'
+
+            # Aplicamos estilo (Pandas Styler no siempre va bien en streamlit interactive, 
+            # así que usamos visualización nativa con config)
+            st.dataframe(
+                df[['Activo', 'RSI 15m', 'RSI 1H', 'RSI 4H', 'RSI 12H', 'RSI 1D', 'RSI 1W']],
+                column_config={
+                    "RSI 15m": st.column_config.NumberColumn(format="%.1f"),
+                    "RSI 1H": st.column_config.NumberColumn(format="%.1f"),
+                    "RSI 4H": st.column_config.NumberColumn(format="%.1f"),
+                    "RSI 12H": st.column_config.NumberColumn(format="%.1f"),
+                    "RSI 1D": st.column_config.NumberColumn(format="%.1f"),
+                    "RSI 1W": st.column_config.NumberColumn(format="%.1f"),
+                },
+                use_container_width=True, hide_index=True
+            )
+            st.caption("🔴 Sobrecompra (>70) | 🟢 Sobreventa (<30)")
+            
+            st.divider()
+            
+            # --- TABLA DE VOLUMEN ---
+            st.subheader("3. Flujo de Volumen ($ USD)")
+            st.dataframe(
+                df[['Activo', 'Vol 1H ($)', 'Vol 4H ($)', 'Vol 1D ($)']],
+                column_config={
+                    "Vol 1H ($)": st.column_config.ProgressColumn(format="$%.0f", min_value=0, max_value=float(df['Vol 1H ($)'].max())),
+                    "Vol 4H ($)": st.column_config.ProgressColumn(format="$%.0f", min_value=0, max_value=float(df['Vol 4H ($)'].max())),
+                    "Vol 1D ($)": st.column_config.ProgressColumn(format="$%.0f", min_value=0, max_value=float(df['Vol 1D ($)'].max())),
+                },
+                use_container_width=True, hide_index=True
+            )
+
         else:
-            st.error("No llegaron datos válidos. Intenta recargar.")
+            st.error("No llegaron datos.")
 
 except Exception as e:
-    st.error(f"Error del Sistema: {e}")
+    st.error(f"Error de ejecución: {e}")
