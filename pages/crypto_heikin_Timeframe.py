@@ -45,6 +45,7 @@ def get_all_perp_pairs():
     Maneja errores de bloqueo de IP.
     """
     try:
+        # Intentamos conectar
         exchange = ccxt.binance({
             'options': {'defaultType': 'future'},
             'timeout': 10000,
@@ -59,21 +60,20 @@ def get_all_perp_pairs():
         
         for symbol in markets:
             market = markets[symbol]
+            # Filtro estricto: USDT + SWAP + ACTIVE
             if market['quote'] == 'USDT' and market['type'] == 'swap' and market['active']:
                 if symbol not in blacklist:
                     valid_pairs.append(symbol)
         
-        # Ordenar por volumen (Requiere fetch_tickers)
+        # Intentamos ordenar por volumen para mostrar los más líquidos primero
         try:
-            tickers = exchange.fetch_tickers(valid_pairs)
-            valid_pairs.sort(key=lambda x: tickers[x]['quoteVolume'], reverse=True)
+            # Esto puede tardar, lo hacemos en un bloque seguro
+            return valid_pairs # Retornamos sin ordenar por volumen para ser más rápidos en cloud
         except:
-            pass 
-        
-        return valid_pairs
+            return valid_pairs
 
     except Exception as e:
-        # Devolvemos lista vacía y el error no rompe la app
+        # Si falla (Bloqueo IP), devolvemos lista vacía para manejarlo en la UI
         return []
 
 def get_market_scan(symbols_list, max_limit):
@@ -99,6 +99,7 @@ def get_market_scan(symbols_list, max_limit):
         
         for tf_label, tf_code in TIMEFRAMES.items():
             try:
+                # Bajamos 50 velas, suficiente para HA
                 ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=50)
                 
                 if not ohlcv:
@@ -123,7 +124,7 @@ def get_market_scan(symbols_list, max_limit):
                 # No dormimos aquí para ir más rápido, CCXT maneja el rate limit
         
         if valid_candle:
-            # Diagnóstico
+            # Diagnóstico SystemaTrader
             if greens == 4: row_data['Diagnóstico'] = "🔥 FULL ALCISTA"
             elif greens == 0: row_data['Diagnóstico'] = "❄️ FULL BAJISTA"
             elif greens == 3: row_data['Diagnóstico'] = "✅ ALCISTA FUERTE"
@@ -132,7 +133,7 @@ def get_market_scan(symbols_list, max_limit):
             
             results.append(row_data)
         
-        # Pausa pequeña
+        # Pausa pequeña para no saturar la API
         time.sleep(0.05) 
         
     prog_bar.empty()
@@ -166,7 +167,7 @@ with st.sidebar:
         st.warning("""
         **Diagnóstico:** Binance ha bloqueado la IP de este servidor (EEUU).
         
-        **Solución:** Debemos cambiar el script para usar **Bybit** o **KuCoin**.
+        **Solución:** Para que esto funcione en la nube, debemos cambiar el motor a **Bybit** o **KuCoin** en el código.
         """)
         start_btn = False
 
@@ -201,6 +202,11 @@ if start_btn:
                 hide_index=True,
                 height=600
             )
+            
+            st.markdown("---")
+            if not df_show.empty:
+                first = df_show.iloc[0]['Activo'].replace('/', '')
+                st.markdown(f"🔗 [Ver en Binance](https://www.binance.com/en/futures/{first})")
         else:
             st.error("No se obtuvieron datos válidos.")
 else:
