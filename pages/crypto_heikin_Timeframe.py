@@ -4,7 +4,7 @@ import pandas as pd
 import time
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="SystemaTrader - Bybit Scanner")
+st.set_page_config(layout="wide", page_title="SystemaTrader - KuCoin Scanner")
 
 # --- MAPEO DE TEMPORALIDADES ---
 TIMEFRAMES = {
@@ -14,7 +14,7 @@ TIMEFRAMES = {
     'Semanal': '1w'
 }
 
-# --- FUNCIONES TÉCNICAS ---
+# --- LÓGICA HEIKIN ASHI ---
 def calculate_heikin_ashi(df):
     if df.empty: return df
     df_ha = df.copy()
@@ -36,64 +36,55 @@ def calculate_heikin_ashi(df):
     df_ha['HA_Open'] = vals[:, idx_open]
     return df_ha
 
+# --- CONEXIÓN AL MERCADO (KUCOIN) ---
 @st.cache_data(ttl=3600)
-def get_bybit_pairs():
-    """Obtiene pares USDT Perpetuos de Bybit (Linear)"""
+def get_active_pairs():
+    """Obtiene pares de Futuros de KuCoin (Suele permitir IP de EEUU)"""
     try:
-        # Inicializamos Bybit
-        exchange = ccxt.bybit({'enableRateLimit': True})
+        exchange = ccxt.kucoinfutures({'enableRateLimit': True})
         markets = exchange.load_markets()
         
         valid_pairs = []
-        
         for symbol in markets:
             market = markets[symbol]
-            # Filtro para Perpetuos USDT (Linear)
-            # En Bybit, 'linear' suele referirse a los contratos USDT
-            if market.get('linear', False) and market['quote'] == 'USDT' and market['active']:
+            # Filtramos solo contratos USDT
+            if market['quote'] == 'USDT' and market['active']:
                 valid_pairs.append(symbol)
                 
-        # Intentamos ordenar por volumen
-        try:
-            # Pedimos tickers solo de los válidos para no saturar
-            # Si son muchos (>100), Bybit puede quejarse, así que pedimos todos los tickers de una vez
-            all_tickers = exchange.fetch_tickers()
-            
-            # Filtramos solo los que nos interesan y ordenamos
-            pairs_with_vol = []
-            for s in valid_pairs:
-                if s in all_tickers:
-                    vol = all_tickers[s]['quoteVolume'] if all_tickers[s]['quoteVolume'] else 0
-                    pairs_with_vol.append((s, vol))
-            
-            # Orden descendente por volumen
-            pairs_with_vol.sort(key=lambda x: x[1], reverse=True)
-            return [x[0] for x in pairs_with_vol]
-            
-        except:
-            return valid_pairs
+        # KuCoin devuelve muchos pares, intentamos priorizar los clásicos si falla el ordenamiento
+        # Para hacerlo rápido en nube, no pedimos volumen de todos (tarda mucho)
+        # Priorizamos una lista manual de "Blue Chips" al principio si están disponibles
+        priority = ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'BNB/USDT:USDT', 'XRP/USDT:USDT']
+        
+        # Ponemos los prioritarios primero, luego el resto
+        sorted_pairs = [p for p in priority if p in valid_pairs] + [p for p in valid_pairs if p not in priority]
+        
+        return sorted_pairs
 
     except Exception as e:
-        st.error(f"Error Bybit: {e}")
+        st.error(f"Error conectando a KuCoin: {e}")
         return []
 
 def scan_market(targets):
-    exchange = ccxt.bybit({'enableRateLimit': True})
+    exchange = ccxt.kucoinfutures({'enableRateLimit': True})
     results = []
     
-    prog = st.progress(0, text="Escaneando Bybit...")
+    prog = st.progress(0, text="Analizando Tendencias...")
     total = len(targets)
     
     for idx, symbol in enumerate(targets):
-        prog.progress((idx)/total, text=f"Analizando {symbol}...")
+        # Actualizamos barra
+        prog.progress((idx)/total, text=f"Procesando {symbol}...")
         
-        row = {'Activo': symbol}
+        row = {'Activo': symbol.replace(':USDT', '')} # Limpiamos nombre visualmente
         greens = 0
         valid = True
         
         for tf_label, tf_code in TIMEFRAMES.items():
             try:
+                # Descarga de Velas
                 ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=50)
+                
                 if not ohlcv:
                     row[tf_label] = "N/A"
                     valid = False
@@ -103,6 +94,7 @@ def scan_market(targets):
                 df_ha = calculate_heikin_ashi(df)
                 last = df_ha.iloc[-1]
                 
+                # Diagnóstico de vela
                 if last['HA_Close'] >= last['HA_Open']:
                     row[tf_label] = "🟢 ALCISTA"
                     greens += 1
@@ -121,56 +113,68 @@ def scan_market(targets):
             
             results.append(row)
             
-        time.sleep(0.1) # Respetar límites API
+        # KuCoin es estricto con el Rate Limit, dormimos un poco
+        time.sleep(0.15)
         
     prog.empty()
     return pd.DataFrame(results)
 
-# --- INTERFAZ ---
-st.title("🦅 SystemaTrader: Bybit Futures Scanner")
-st.caption("Conexión directa a derivados cripto (Bypass Geo-Block)")
+# --- FRONTEND ---
+st.title("⚡ SystemaTrader: KuCoin Futures Scanner")
+st.markdown("Monitor de Tendencia Fractal (Bypass Geo-Block)")
 
 with st.sidebar:
     st.header("Configuración")
     
-    if st.button("🔄 Recargar Mercados"):
+    if st.button("🔄 Recargar Pares"):
         st.cache_data.clear()
-    
-    with st.spinner("Conectando a Bybit..."):
-        symbols = get_bybit_pairs()
+        
+    with st.spinner("Conectando a KuCoin Futures..."):
+        symbols = get_active_pairs()
         
     if symbols:
-        st.success(f"Conectado: {len(symbols)} contratos")
-        limit = st.slider("Escanear Top:", 5, 50, 15)
+        st.success(f"En línea: {len(symbols)} contratos")
+        
+        # Selector de Cantidad
+        limit = st.slider("Cantidad a Escanear:", 5, 50, 15)
+        
+        # Selector Manual
+        manual = st.multiselect("Filtrar manual (Opcional):", symbols)
+        
         go_btn = st.button("🚀 INICIAR ESCANEO", type="primary")
     else:
-        st.error("No se pudo conectar a Bybit.")
+        st.error("No se pudo conectar a KuCoin. Revisa la conexión.")
         go_btn = False
 
 if go_btn:
-    # Limpiar nombre del simbolo para que se vea bonito (BTC/USDT:USDT -> BTC/USDT)
-    clean_targets = symbols[:limit]
+    # Definir objetivos
+    targets = manual if manual else symbols[:limit]
     
-    df = scan_market(clean_targets)
+    df = scan_market(targets)
     
     if not df.empty:
-        # Limpieza visual de nombres
-        df['Activo'] = df['Activo'].apply(lambda x: x.split(':')[0])
-        
         # Ordenar
         sort_map = {"🔥 FULL ALCISTA": 0, "❄️ FULL BAJISTA": 1, "✅ ALCISTA FUERTE": 2, "🔻 BAJISTA FUERTE": 3, "⚖️ MIXTO": 4}
-        df['sort'] = df['Diagnóstico'].map(sort_map)
+        df['sort'] = df['Diagnóstico'].map(sort_map).fillna(5)
         df = df.sort_values('sort').drop('sort', axis=1)
         
+        # Filtros
+        f_ver = st.radio("Ver:", ["Todo", "🔥 Full Bull", "❄️ Full Bear"], horizontal=True)
+        
+        if f_ver == "🔥 Full Bull":
+            df = df[df['Diagnóstico'] == "🔥 FULL ALCISTA"]
+        elif f_ver == "❄️ Full Bear":
+            df = df[df['Diagnóstico'] == "❄️ FULL BAJISTA"]
+            
         st.dataframe(
             df,
             column_config={
-                "Activo": st.column_config.TextColumn("Ticker", width="medium"),
-                "Diagnóstico": st.column_config.TextColumn("Tendencia Global", width="medium"),
+                "Activo": st.column_config.TextColumn("Contrato", width="medium"),
+                "Diagnóstico": st.column_config.TextColumn("Estado Estructural", width="medium"),
             },
             use_container_width=True,
             hide_index=True,
             height=600
         )
     else:
-        st.warning("No hay datos.")
+        st.warning("No se encontraron datos.")
