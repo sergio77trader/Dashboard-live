@@ -3,7 +3,9 @@ import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
 import numpy as np
-import re # Importamos Regex para procesar tu texto
+import re
+import time
+import requests # Necesario para crear una sesión fake
 
 # --- CONFIGURACIÓN VISUAL ---
 st.set_page_config(layout="wide", page_title="SystemaTrader - Options Screener Ultimate")
@@ -46,27 +48,58 @@ def check_proximity(price, wall_price, threshold_pct):
     distance = abs(price - wall_price) / price * 100
     return distance <= threshold_pct
 
-@st.cache_data(ttl=1800)
+# --- SESIÓN FAKE (NUEVO) ---
+def get_yahoo_session():
+    """Crea una sesión que simula ser un navegador Chrome para evitar bloqueo 429"""
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    })
+    return session
+
+@st.cache_data(ttl=900)
 def analyze_options_chain(ticker):
     try:
-        tk = yf.Ticker(ticker)
+        # Usamos la sesión fake
+        tk = yf.Ticker(ticker, session=get_yahoo_session())
+        
         current_price = 0
-        if hasattr(tk, 'fast_info') and tk.fast_info.last_price:
-            current_price = tk.fast_info.last_price
+        # Intentamos obtener precio
+        try:
+            if hasattr(tk, 'fast_info') and tk.fast_info.last_price:
+                current_price = float(tk.fast_info.last_price)
+        except: pass
+        
         if current_price == 0:
-            hist = tk.history(period="1d")
+            hist = tk.history(period="5d") # 5 días por seguridad
             if not hist.empty: current_price = hist['Close'].iloc[-1]
         
         if current_price == 0: return None
 
-        exps = tk.options
+        # Intentamos obtener opciones (Si falla aquí es bloqueo o no tiene opciones)
+        try:
+            exps = tk.options
+        except:
+            return None
+            
         if not exps: return None
-        target_date = exps[0]
-        opts = tk.option_chain(target_date)
-        calls = opts.calls
-        puts = opts.puts
         
-        if calls.empty or puts.empty: return None
+        # Estrategia Multi-Vencimiento: Si el primero falla/está vacío, miramos el siguiente
+        target_date = None
+        calls, puts = pd.DataFrame(), pd.DataFrame()
+        
+        for date in exps[:3]: # Miramos hasta 3 vencimientos
+            try:
+                opts = tk.option_chain(date)
+                c, p = opts.calls, opts.puts
+                if not c.empty or not p.empty:
+                    calls, puts = c, p
+                    target_date = date
+                    break
+            except:
+                continue
+        
+        if target_date is None: return None
         
         total_call_oi = calls['openInterest'].sum()
         total_put_oi = puts['openInterest'].sum()
@@ -80,18 +113,21 @@ def analyze_options_chain(ticker):
         data_quality = "OK"
         market_consensus = (call_wall + put_wall) / 2
         calculation_price = current_price
-        if market_consensus > 0:
-            if abs(current_price - market_consensus) / market_consensus > 0.4:
+        
+        # Validación básica de datos erróneos
+        if market_consensus > 0 and current_price > 0:
+            if abs(current_price - market_consensus) / market_consensus > 0.6: # Tolerancia 60%
                 data_quality = "ERROR_PRECIO"
-                calculation_price = market_consensus 
+                # calculation_price = market_consensus # (Opcional: forzar precio)
 
         strikes = sorted(list(set(calls['strike'].tolist() + puts['strike'].tolist())))
+        # Filtramos strikes extremos para optimizar cálculo Max Pain
         strikes = [s for s in strikes if calculation_price * 0.5 < s < calculation_price * 1.5]
         
         cash_values = []
         for strike in strikes:
-            intrinsic_calls = calls.apply(lambda row: max(0, strike - row['strike']) * row['openInterest'], axis=1).sum()
-            intrinsic_puts = puts.apply(lambda row: max(0, row['strike'] - strike) * row['openInterest'], axis=1).sum()
+            intrinsic_calls = calls.apply(lambda row: max(0, strike - row['strike']) * row.get('openInterest', 0), axis=1).sum()
+            intrinsic_puts = puts.apply(lambda row: max(0, row['strike'] - strike) * row.get('openInterest', 0), axis=1).sum()
             cash_values.append(intrinsic_calls + intrinsic_puts)
         
         max_pain = strikes[np.argmin(cash_values)] if cash_values else calculation_price
@@ -108,18 +144,23 @@ def analyze_options_chain(ticker):
 
 def get_batch_analysis(ticker_list):
     results = []
-    prog = st.progress(0)
+    # Barra de progreso
+    prog = st.progress(0, text="Iniciando conexión segura...")
     total = len(ticker_list)
-    status_text = st.empty()
     
     for i, t in enumerate(ticker_list):
-        status_text.text(f"Analizando {t} ({i+1}/{total})...")
         data = analyze_options_chain(t)
-        if data: results.append(data)
-        prog.progress((i + 1) / total)
+        if data: 
+            results.append(data)
+        
+        # --- EL SECRETO ANTI-BLOQUEO ---
+        # Dormimos 0.25 segundos entre cada petición.
+        # Esto evita el error 429 Too Many Requests en la nube.
+        time.sleep(0.25)
+        
+        prog.progress((i + 1) / total, text=f"Procesando {t} ({i+1}/{total})...")
         
     prog.empty()
-    status_text.empty()
     return results
 
 # --- INTERFAZ ---
@@ -138,10 +179,11 @@ with st.sidebar:
     
     # SECCIÓN 1: MERCADO COMPLETO
     st.header("1. Escaneo Masivo")
+    st.info("⚠️ El escaneo completo tardará unos 30-40 segundos para evitar bloqueos del servidor.")
     if st.button("ESCANEAR BASE DE DATOS ENTERA", type="primary"):
         st.session_state['current_view'] = "Mercado Completo (ADRs + CEDEARs)"
         sorted_tickers = sorted(list(CEDEAR_DATABASE))
-        with st.spinner("Conectando con el mercado de opciones..."):
+        with st.spinner("Ejecutando protocolo Anti-Bloqueo..."):
             st.session_state['analysis_results'] = get_batch_analysis(sorted_tickers)
 
     st.divider()
@@ -170,7 +212,7 @@ with st.sidebar:
             st.error("El campo está vacío.")
 
     st.markdown("---")
-    st.caption("SystemaTrader v12.0")
+    st.caption("SystemaTrader v12.5 | Anti-Bot Protocol Active")
 
 # --- FASE 1: TABLERO GLOBAL ---
 st.subheader(f"1️⃣ Resultados: {st.session_state.get('current_view', 'Sin Datos')}")
@@ -180,6 +222,10 @@ if st.session_state['analysis_results']:
     df_table = pd.DataFrame(results)
     
     if not df_table.empty:
+        # Métricas de éxito
+        success_rate = len(df_table)
+        st.caption(f"✅ Activos procesados con éxito: {success_rate}")
+
         def get_alert_status(row):
             if row['Data_Quality'] == 'ERROR_PRECIO': return "❌ ERROR DATA"
             status = []
@@ -219,7 +265,7 @@ if st.session_state['analysis_results']:
             },
             use_container_width=True, hide_index=True, height=600
         )
-    else: st.warning("Sin datos. Verifica que los tickers sean correctos (ej: AAPL, TSLA).")
+    else: st.warning("Sin datos. Intenta de nuevo en unos minutos.")
 
     # --- FASE 2: DETALLE ---
     st.divider()
