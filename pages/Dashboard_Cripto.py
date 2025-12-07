@@ -3,6 +3,7 @@ import ccxt
 import pandas as pd
 import pandas_ta as ta
 import time
+import numpy as np
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(layout="wide", page_title="SystemaTrader - Pro Dashboard")
@@ -16,17 +17,20 @@ st.markdown("""
 
 # --- FUNCIONES TÉCNICAS ---
 def get_rsi(df, length=14):
-    """Calcula RSI seguro"""
-    if df.empty or len(df) < length: return 50
+    """Calcula RSI seguro, evitando NaNs"""
+    if df.empty or len(df) < length: return 50.0
     try:
         rsi_series = df.ta.rsi(length=length)
-        if rsi_series is None or rsi_series.empty: return 50
-        return rsi_series.iloc[-1]
-    except: return 50
+        if rsi_series is None or rsi_series.empty: return 50.0
+        
+        val = rsi_series.iloc[-1]
+        # Si el valor es NaN (Not a Number), devolvemos 50 (Neutro)
+        if pd.isna(val) or np.isinf(val): return 50.0
+        return float(val)
+    except: return 50.0
 
 # --- FACTORY DE CONEXIÓN ---
 def get_exchange(name):
-    """Genera la conexión según el exchange elegido"""
     opts = {'enableRateLimit': True, 'timeout': 30000}
     if name == 'Gate.io':
         return ccxt.gate(dict(opts, **{'options': {'defaultType': 'swap'}}))
@@ -38,32 +42,25 @@ def get_exchange(name):
 
 @st.cache_data(ttl=300)
 def get_top_pairs(exchange_name):
-    """Obtiene Top 15 pares por volumen del exchange seleccionado"""
     try:
         exchange = get_exchange(exchange_name)
         markets = exchange.load_markets()
-        
-        # Obtener tickers para ver volumen
         tickers = exchange.fetch_tickers()
         valid = []
         
         for s in tickers:
-            # Filtro universal de perpetuos USDT
-            is_usdt = '/USDT' in s
-            # Gate/MEXC usan 'swap' o 'linear', Kucoin usa otra logica.
-            # CCXT suele normalizar, buscamos pares USDT con volumen
-            if is_usdt and tickers[s]['quoteVolume'] is not None:
-                valid.append({
-                    'symbol': s,
-                    'volume': tickers[s]['quoteVolume']
-                })
+            # Filtro defensivo
+            if '/USDT' in s:
+                vol = tickers[s].get('quoteVolume', 0)
+                if vol is None: vol = 0
+                valid.append({'symbol': s, 'volume': vol})
         
-        # Ordenar y Top 15
         df = pd.DataFrame(valid)
+        if df.empty: return []
+        
         df = df.sort_values('volume', ascending=False).head(15)
         return df['symbol'].tolist()
-    except Exception as e:
-        # Fallback si falla la lista
+    except:
         return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT', 'BNB/USDT:USDT', 'XRP/USDT:USDT']
 
 def fetch_data(symbols, exchange_name):
@@ -73,62 +70,66 @@ def fetch_data(symbols, exchange_name):
     bar = st.progress(0, text=f"Leyendo datos de {exchange_name}...")
     
     for i, symbol in enumerate(symbols):
-        # Nombre limpio para mostrar
         display = symbol.split(':')[0]
         bar.progress((i)/total, text=f"Analizando {display}...")
         
         try:
-            # 1. Velas para RSI (15m, 1h, 4h)
-            # Optimizacion: Pedimos pocas velas
+            # 1. Velas RSI
             k_15m = exchange.fetch_ohlcv(symbol, '15m', limit=30)
             rsi_15m = get_rsi(pd.DataFrame(k_15m, columns=['t','o','h','l','c','v']))
             
             k_1h = exchange.fetch_ohlcv(symbol, '1h', limit=30)
             df_1h = pd.DataFrame(k_1h, columns=['t','o','h','l','c','v'])
             rsi_1h = get_rsi(df_1h)
-            price_now = df_1h['c'].iloc[-1]
+            
+            # Obtener precio de forma segura
+            price_now = 0.0
+            if not df_1h.empty:
+                price_now = float(df_1h['c'].iloc[-1])
             
             k_4h = exchange.fetch_ohlcv(symbol, '4h', limit=30)
             rsi_4h = get_rsi(pd.DataFrame(k_4h, columns=['t','o','h','l','c','v']))
             
-            # 2. Datos Financieros
+            # 2. Funding
             funding = 0.0
             try:
                 f_data = exchange.fetch_funding_rate(symbol)
-                funding = f_data['fundingRate'] * 100
+                if f_data and 'fundingRate' in f_data and f_data['fundingRate'] is not None:
+                    funding = float(f_data['fundingRate']) * 100
             except: pass
             
-            # 3. Open Interest
-            oi_usd = 0
+            # 3. OI
+            oi_usd = 0.0
             try:
                 oi = exchange.fetch_open_interest(symbol)
-                # Intentar buscar valor en USD directo
-                if 'openInterestValue' in oi:
+                if 'openInterestValue' in oi and oi['openInterestValue']:
                     oi_usd = float(oi['openInterestValue'])
-                # Si no, convertir contratos a USD
-                elif 'openInterestAmount' in oi:
+                elif 'openInterestAmount' in oi and oi['openInterestAmount']:
                      oi_usd = float(oi['openInterestAmount']) * price_now
-                else:
-                     oi_usd = float(oi.get('openInterest', 0)) * price_now
+                elif 'openInterest' in oi and oi['openInterest']:
+                     oi_usd = float(oi['openInterest']) * price_now
             except: pass
 
-            # 4. Variación 24h
+            # 4. Cambio 24h
+            chg = 0.0
+            vol = 0.0
             try:
                 tick = exchange.fetch_ticker(symbol)
-                chg = tick['percentage'] if tick['percentage'] else 0
-                # Normalizar si viene en decimal o entero
-                if abs(chg) < 1: chg = chg * 100 # Si viene 0.05 es 5%
-            except: chg = 0
+                if tick:
+                    chg = float(tick.get('percentage', 0) or 0)
+                    vol = float(tick.get('quoteVolume', 0) or 0)
+                    if abs(chg) < 1: chg = chg * 100 
+            except: pass
 
             row = {
                 'Symbol': display,
                 'Precio': price_now,
-                'Chg 24h': chg / 100, # Streamlit lo multiplica por 100 si es formato %
-                'Volumen': tick.get('quoteVolume', 0),
+                'Chg 24h': chg / 100,
+                'Volumen': vol,
                 'RSI 15m': rsi_15m,
                 'RSI 1H': rsi_1h,
                 'RSI 4H': rsi_4h,
-                'Funding': funding / 100, # Formato %
+                'Funding': funding / 100,
                 'OI ($)': oi_usd
             }
             data_rows.append(row)
@@ -142,57 +143,58 @@ def fetch_data(symbols, exchange_name):
 # --- INTERFAZ ---
 st.title("💠 SystemaTrader: Pro Dashboard")
 
-# BARRA LATERAL: SELECTOR DE MOTOR
 with st.sidebar:
     st.header("Fuente de Datos")
-    # Gate.io suele ser el más robusto para IPs de Cloud
-    SOURCE = st.selectbox("Seleccionar Exchange:", ["Gate.io", "MEXC", "KuCoin"])
+    # KuCoin suele ser bueno, pero si falla prueba Gate.io
+    SOURCE = st.selectbox("Exchange:", ["KuCoin", "Gate.io", "MEXC"])
     
-    if st.button("🔄 RECARGAR AHORA", type="primary"):
+    if st.button("🔄 RECARGAR", type="primary"):
         st.cache_data.clear()
         st.rerun()
 
-    st.info(f"Conectado a: **{SOURCE} Futures**")
-    st.caption("Si falla la carga, cambia de Exchange en este menú.")
+    st.info(f"Conectado a: **{SOURCE}**")
 
-# EJECUCIÓN PRINCIPAL
 try:
-    with st.spinner(f"Estableciendo enlace satelital con {SOURCE}..."):
+    with st.spinner(f"Conectando satélite a {SOURCE}..."):
         top_symbols = get_top_pairs(SOURCE)
         
     if not top_symbols:
-        st.error(f"Error crítico conectando a {SOURCE}. Prueba otro Exchange.")
+        st.error(f"Error conectando a {SOURCE}. Prueba cambiar a Gate.io o MEXC en el menú.")
     else:
         df = fetch_data(top_symbols, SOURCE)
 
         if not df.empty:
-            # TABLA PRINCIPAL
+            # --- LIMPIEZA CRÍTICA (SANITIZACIÓN) ---
+            # Esto evita el error "Out of range float / nan"
+            # Reemplazamos cualquier NaN o Infinito por 0
+            df = df.fillna(0)
+            df = df.replace([np.inf, -np.inf], 0)
+
             st.dataframe(
                 df,
                 column_config={
                     "Symbol": st.column_config.TextColumn("Activo", width="small"),
                     "Precio": st.column_config.NumberColumn("Precio", format="$%.4f"),
                     "Chg 24h": st.column_config.NumberColumn("24h %", format="%.2f%%"),
-                    "Volumen": st.column_config.ProgressColumn("Volumen 24h", format="$%.0f", min_value=0, max_value=df['Volumen'].max()),
+                    "Volumen": st.column_config.ProgressColumn("Volumen", format="$%.0f", min_value=0, max_value=float(df['Volumen'].max())),
                     "RSI 15m": st.column_config.NumberColumn("RSI 15m", format="%.0f"),
                     "RSI 1H": st.column_config.NumberColumn("RSI 1H", format="%.0f"),
                     "RSI 4H": st.column_config.NumberColumn("RSI 4H", format="%.0f"),
                     "Funding": st.column_config.NumberColumn("Funding", format="%.4f%%"),
-                    "OI ($)": st.column_config.NumberColumn("Open Int. ($)", format="$%.0f", help="Dinero en contratos abiertos")
+                    "OI ($)": st.column_config.NumberColumn("Open Int. ($)", format="$%.0f")
                 },
                 use_container_width=True,
                 hide_index=True,
                 height=750
             )
             
-            # LEYENDA
             c1, c2, c3 = st.columns(3)
             c1.info("💡 **RSI:** >70 (Sobrecompra) | <30 (Sobreventa)")
             c2.warning("⚡ **Funding:** Negativo = Posible Short Squeeze")
-            c3.success(f"📡 Datos en vivo de **{SOURCE}**")
+            c3.success(f"📡 Fuente: {SOURCE}")
             
         else:
-            st.error("No llegaron datos. Intenta recargar o cambiar de Exchange.")
+            st.error("No llegaron datos válidos. Intenta recargar.")
 
 except Exception as e:
     st.error(f"Error del Sistema: {e}")
