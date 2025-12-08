@@ -203,7 +203,9 @@ if st.session_state['crypto_results']:
             "Diagnóstico": st.column_config.TextColumn("Estructura", width="medium"),
             "Symbol_Raw": None
         },
-        use_container_width=True, hide_index=True, height=400
+        use_container_width=True,
+        hide_index=True,
+        height=400
     )
 
     st.divider()
@@ -214,35 +216,24 @@ if st.session_state['crypto_results']:
 
     # Obtenemos lista limpia de activos encontrados
     available_assets = df['Activo'].tolist()
-    # Mapeo inverso para obtener el symbol raw (necesario para CCXT)
-    # Buscamos en el session_state original para recuperar el Symbol_Raw
+    # Mapeo inverso para obtener el symbol raw
     raw_map = {item['Activo']: item['Symbol_Raw'] for item in st.session_state['crypto_results']}
     
     selected_assets = st.multiselect("Seleccionar Activos para Análisis RSI:", available_assets)
     
     if st.button("🔎 ANALIZAR RSI (SELECCIONADOS)"):
         if selected_assets:
-            # Recuperar symbols técnicos (BTC/USDT:USDT)
+            # Recuperar symbols técnicos
             target_raws = [raw_map[a] for a in selected_assets]
             
             with st.spinner("Calculando RSI en 6 temporalidades..."):
                 df_rsi = scan_rsi_deep(target_raws)
                 
                 if not df_rsi.empty:
-                    # Estilizado de colores para RSI
-                    # Pandas Styler para colorear celdas
-                    def color_rsi_cell(val):
-                        if isinstance(val, (int, float)):
-                            if val >= 70: return 'background-color: #521818; color: #ff4b4b' # Rojo fondo oscuro
-                            if val <= 30: return 'background-color: #0d3524; color: #00cc96' # Verde fondo oscuro
-                        return ''
-
-                    # Mostramos tabla estática pero coloreada si es posible, o usamos config de streamlit
-                    # Streamlit no soporta background-color fácil en dataframe interactivo, usamos texto
                     st.dataframe(
                         df_rsi,
                         column_config={
-                            "Activo": st.column_config.TextColumn("Activo", width="small", fixed=True),
+                            "Activo": st.column_config.TextColumn("Activo", width="small"), # Fixed removido aquí
                             "RSI 15m": st.column_config.NumberColumn("15m", format="%.1f"),
                             "RSI 1H": st.column_config.NumberColumn("1H", format="%.1f"),
                             "RSI 4H": st.column_config.NumberColumn("4H", format="%.1f"),
