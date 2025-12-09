@@ -8,14 +8,16 @@ import time
 # --- CONFIGURACIÓN VISUAL ---
 st.set_page_config(layout="wide", page_title="SystemaTrader - Lotes & Acumulación")
 
-# --- ESTILOS CSS ---
+# --- CORRECCIÓN DE ESTILOS CSS (Solución al recuadro negro) ---
 st.markdown("""
 <style>
-    .stMetric {
-        background-color: #0E1117;
+    /* Hacemos que el fondo sea transparente y añadimos un borde sutil */
+    div[data-testid="stMetric"] {
+        background-color: transparent !important;
+        border: 1px solid #cccccc;
         padding: 10px;
         border-radius: 5px;
-        border: 1px solid #262730;
+        color: inherit;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -35,7 +37,6 @@ if 'accumulated_data' not in st.session_state:
 
 # --- FUNCIONES LÓGICAS ---
 def get_sentiment_label(ratio):
-    """Devuelve la etiqueta de sentimiento basada en el Put/Call Ratio"""
     if ratio < 0.7: return "🚀 ALCISTA"
     elif ratio > 1.3: return "🐻 BAJISTA"
     else: return "⚖️ NEUTRAL"
@@ -69,11 +70,10 @@ def analyze_ticker_safe(ticker):
         total_call_oi = calls['openInterest'].sum()
         total_put_oi = puts['openInterest'].sum()
         
-        # Evitar división por cero
         if total_call_oi == 0: total_call_oi = 1
         pc_ratio = total_put_oi / total_call_oi
         
-        # Muros (Strike con mayor Open Interest)
+        # Muros
         call_wall = calls.loc[calls['openInterest'].idxmax()]['strike']
         put_wall = puts.loc[puts['openInterest'].idxmax()]['strike']
         
@@ -89,7 +89,7 @@ def analyze_ticker_safe(ticker):
             
         max_pain = relevant_strikes[np.argmin(cash_values)] if cash_values else current_price
         
-        # 4. CALCULAR SENTIMIENTO AQUÍ (Para evitar el KeyError después)
+        # 4. Calcular Sentimiento
         sentiment_calc = get_sentiment_label(pc_ratio)
 
         return {
@@ -102,7 +102,7 @@ def analyze_ticker_safe(ticker):
             'Call_OI': total_call_oi,
             'Put_OI': total_put_oi,
             'Expiration': target_date,
-            'Sentimiento': sentiment_calc, # <--- ESTO SOLUCIONA EL ERROR
+            'Sentimiento': sentiment_calc,
             'Calls_DF': calls, 
             'Puts_DF': puts
         }
@@ -119,9 +119,8 @@ with st.sidebar:
     st.header("🎮 Control de Lotes")
     st.info("Procesa por grupos pequeños para evitar bloqueos.")
     
-    batch_size = st.slider("Tamaño del Lote", 1, 10, 5)
+    batch_size = st.slider("Tamaño del Lote", 1, 10, 10) # Default 10 como en tu imagen
     
-    # Crear los lotes
     batches = [CEDEAR_DATABASE[i:i + batch_size] for i in range(0, len(CEDEAR_DATABASE), batch_size)]
     batch_labels = [f"Lote {i+1}: {b[0]} ... {b[-1]}" for i, b in enumerate(batches)]
     
@@ -158,7 +157,7 @@ if scan_btn:
             st.session_state['accumulated_data'].append(data)
         
         progress_bar.progress((i + 1) / len(targets))
-        time.sleep(1.2) # Pausa un poco más larga por seguridad
+        time.sleep(1.5) # Pausa de seguridad
         
     status_text.success("✅ Lote finalizado.")
     time.sleep(1)
@@ -172,10 +171,9 @@ st.title("SystemaTrader: Mercado Completo (Modo Seguro)")
 if st.session_state['accumulated_data']:
     df = pd.DataFrame(st.session_state['accumulated_data'])
     
-    # Filtro básico para asegurar que hay datos válidos
-    if not df.empty and 'Ticker' in df.columns and 'Price' in df.columns:
+    if not df.empty and 'Ticker' in df.columns:
         
-        # Procesamiento para la Tabla
+        # Procesamiento Tabla
         def get_status(row):
             status = []
             if check_proximity(row['Price'], row['Call_Wall'], proximity_threshold): status.append("🧱 TECHO")
@@ -183,15 +181,13 @@ if st.session_state['accumulated_data']:
             return " + ".join(status) if status else "OK"
 
         df['Estado'] = df.apply(get_status, axis=1)
-        # Nota: 'Sentimiento' ya viene calculado en el dict original, no hace falta recalcularlo
-        
         df['Dist. Techo %'] = ((df['Call_Wall'] - df['Price']) / df['Price'])
         df['Dist. Piso %'] = ((df['Put_Wall'] - df['Price']) / df['Price'])
         
         ver_alertas = st.checkbox("🔥 Mostrar solo Alertas")
         df_display = df[df['Estado'] != "OK"] if ver_alertas else df
 
-        # --- TABLA 1 ---
+        # --- TABLA ---
         st.subheader("1. Escaneo Masivo Acumulado")
         st.dataframe(
             df_display[['Ticker', 'Price', 'Max_Pain', 'Estado', 'Call_Wall', 'Dist. Techo %', 'Put_Wall', 'Dist. Piso %', 'Sentimiento']],
@@ -207,27 +203,23 @@ if st.session_state['accumulated_data']:
             use_container_width=True, hide_index=True, height=400
         )
 
-        # --- SECCIÓN 2: ANÁLISIS PROFUNDO ---
+        # --- ANÁLISIS PROFUNDO ---
         st.divider()
         st.subheader("2. Análisis Profundo")
         
         tickers_avail = sorted(df['Ticker'].tolist())
         sel_ticker = st.selectbox("Selecciona Activo:", tickers_avail)
         
-        # Recuperar el diccionario completo desde session state
         asset = next((item for item in st.session_state['accumulated_data'] if item["Ticker"] == sel_ticker), None)
         
         if asset:
-            # MÉTRICAS
+            # MÉTRICAS (Ahora se verán bien con el fondo transparente)
             c1, c2, c3, c4, c5 = st.columns(5)
             dist_pain = ((asset['Max_Pain'] - asset['Price']) / asset['Price']) * 100
             
             c1.metric("Precio", f"${asset['Price']:.2f}")
             c2.metric("Max Pain (Imán)", f"${asset['Max_Pain']:.2f}", f"{dist_pain:.2f}%", delta_color="off")
-            
-            # Aquí es donde fallaba antes, ahora 'Sentimiento' existe en el dict 'asset'
             c3.metric("Sentimiento", asset['Sentimiento'], f"Ratio: {asset['PC_Ratio']:.2f}")
-            
             c4.metric("Techo (Resistencia)", f"${asset['Call_Wall']:.2f}")
             c5.metric("Piso (Soporte)", f"${asset['Put_Wall']:.2f}")
             
@@ -258,19 +250,18 @@ if st.session_state['accumulated_data']:
                 fig_wall.add_trace(go.Bar(x=calls_df[mask_c]['strike'], y=calls_df[mask_c]['openInterest'], name='Calls (Techo)', marker_color='#00C853'))
                 fig_wall.add_trace(go.Bar(x=puts_df[mask_p]['strike'], y=puts_df[mask_p]['openInterest'], name='Puts (Piso)', marker_color='#FF5252'))
                 
-                fig_wall.add_vline(x=asset['Price'], line_dash="dash", line_color="white", annotation_text="Precio")
-                fig_wall.add_vline(x=asset['Call_Wall'], line_dash="dot", line_color="#00FF00")
-                fig_wall.add_vline(x=asset['Put_Wall'], line_dash="dot", line_color="#FF0000")
-                fig_wall.add_vline(x=asset['Max_Pain'], line_dash="dash", line_color="yellow", annotation_text="Max Pain")
+                fig_wall.add_vline(x=asset['Price'], line_dash="dash", line_color="gray", annotation_text="Precio")
+                fig_wall.add_vline(x=asset['Call_Wall'], line_dash="dot", line_color="#00C853")
+                fig_wall.add_vline(x=asset['Put_Wall'], line_dash="dot", line_color="#FF5252")
+                fig_wall.add_vline(x=asset['Max_Pain'], line_dash="dash", line_color="orange", annotation_text="Max Pain")
                 
                 fig_wall.update_layout(barmode='overlay', height=350, margin=dict(t=20, b=0), xaxis_title="Strike", yaxis_title="Contratos (OI)", legend=dict(orientation="h", y=1.1))
                 st.plotly_chart(fig_wall, use_container_width=True)
                 
-            # INTERPRETACIÓN
             st.info(f"""
             🧠 **Interpretación Táctica:**
-            1. **Imán (Max Pain ${asset['Max_Pain']:.2f}):** El precio tiende a ir hacia aquí al vencimiento ({asset['Expiration']}).
-            2. **Sentimiento:** {asset['Sentimiento']} (Ratio P/C: {asset['PC_Ratio']:.2f}). Si el ratio es bajo (<0.7), hay exceso de confianza. Si es alto (>1.0), hay miedo.
+            1. **Imán (Max Pain ${asset['Max_Pain']:.2f}):** Precio objetivo teórico al vencimiento ({asset['Expiration']}).
+            2. **Sentimiento:** {asset['Sentimiento']} (Ratio P/C: {asset['PC_Ratio']:.2f}).
             """)
 
 else:
