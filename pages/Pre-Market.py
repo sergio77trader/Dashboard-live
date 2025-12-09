@@ -1,12 +1,12 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import time
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="SystemaTrader - Watchlist Ultimate")
+st.set_page_config(layout="wide", page_title="SystemaTrader - Pre-Market Monitor")
 
-# --- BASE DE DATOS MAESTRA DE CEDEARS (EXPANDIDA) ---
-# Esta lista cubre el 98% del volumen operado en Argentina
+# --- BASE DE DATOS (MERCADO COMPLETO) ---
 MARKET_DATA = {
     "🇦🇷 Argentina (ADRs)": [
         "GGAL", "YPF", "BMA", "PAMP", "TGS", "CEPU", "EDN", "BFR", "SUPV", 
@@ -39,148 +39,148 @@ MARKET_DATA = {
     ]
 }
 
-# Lista combinada para búsquedas globales
 ALL_TICKERS = sorted(list(set([item for sublist in MARKET_DATA.values() for item in sublist])))
 
-# --- FUNCIONES DE ESTILO ---
+# --- ESTILOS DE COLOR ---
 def color_change(val):
-    """Pinta verde si es positivo, rojo si es negativo"""
-    if isinstance(val, float) or isinstance(val, int):
-        color = '#00FF00' if val > 0 else '#FF4500' if val < 0 else 'white'
-        return f'color: {color}; font-weight: bold'
+    if isinstance(val, (float, int)):
+        if val > 0: return 'color: #00FF00; font-weight: bold' # Verde
+        elif val < 0: return 'color: #FF4500; font-weight: bold' # Rojo
     return ''
 
-# --- MOTOR DE DATOS ---
-@st.cache_data(ttl=60)
-def get_quotes(ticker_list):
-    if not ticker_list: return pd.DataFrame()
+# --- MOTOR DE DATOS EN VIVO (PRE-MARKET) ---
+# Usamos cache corta (30 seg) para tener datos frescos
+@st.cache_data(ttl=30)
+def get_live_data(ticker_list):
+    data = []
     
-    try:
-        # Descarga masiva para optimizar tiempo
-        df = yf.download(ticker_list, period="5d", progress=False)['Close']
+    # Creamos barra de progreso porque esta consulta es mas pesada
+    prog = st.progress(0, text="Escaneando Pre-Market/Live...")
+    total = len(ticker_list)
+    
+    # Optimizacion: Usamos Tickers (plural) para inicializar objetos, pero fast_info es individual
+    tickers_obj = yf.Tickers(" ".join(ticker_list))
+    
+    for i, t in enumerate(ticker_list):
+        try:
+            # Usamos fast_info para obtener el precio REAL del momento (incluye pre-market)
+            info = tickers_obj.tickers[t].fast_info
+            
+            # last_price: El último precio operado (puede ser pre-market)
+            last_price = info.last_price
+            # previous_close: El cierre de ayer
+            prev_close = info.previous_close
+            
+            if last_price and prev_close:
+                change = last_price - prev_close
+                pct_change = ((last_price - prev_close) / prev_close) * 100
+                
+                data.append({
+                    "Symbol": t,
+                    "Precio Vivo ($)": last_price,
+                    "Cierre Ayer ($)": prev_close,
+                    "Cambio ($)": change,
+                    "% Var (Live)": pct_change
+                })
+        except:
+            pass
         
-        data = []
-        for t in ticker_list:
-            try:
-                # Extracción segura
-                if isinstance(df, pd.DataFrame) and t in df.columns:
-                    series = df[t].dropna()
-                elif isinstance(df, pd.Series) and df.name == t:
-                    series = df.dropna()
-                else:
-                    series = yf.Ticker(t).history(period="5d")['Close']
-                
-                if len(series) >= 2:
-                    last_price = float(series.iloc[-1])
-                    prev_price = float(series.iloc[-2])
-                    
-                    change = last_price - prev_price
-                    pct_change = ((last_price - prev_price) / prev_price) * 100
-                    
-                    data.append({
-                        "Symbol": t,
-                        "Precio ($)": last_price,
-                        "Cambio ($)": change,
-                        "% Var": pct_change
-                    })
-            except:
-                continue
-                
-        return pd.DataFrame(data)
-    except Exception as e:
-        st.error(f"Error de conexión: {e}")
-        return pd.DataFrame()
+        # Actualizar barra cada 5 items para no saturar UI
+        if i % 5 == 0: prog.progress((i + 1) / total)
+            
+    prog.empty()
+    return pd.DataFrame(data)
 
 # --- INTERFAZ ---
-st.title("📊 SystemaTrader: Global Watchlist")
-st.caption("Cotizaciones en Tiempo Real (Mercado de Origen)")
+st.title("🚀 SystemaTrader: Pre-Market Monitor")
+st.caption("Detecta Gaps y Movimientos en Tiempo Real (Comparado con Cierre Anterior)")
 
-if st.button("🔄 REFRESCAR MERCADO", type="primary"):
-    st.cache_data.clear()
-    st.rerun()
+col_btn, col_info = st.columns([1, 4])
+with col_btn:
+    if st.button("⚡ ESCANEAR AHORA", type="primary"):
+        st.cache_data.clear()
+        st.rerun()
+with col_info:
+    st.info("Este motor busca el último precio operado. Si el mercado está cerrado, muestra el Pre-Market o Post-Market.")
 
-# --- DEFINICIÓN DE PESTAÑAS ---
-tab1, tab2 = st.tabs(["📺 Dashboard Resumen", "🌎 Explorador Completo"])
+tab1, tab2 = st.tabs(["📺 Tablero Resumen", "🌎 Escáner Total"])
 
-# === PESTAÑA 1: VISTA DIVIDIDA (ARG vs EEUU) ===
+# === PESTAÑA 1: RESUMEN ===
 with tab1:
     col1, col2 = st.columns(2)
     
-    # 1. ARGENTINA
+    # ARGENTINA
     with col1:
         st.subheader("🇦🇷 Argentina (ADRs)")
-        with st.spinner("Cargando..."):
-            df_arg = get_quotes(MARKET_DATA["🇦🇷 Argentina (ADRs)"])
+        df_arg = get_live_data(MARKET_DATA["🇦🇷 Argentina (ADRs)"])
         
         if not df_arg.empty:
-            # APLICAMOS COLORES
             st.dataframe(
-                df_arg.style.map(color_change, subset=['Cambio ($)', '% Var']),
+                df_arg.style.map(color_change, subset=['Cambio ($)', '% Var (Live)']),
                 column_config={
                     "Symbol": st.column_config.TextColumn("Activo", width="small"),
-                    "Precio ($)": st.column_config.NumberColumn("Precio", format="$%.2f"),
+                    "Precio Vivo ($)": st.column_config.NumberColumn("Precio (Live)", format="$%.2f"),
+                    "Cierre Ayer ($)": st.column_config.NumberColumn("Cierre Ayer", format="$%.2f"),
                     "Cambio ($)": st.column_config.NumberColumn("Dif", format="%.2f"),
-                    "% Var": st.column_config.NumberColumn("% Var", format="%.2f%%")
+                    "% Var (Live)": st.column_config.NumberColumn("Var %", format="%.2f%%")
                 },
                 use_container_width=True, hide_index=True, height=600
             )
 
-    # 2. EEUU (Selección)
+    # EEUU
     with col2:
         st.subheader("🇺🇸 Wall Street (Selección)")
-        # Combinamos Tech + Bancos para el resumen
-        usa_selection = MARKET_DATA["🇺🇸 Big Tech & AI"] + ["JPM", "KO", "DIS", "XOM"]
+        # Selección mixta para el resumen
+        usa_sel = MARKET_DATA["🇺🇸 Big Tech & AI"][:8] + ["TSLA", "MELI", "VIST", "XOM", "KO"]
+        df_usa = get_live_data(usa_sel)
         
-        with st.spinner("Cargando..."):
-            df_usa = get_quotes(usa_selection)
-            
         if not df_usa.empty:
             st.dataframe(
-                df_usa.style.map(color_change, subset=['Cambio ($)', '% Var']),
+                df_usa.style.map(color_change, subset=['Cambio ($)', '% Var (Live)']),
                 column_config={
                     "Symbol": st.column_config.TextColumn("Activo", width="small"),
-                    "Precio ($)": st.column_config.NumberColumn("Precio", format="$%.2f"),
+                    "Precio Vivo ($)": st.column_config.NumberColumn("Precio (Live)", format="$%.2f"),
+                    "Cierre Ayer ($)": st.column_config.NumberColumn("Cierre Ayer", format="$%.2f"),
                     "Cambio ($)": st.column_config.NumberColumn("Dif", format="%.2f"),
-                    "% Var": st.column_config.NumberColumn("% Var", format="%.2f%%")
+                    "% Var (Live)": st.column_config.NumberColumn("Var %", format="%.2f%%")
                 },
                 use_container_width=True, hide_index=True, height=600
             )
 
-# === PESTAÑA 2: ESCÁNER TOTAL ===
+# === PESTAÑA 2: TODO EL MERCADO ===
 with tab2:
-    c_sel, c_stat = st.columns([3, 1])
+    c_sel, c_kpi = st.columns([3, 1])
     with c_sel:
         sector = st.selectbox("Seleccionar Sector:", ["TODOS"] + list(MARKET_DATA.keys()))
     
-    target_list = ALL_TICKERS if sector == "TODOS" else MARKET_DATA[sector]
+    target = ALL_TICKERS if sector == "TODOS" else MARKET_DATA[sector]
     
-    if st.button("🔎 Escanear Sector Completo"):
-        with st.spinner(f"Procesando {len(target_list)} activos..."):
-            df_all = get_quotes(target_list)
+    if st.button("🔎 Analizar Sector en Vivo"):
+        # Limitamos "TODOS" a los primeros 50 para no tardar una eternidad en modo live
+        if sector == "TODOS":
+            st.warning("Analizando los primeros 60 activos por velocidad...")
+            target = target[:60]
             
+        df_all = get_live_data(target)
+        
         if not df_all.empty:
-            # Ordenar por Mayor Variación
-            df_all = df_all.sort_values("% Var", ascending=False)
+            df_all = df_all.sort_values("% Var (Live)", ascending=False)
             
-            # Estadísticas
             best = df_all.iloc[0]
             worst = df_all.iloc[-1]
             
-            with c_stat:
-                st.metric("Total Activos", len(df_all))
+            c1, c2 = st.columns(2)
+            c1.success(f"🚀 Top Gainer: {best['Symbol']} ({best['% Var (Live)']:.2f}%)")
+            c2.error(f"🐻 Top Loser: {worst['Symbol']} ({worst['% Var (Live)']:.2f}%)")
             
-            col_kpi1, col_kpi2 = st.columns(2)
-            col_kpi1.success(f"🚀 Top Gainer: {best['Symbol']} ({best['% Var']:.2f}%)")
-            col_kpi2.error(f"🐻 Top Loser: {worst['Symbol']} ({worst['% Var']:.2f}%)")
-            
-            # TABLA GIGANTE CON COLORES
             st.dataframe(
-                df_all.style.map(color_change, subset=['Cambio ($)', '% Var']),
+                df_all.style.map(color_change, subset=['Cambio ($)', '% Var (Live)']),
                 column_config={
                     "Symbol": "Activo",
-                    "Precio ($)": st.column_config.NumberColumn(format="$%.2f"),
+                    "Precio Vivo ($)": st.column_config.NumberColumn(format="$%.2f"),
+                    "Cierre Ayer ($)": st.column_config.NumberColumn(format="$%.2f"),
                     "Cambio ($)": st.column_config.NumberColumn(format="%.2f"),
-                    "% Var": st.column_config.NumberColumn(format="%.2f%%")
+                    "% Var (Live)": st.column_config.NumberColumn(format="%.2f%%")
                 },
                 use_container_width=True, hide_index=True, height=800
             )
