@@ -27,6 +27,14 @@ st.markdown("""
     }
     .big-score { font-size: 2.5rem; font-weight: 800; margin: 0; }
     .score-label { font-size: 0.9rem; font-weight: 500; opacity: 0.8; }
+    
+    .audit-box {
+        background-color: rgba(128, 128, 128, 0.1);
+        padding: 15px;
+        border-radius: 5px;
+        font-size: 0.9rem;
+        margin-top: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -82,7 +90,7 @@ DB_CATEGORIES = {
 
 CEDEAR_DATABASE = sorted(list(set([item for sublist in DB_CATEGORIES.values() for item in sublist])))
 
-# --- INICIALIZAR ESTADO (NOMBRE CAMBIADO PARA EVITAR CONFLICTO) ---
+# --- INICIALIZAR ESTADO ---
 if 'st360_db_v2' not in st.session_state:
     st.session_state['st360_db_v2'] = []
 
@@ -104,15 +112,21 @@ def get_technical_score(df):
         score = 0
         details = []
         
-        if is_green: score += 3; details.append("Vela HA Alcista (+3)")
-        else: details.append("Vela HA Bajista")
+        # Lógica de Puntos Explicada
+        if is_green: score += 3; details.append("Vela Heikin Ashi Alcista (+3)")
+        else: details.append("Vela Heikin Ashi Bajista (0)")
             
-        if price > ma20: score += 2; details.append("> MA20 (+2)")
-        if ma20 > ma50: score += 3; details.append("Tendencia Sana (+3)")
-        if price > ma200: score += 2; details.append("> MA200 (+2)")
+        if price > ma20: score += 2; details.append("Precio > Media Móvil 20 (+2)")
+        else: details.append("Precio < Media Móvil 20 (0)")
+
+        if ma20 > ma50: score += 3; details.append("Tendencia Sana (MA20 > MA50) (+3)")
+        else: details.append("Tendencia Débil (MA20 < MA50) (0)")
+
+        if price > ma200: score += 2; details.append("Tendencia Largo Plazo (Precio > MA200) (+2)")
+        else: details.append("Debajo MA200 (0)")
         
-        return min(score, 10), ", ".join(details)
-    except: return 0, "Datos insuficientes"
+        return min(score, 10), details
+    except: return 0, ["Error Datos"]
 
 def get_options_score(ticker, price):
     try:
@@ -132,8 +146,8 @@ def get_options_score(ticker, price):
         score = 5
         detail = "Rango Medio"
         
-        if price > cw: score=10; detail="🚀 Breakout (+10)"
-        elif price < pw: score=1; detail="💀 Breakdown (+1)"
+        if price > cw: score=10; detail="🚀 Breakout Gamma (Precio > Call Wall)"
+        elif price < pw: score=1; detail="💀 Breakdown Gamma (Precio < Put Wall)"
         else:
             rng = cw - pw
             if rng > 0:
@@ -141,10 +155,10 @@ def get_options_score(ticker, price):
                 # Más cerca del piso (pos 0) = Mejor Score (10)
                 score = 10 - (pos * 10) 
                 
-                # Ajustes finos
-                if score > 8: detail = "🟢 Soporte (+9)"
-                elif score < 2: detail = "🧱 Resistencia (+2)"
-                else: detail = f"Rango ${pw}-${cw}"
+                # Explicación textual
+                if score > 8: detail = "🟢 En Zona de Soporte (Put Wall)"
+                elif score < 2: detail = "🧱 En Zona de Resistencia (Call Wall)"
+                else: detail = f"Navegando Rango (${pw} - ${cw})"
                 
         return score, detail, cw, pw
     except: return 5, "Error API", 0, 0
@@ -159,7 +173,7 @@ def get_seasonality_score(df):
         
         win = (hist > 0).mean()
         score = win * 10
-        return score, f"WinRate: {win:.0%}"
+        return score, f"WinRate Histórico: {win:.0%}"
     except: return 5, "Error Estacional"
 
 def analyze_complete(ticker):
@@ -170,10 +184,13 @@ def analyze_complete(ticker):
         
         price = df['Close'].iloc[-1]
         
-        s_tec, d_tec = get_technical_score(df)
+        s_tec, d_tec_list = get_technical_score(df)
+        d_tec_str = ", ".join([d for d in d_tec_list if "(+" in d]) # Solo mostrar positivos en resumen
+        
         s_opt, d_opt, cw, pw = get_options_score(ticker, price)
         s_sea, d_sea = get_seasonality_score(df)
         
+        # PONDERACIÓN
         final = (s_tec * 4) + (s_opt * 3) + (s_sea * 3)
         
         verdict = "NEUTRAL"
@@ -184,7 +201,7 @@ def analyze_complete(ticker):
         
         return {
             "Ticker": ticker, "Price": price, "Score": final, "Verdict": verdict,
-            "S_Tec": s_tec, "D_Tec": d_tec,
+            "S_Tec": s_tec, "D_Tec_List": d_tec_list, "D_Tec_Str": d_tec_str,
             "S_Opt": s_opt, "D_Opt": d_opt,
             "S_Sea": s_sea, "D_Sea": d_sea,
             "CW": cw, "PW": pw, "History": df
@@ -208,7 +225,6 @@ with st.sidebar:
         prog = st.progress(0)
         status = st.empty()
         
-        # Filtrar duplicados
         mem_tickers = [x['Ticker'] for x in st.session_state['st360_db_v2']]
         to_run = [t for t in targets if t not in mem_tickers]
         
@@ -249,10 +265,8 @@ st.title("🧠 SystemaTrader 360: Master Database")
 st.caption("Algoritmo de Fusión: Técnico (40%) + Estructura Gamma (30%) + Estacionalidad (30%)")
 
 if st.session_state['st360_db_v2']:
-    # Dataframe conversion
     df_view = pd.DataFrame(st.session_state['st360_db_v2'])
     
-    # Manejo de errores si la columna Score no existe por alguna razón rara
     if 'Score' in df_view.columns:
         df_view = df_view.sort_values("Score", ascending=False)
     
@@ -290,7 +304,7 @@ if st.session_state['st360_db_v2']:
             <div class="metric-card">
                 <div class="score-label">TÉCNICO (40%)</div>
                 <div class="big-score" style="color: #555;">{item['S_Tec']:.1f}<span style="font-size:1rem">/10</span></div>
-                <div style="font-size: 0.8rem; color: #888;">{item['D_Tec']}</div>
+                <div style="font-size: 0.8rem; color: #888;">{item['D_Tec_Str']}</div>
             </div>""", unsafe_allow_html=True)
             
         with c2:
@@ -311,6 +325,50 @@ if st.session_state['st360_db_v2']:
             
         st.caption(f"📅 Estacionalidad: **{item['S_Sea']:.1f}/10** - {item['D_Sea']}")
         
+        # --- AUDITORÍA DE CÁLCULO (NUEVA SECCIÓN) ---
+        with st.expander("🧮 Auditoría del Cálculo: ¿Cómo se llega a este resultado?"):
+            st.markdown(f"""
+            ### Fórmula Maestra:
+            La fórmula pondera tres pilares fundamentales del mercado:
+            
+            $$
+            \\text{{Score}} = (\\text{{Tec}} \\times 4) + (\\text{{Estruc}} \\times 3) + (\\text{{Estac}} \\times 3)
+            $$
+            
+            **Aplicado a {selection}:**
+            *   **Técnico ({item['S_Tec']} pts):** Se multiplica por 4 = **{item['S_Tec']*4:.1f} pts**
+            *   **Estructura ({item['S_Opt']} pts):** Se multiplica por 3 = **{item['S_Opt']*3:.1f} pts**
+            *   **Estacional ({item['S_Sea']} pts):** Se multiplica por 3 = **{item['S_Sea']*3:.1f} pts**
+            *   **TOTAL:** {item['S_Tec']*4:.1f} + {item['S_Opt']*3:.1f} + {item['S_Sea']*3:.1f} = **{item['Score']:.0f} / 100**
+            
+            ---
+            ### Desglose Detallado:
+            
+            **1. Análisis Técnico (Max 10 pts):**
+            Evaluamos la tendencia y fuerza relativa.
+            """)
+            
+            # Lista de detalles técnicos
+            for det in item['D_Tec_List']:
+                if "(+" in det:
+                    st.markdown(f"- ✅ {det}")
+                else:
+                    st.markdown(f"- ❌ {det}")
+                    
+            st.markdown(f"""
+            **2. Estructura de Opciones (Max 10 pts):**
+            Evaluamos la posición del precio respecto a los muros de liquidez.
+            - **Precio Actual:** ${item['Price']:.2f}
+            - **Call Wall (Resistencia):** ${item['CW']:.2f}
+            - **Put Wall (Soporte):** ${item['PW']:.2f}
+            - **Diagnóstico:** {item['D_Opt']} (Buscamos comprar cerca del soporte o al romper resistencia).
+            
+            **3. Estacionalidad (Max 10 pts):**
+            Evaluamos cómo se comportó este activo en este mismo mes en años anteriores.
+            - **{item['D_Sea']}**: Si históricamente sube el 80% de las veces, suma 8 puntos.
+            """)
+
+        # GRÁFICO
         st.markdown(f"#### 📉 Gráfico: {selection}")
         hist = item['History']
         cw, pw = item['CW'], item['PW']
