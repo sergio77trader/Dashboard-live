@@ -90,9 +90,9 @@ DB_CATEGORIES = {
 
 CEDEAR_DATABASE = sorted(list(set([item for sublist in DB_CATEGORIES.values() for item in sublist])))
 
-# --- INICIALIZAR ESTADO ---
-if 'st360_db_v2' not in st.session_state:
-    st.session_state['st360_db_v2'] = []
+# --- INICIALIZAR ESTADO (VERSIÓN V3 PARA LIMPIAR MEMORIA VIEJA) ---
+if 'st360_db_v3' not in st.session_state:
+    st.session_state['st360_db_v3'] = []
 
 # --- MOTOR DE CÁLCULO ---
 
@@ -152,10 +152,8 @@ def get_options_score(ticker, price):
             rng = cw - pw
             if rng > 0:
                 pos = (price - pw) / rng
-                # Más cerca del piso (pos 0) = Mejor Score (10)
                 score = 10 - (pos * 10) 
                 
-                # Explicación textual
                 if score > 8: detail = "🟢 En Zona de Soporte (Put Wall)"
                 elif score < 2: detail = "🧱 En Zona de Resistencia (Call Wall)"
                 else: detail = f"Navegando Rango (${pw} - ${cw})"
@@ -185,12 +183,12 @@ def analyze_complete(ticker):
         price = df['Close'].iloc[-1]
         
         s_tec, d_tec_list = get_technical_score(df)
-        d_tec_str = ", ".join([d for d in d_tec_list if "(+" in d]) # Solo mostrar positivos en resumen
+        d_tec_str = ", ".join([d for d in d_tec_list if "(+" in d]) 
+        if not d_tec_str: d_tec_str = "Sin señales positivas" # Fallback por si no hay nada
         
         s_opt, d_opt, cw, pw = get_options_score(ticker, price)
         s_sea, d_sea = get_seasonality_score(df)
         
-        # PONDERACIÓN
         final = (s_tec * 4) + (s_opt * 3) + (s_sea * 3)
         
         verdict = "NEUTRAL"
@@ -225,13 +223,13 @@ with st.sidebar:
         prog = st.progress(0)
         status = st.empty()
         
-        mem_tickers = [x['Ticker'] for x in st.session_state['st360_db_v2']]
+        mem_tickers = [x['Ticker'] for x in st.session_state['st360_db_v3']]
         to_run = [t for t in targets if t not in mem_tickers]
         
         for i, t in enumerate(to_run):
             status.markdown(f"🔍 Analizando **{t}**...")
             res = analyze_complete(t)
-            if res: st.session_state['st360_db_v2'].append(res)
+            if res: st.session_state['st360_db_v3'].append(res)
             prog.progress((i+1)/len(to_run))
             time.sleep(0.5)
             
@@ -242,7 +240,7 @@ with st.sidebar:
         st.rerun()
         
     if col_b2.button("🗑️ Limpiar"):
-        st.session_state['st360_db_v2'] = []
+        st.session_state['st360_db_v3'] = []
         st.rerun()
 
     st.divider()
@@ -254,8 +252,8 @@ with st.sidebar:
             with st.spinner("Procesando..."):
                 res = analyze_complete(manual_t)
                 if res:
-                    st.session_state['st360_db_v2'] = [x for x in st.session_state['st360_db_v2'] if x['Ticker'] != manual_t]
-                    st.session_state['st360_db_v2'].append(res)
+                    st.session_state['st360_db_v3'] = [x for x in st.session_state['st360_db_v3'] if x['Ticker'] != manual_t]
+                    st.session_state['st360_db_v3'].append(res)
                     st.rerun()
                 else:
                     st.error("No se encontraron datos.")
@@ -264,8 +262,8 @@ with st.sidebar:
 st.title("🧠 SystemaTrader 360: Master Database")
 st.caption("Algoritmo de Fusión: Técnico (40%) + Estructura Gamma (30%) + Estacionalidad (30%)")
 
-if st.session_state['st360_db_v2']:
-    df_view = pd.DataFrame(st.session_state['st360_db_v2'])
+if st.session_state['st360_db_v3']:
+    df_view = pd.DataFrame(st.session_state['st360_db_v3'])
     
     if 'Score' in df_view.columns:
         df_view = df_view.sort_values("Score", ascending=False)
@@ -292,19 +290,22 @@ if st.session_state['st360_db_v2']:
     options = df_view['Ticker'].tolist()
     selection = st.selectbox("Selecciona para ver detalle:", options)
     
-    item = next((x for x in st.session_state['st360_db_v2'] if x['Ticker'] == selection), None)
+    item = next((x for x in st.session_state['st360_db_v3'] if x['Ticker'] == selection), None)
     
     if item:
         c1, c2, c3 = st.columns(3)
         sc = item['Score']
         clr = "#00C853" if sc >= 70 else "#D32F2F" if sc <= 40 else "#FBC02D"
         
+        # Uso .get para mayor seguridad contra errores futuros
+        tec_str_safe = item.get('D_Tec_Str', 'Sin datos')
+        
         with c1:
             st.markdown(f"""
             <div class="metric-card">
                 <div class="score-label">TÉCNICO (40%)</div>
                 <div class="big-score" style="color: #555;">{item['S_Tec']:.1f}<span style="font-size:1rem">/10</span></div>
-                <div style="font-size: 0.8rem; color: #888;">{item['D_Tec_Str']}</div>
+                <div style="font-size: 0.8rem; color: #888;">{tec_str_safe}</div>
             </div>""", unsafe_allow_html=True)
             
         with c2:
@@ -325,12 +326,10 @@ if st.session_state['st360_db_v2']:
             
         st.caption(f"📅 Estacionalidad: **{item['S_Sea']:.1f}/10** - {item['D_Sea']}")
         
-        # --- AUDITORÍA DE CÁLCULO (NUEVA SECCIÓN) ---
+        # --- AUDITORÍA DE CÁLCULO ---
         with st.expander("🧮 Auditoría del Cálculo: ¿Cómo se llega a este resultado?"):
             st.markdown(f"""
             ### Fórmula Maestra:
-            La fórmula pondera tres pilares fundamentales del mercado:
-            
             $$
             \\text{{Score}} = (\\text{{Tec}} \\times 4) + (\\text{{Estruc}} \\times 3) + (\\text{{Estac}} \\times 3)
             $$
@@ -348,12 +347,16 @@ if st.session_state['st360_db_v2']:
             Evaluamos la tendencia y fuerza relativa.
             """)
             
-            # Lista de detalles técnicos
-            for det in item['D_Tec_List']:
-                if "(+" in det:
-                    st.markdown(f"- ✅ {det}")
-                else:
-                    st.markdown(f"- ❌ {det}")
+            # Lista de detalles técnicos con seguridad (.get)
+            detalles_lista = item.get('D_Tec_List', [])
+            if detalles_lista:
+                for det in detalles_lista:
+                    if "(+" in det:
+                        st.markdown(f"- ✅ {det}")
+                    else:
+                        st.markdown(f"- ❌ {det}")
+            else:
+                st.markdown("- Sin detalles técnicos disponibles.")
                     
             st.markdown(f"""
             **2. Estructura de Opciones (Max 10 pts):**
