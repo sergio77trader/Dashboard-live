@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="SystemaTrader 360: Platinum V3")
+st.set_page_config(layout="wide", page_title="SystemaTrader 360: Platinum V3.1 Fixed")
 
 # --- ESTILOS CSS ---
 st.markdown("""
@@ -53,8 +53,8 @@ DB_CATEGORIES = {
 }
 CEDEAR_DATABASE = sorted(list(set([item for sublist in DB_CATEGORIES.values() for item in sublist])))
 
-# --- ESTADO (V11) ---
-if 'st360_db_v11' not in st.session_state: st.session_state['st360_db_v11'] = []
+# --- ESTADO (V12 - Limpieza total) ---
+if 'st360_db_v12' not in st.session_state: st.session_state['st360_db_v12'] = []
 
 # --- HELPERS MATEMÁTICOS ---
 def calculate_rsi(series, period=14):
@@ -80,6 +80,7 @@ def get_rsi_alert(rsi):
     return "⚖️ NEUTRAL", "#F5F5F5", "#616161"
 
 def get_atr_alert(atr, price):
+    if price == 0: return "N/A", "#eee", "#333"
     atr_pct = (atr / price) * 100
     if atr_pct > 3.5: return f"⚡ VOLATILIDAD ALTA ({atr_pct:.1f}%)", "#FFF3E0", "#EF6C00"
     if atr_pct < 1.5: return f"🐢 VOLATILIDAD BAJA ({atr_pct:.1f}%)", "#F3E5F5", "#6A1B9A"
@@ -125,14 +126,18 @@ def get_technical_score(df):
         daily_green = ha_close.iloc[-1] > ha_open.iloc[-1]
         
         df_w = df.resample('W').agg({'Open':'first','High':'max','Low':'min','Close':'last'})
-        ha_close_w = (df_w['Open']+df_w['High']+df_w['Low']+df_w['Close'])/4
-        ha_open_w = (df_w['Open'].shift(1)+df_w['Close'].shift(1))/2
-        weekly_green = ha_close_w.iloc[-1] > ha_open_w.iloc[-1] if not df_w.empty else False
+        if not df_w.empty:
+            ha_close_w = (df_w['Open']+df_w['High']+df_w['Low']+df_w['Close'])/4
+            ha_open_w = (df_w['Open'].shift(1)+df_w['Close'].shift(1))/2
+            weekly_green = ha_close_w.iloc[-1] > ha_open_w.iloc[-1]
+        else: weekly_green = False
         
         df_m = df.resample('ME').agg({'Open':'first','High':'max','Low':'min','Close':'last'})
-        ha_close_m = (df_m['Open']+df_m['High']+df_m['Low']+df_m['Close'])/4
-        ha_open_m = (df_m['Open'].shift(1)+df_m['Close'].shift(1))/2
-        m_green = ha_close_m.iloc[-1] > ha_open_m.iloc[-1] if not df_m.empty else False
+        if not df_m.empty:
+            ha_close_m = (df_m['Open']+df_m['High']+df_m['Low']+df_m['Close'])/4
+            ha_open_m = (df_m['Open'].shift(1)+df_m['Close'].shift(1))/2
+            m_green = ha_close_m.iloc[-1] > ha_open_m.iloc[-1]
+        else: m_green = False
 
         if daily_green: score+=1; details.append("HA Diario Alcista")
         if weekly_green: score+=1; details.append("HA Semanal Alcista")
@@ -158,6 +163,7 @@ def get_technical_score(df):
     except: return 0, ["Error"], 50
 
 def get_options_data(ticker, price):
+    # Valores default seguros para evitar crash
     def_res = (5, "Sin Opciones", 0, 0, 0, "N/A", 0)
     try:
         tk = yf.Ticker(ticker)
@@ -232,21 +238,41 @@ def get_seasonality_score(df):
         return max(0, min(10, score)), f"WR: {win:.0%} | {warning}", avg
     except: return 5, "N/A", 0
 
+def calculate_levels(df, price):
+    try:
+        atr = calculate_atr(df).iloc[-1]
+        sl = price - (2 * atr)
+        tp = price + (3 * atr)
+        return atr, sl, tp
+    except: return 0, 0, 0
+
+# --- FUNCIÓN A PRUEBA DE BALAS ---
 def analyze_complete(ticker):
+    # Objeto de error por defecto para que SIEMPRE devuelva algo
+    error_res = {
+        "Ticker": ticker, "Price": 0, "Score": 0, "Verdict": "⚠️ ERROR DATOS",
+        "S_Tec": 0, "RSI": 0, "D_Tec_List": [],
+        "S_Opt": 0, "Sentiment": "N/A", "PCR": 0, "CW": 0, "PW": 0, "Max_Pain": 0, "D_Opt": "N/A",
+        "S_Sea": 0, "D_Sea": "N/A", "Avg_Ret": 0,
+        "ATR": 0, "SL": 0, "TP": 0,
+        "Macro_Msg": "N/A", "Bench": "N/A", "VIX": 0, "VIX_St": "N/A",
+        "History": None
+    }
+    
     try:
         tk = yf.Ticker(ticker)
         df = tk.history(period="2y")
-        if df.empty: return None
+        
+        if df.empty: return error_res
+        
         price = df['Close'].iloc[-1]
         
         s_tec, d_tec_list, rsi = get_technical_score(df)
         d_tec_str = ", ".join([d for d in d_tec_list if "(+" in d or "RSI" in d])
         
         s_opt, d_opt, cw, pw, mp, sent, pcr_val = get_options_data(ticker, price)
-        
         s_sea, d_sea, avg_ret = get_seasonality_score(df)
         atr, sl, tp = calculate_levels(df, price)
-        
         macro_st, macro_msg, vix, vix_st, bench = get_market_context_dynamic(ticker)
         
         final = (s_tec * 4) + (s_opt * 3) + (s_sea * 3)
@@ -269,7 +295,7 @@ def analyze_complete(ticker):
             "Macro_Msg": macro_msg, "Bench": bench, "VIX": vix, "VIX_St": vix_st,
             "History": df
         }
-    except: return None
+    except: return error_res
 
 # --- UI ---
 with st.sidebar:
@@ -285,68 +311,70 @@ with st.sidebar:
     if c1.button("▶️ ESCANEAR", type="primary"):
         targets = batches[sel_batch]
         prog = st.progress(0)
-        mem = [x['Ticker'] for x in st.session_state['st360_db_v11']]
-        run = [t for t in targets if t not in mem]
-        for i, t in enumerate(run):
-            r = analyze_complete(t)
-            if r: st.session_state['st360_db_v11'].append(r)
-            prog.progress((i+1)/len(run))
-            time.sleep(0.3)
-        prog.empty(); st.rerun()
         
-    if c2.button("🗑️ Limpiar"): st.session_state['st360_db_v11'] = []; st.rerun()
+        # Recuperamos memoria existente o iniciamos lista
+        current_data = st.session_state['st360_db_v12']
+        existing_tickers = [x['Ticker'] for x in current_data]
+        
+        # Solo procesamos lo nuevo
+        to_process = [t for t in targets if t not in existing_tickers]
+        
+        for i, t in enumerate(to_process):
+            r = analyze_complete(t)
+            st.session_state['st360_db_v12'].append(r)
+            prog.progress((i+1)/len(to_process))
+            time.sleep(0.2) # Pausa leve
+            
+        prog.empty()
+        st.rerun()
+        
+    if c2.button("🗑️ Limpiar"): 
+        st.session_state['st360_db_v12'] = []
+        st.rerun()
+
     st.divider()
     mt = st.text_input("Ticker Manual:").upper().strip()
     if st.button("Analizar"):
         if mt:
             with st.spinner("Procesando..."):
                 r = analyze_complete(mt)
-                if r:
-                    st.session_state['st360_db_v11'] = [x for x in st.session_state['st360_db_v11'] if x['Ticker']!=mt]
-                    st.session_state['st360_db_v11'].append(r)
-                    st.rerun()
+                # Borramos si ya existe para actualizar
+                st.session_state['st360_db_v12'] = [x for x in st.session_state['st360_db_v12'] if x['Ticker']!=mt]
+                st.session_state['st360_db_v12'].append(r)
+                st.rerun()
 
 st.title("SystemaTrader 360: Platinum V3 (Filtros)")
 
-if st.session_state['st360_db_v11']:
-    # 1. PREPARAR DATAFRAME
-    df_raw = pd.DataFrame(st.session_state['st360_db_v11'])
+# Logica de visualización
+data = st.session_state['st360_db_v12']
+
+if data:
+    df_raw = pd.DataFrame(data)
     
-    # Calcular categorías para filtro
-    df_raw['Vol_Cat'] = df_raw.apply(lambda x: "⚡ Alta" if (x['ATR']/x['Price']*100)>3.5 else ("🐢 Baja" if (x['ATR']/x['Price']*100)<1.5 else "✨ Normal"), axis=1)
+    # Pre-cálculo para filtros
+    df_raw['Vol_Cat'] = df_raw.apply(lambda x: "⚡ Alta" if x['Price']>0 and (x['ATR']/x['Price']*100)>3.5 else ("🐢 Baja" if x['Price']>0 and (x['ATR']/x['Price']*100)<1.5 else "✨ Normal"), axis=1)
     df_raw['RSI_Cat'] = df_raw['RSI'].apply(lambda x: "⚠️ Sobrecompra" if x>70 else ("♻️ Sobreventa" if x<30 else "✅ Sano"))
     df_raw['Sent_Cat'] = df_raw['Sentiment'].apply(lambda x: "EUFORIA" if "EUFORIA" in x else ("MIEDO" if "MIEDO" in x else "NEUTRAL"))
 
-    # --- ZONA DE FILTROS ---
+    # --- FILTROS ---
     with st.expander("🔍 FILTROS INTELIGENTES", expanded=True):
         f1, f2, f3, f4 = st.columns(4)
-        
-        with f1:
-            score_range = st.slider("Puntaje Crítico", 0, 100, (0, 100))
-        with f2:
-            fil_sent = st.multiselect("Sentimiento (Contrarian)", ["EUFORIA", "MIEDO", "NEUTRAL"], default=[])
-        with f3:
-            fil_vol = st.multiselect("Riesgo / Volatilidad", ["⚡ Alta", "✨ Normal", "🐢 Baja"], default=[])
-        with f4:
-            fil_rsi = st.multiselect("Estado Técnico (RSI)", ["✅ Sano", "⚠️ Sobrecompra", "♻️ Sobreventa"], default=[])
+        with f1: score_range = st.slider("Puntaje Crítico", 0, 100, (0, 100))
+        with f2: fil_sent = st.multiselect("Sentimiento", ["EUFORIA", "MIEDO", "NEUTRAL"], default=[])
+        with f3: fil_vol = st.multiselect("Riesgo / Volatilidad", ["⚡ Alta", "✨ Normal", "🐢 Baja"], default=[])
+        with f4: fil_rsi = st.multiselect("Estado Técnico", ["✅ Sano", "⚠️ Sobrecompra", "♻️ Sobreventa"], default=[])
 
     # APLICAR FILTROS
     df_final = df_raw.copy()
-    
-    # Filtro Puntaje
     df_final = df_final[(df_final['Score'] >= score_range[0]) & (df_final['Score'] <= score_range[1])]
-    
-    # Filtros Opcionales
     if fil_sent: df_final = df_final[df_final['Sent_Cat'].isin(fil_sent)]
     if fil_vol: df_final = df_final[df_final['Vol_Cat'].isin(fil_vol)]
     if fil_rsi: df_final = df_final[df_final['RSI_Cat'].isin(fil_rsi)]
     
-    # Ordenar
     df_final = df_final.sort_values("Score", ascending=False)
 
-    st.caption(f"Mostrando **{len(df_final)}** de {len(df_raw)} activos analizados.")
+    st.caption(f"Mostrando **{len(df_final)}** de {len(df_raw)} activos.")
 
-    # --- TABLA FILTRADA ---
     st.dataframe(
         df_final[['Ticker', 'Price', 'Score', 'Verdict', 'S_Tec', 'S_Opt', 'S_Sea']],
         column_config={
@@ -360,12 +388,13 @@ if st.session_state['st360_db_v11']:
     
     st.divider()
     
-    # --- INSPECCIÓN (Usar lista filtrada) ---
-    list_tickers = df_final['Ticker'].tolist()
+    # --- INSPECCIÓN ---
+    # Usamos solo los tickers que pasaron el filtro y tienen datos válidos
+    valid_tickers = df_final[df_final['Price'] > 0]['Ticker'].tolist()
     
-    if list_tickers:
-        sel = st.selectbox("Inspección Profunda (Filtrados):", list_tickers)
-        it = next((x for x in st.session_state['st360_db_v11'] if x['Ticker'] == sel), None)
+    if valid_tickers:
+        sel = st.selectbox("Inspección Profunda (Filtrados):", valid_tickers)
+        it = next((x for x in data if x['Ticker'] == sel), None)
         
         if it:
             rsi_msg, rsi_bg, rsi_txt = get_rsi_alert(it['RSI'])
@@ -407,9 +436,7 @@ if st.session_state['st360_db_v11']:
                 <div class="metric-card">
                     <div class="score-label">ESTRUCTURA</div>
                     <div class="big-score" style="color:#555;">{it['S_Opt']:.1f}</div>
-                    <div class="alert-tag" style="background-color:{sent_bg}; color:{sent_txt};">
-                        {it['Sentiment']}
-                    </div>
+                    <div class="alert-tag" style="background-color:{sent_bg}; color:{sent_txt};">{it['Sentiment']}</div>
                 </div>""", unsafe_allow_html=True)
             with k4:
                 st.markdown(f"""
@@ -426,18 +453,21 @@ if st.session_state['st360_db_v11']:
                 **3. Estacionalidad:** {it['D_Sea']}
                 """)
                 
-            h = it['History']
-            fig = go.Figure(data=[go.Candlestick(x=h.index, open=h['Open'], high=h['High'], low=h['Low'], close=h['Close'], name='Precio')])
-            if it['SL'] > 0:
-                fig.add_hline(y=it['SL'], line_dash="solid", line_color="red", annotation_text="STOP")
-                fig.add_hline(y=it['TP'], line_dash="solid", line_color="green", annotation_text="PROFIT")
-            if it['CW'] > 0:
-                fig.add_hline(y=it['CW'], line_dash="dot", line_color="orange", annotation_text="Call Wall")
-                fig.add_hline(y=it['PW'], line_dash="dot", line_color="cyan", annotation_text="Put Wall")
-                
-            fig.update_layout(height=500, xaxis_rangeslider_visible=False, template="plotly_white", margin=dict(t=30, b=0, l=0, r=0))
-            st.plotly_chart(fig, use_container_width=True)
+            if it['History'] is not None:
+                h = it['History']
+                fig = go.Figure(data=[go.Candlestick(x=h.index, open=h['Open'], high=h['High'], low=h['Low'], close=h['Close'], name='Precio')])
+                if it['SL'] > 0:
+                    fig.add_hline(y=it['SL'], line_dash="solid", line_color="red", annotation_text="STOP")
+                    fig.add_hline(y=it['TP'], line_dash="solid", line_color="green", annotation_text="PROFIT")
+                if it['CW'] > 0:
+                    fig.add_hline(y=it['CW'], line_dash="dot", line_color="orange", annotation_text="Call Wall")
+                    fig.add_hline(y=it['PW'], line_dash="dot", line_color="cyan", annotation_text="Put Wall")
+                    
+                fig.update_layout(height=500, xaxis_rangeslider_visible=False, template="plotly_white", margin=dict(t=30, b=0, l=0, r=0))
+                st.plotly_chart(fig, use_container_width=True)
+    elif not df_final.empty:
+        st.warning("Los activos filtrados tienen errores de datos y no se pueden inspeccionar.")
     else:
-        st.info("No hay activos que cumplan con los filtros seleccionados.")
+        st.info("No hay activos que cumplan con los filtros actuales.")
 
 else: st.info("👈 Comienza escaneando un lote.")
