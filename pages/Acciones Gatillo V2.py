@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="SystemaTrader 360: Tactical Edition")
+st.set_page_config(layout="wide", page_title="SystemaTrader 360: Tactical Edition Fixed")
 
 # --- ESTILOS CSS ---
 st.markdown("""
@@ -282,25 +282,29 @@ if st.session_state['st360_db_v14']:
     if 'Score' in dfv.columns: dfv = dfv.sort_values("Score", ascending=False)
     
     # Filtros
-    with st.expander("🔍 FILTROS TÁCTICOS"):
+    with st.expander("🔍 FILTROS TÁCTICOS", expanded=True):
         c1, c2, c3 = st.columns(3)
-        with c1: f_sqz = st.checkbox("🔥 Solo SQUEEZE (Explosión)")
-        with c2: f_vol = st.checkbox("⚡ Solo Alto Volumen (RVOL > 1.5)")
-        with c3: f_sco = st.slider("Score Min", 0, 100, 60)
+        with c1: f_sqz = st.checkbox("🔥 Solo SQUEEZE")
+        with c2: f_vol = st.checkbox("⚡ Solo Alto Volumen")
+        # FIXED: Valor por defecto en 0 para mostrar todo al inicio
+        with c3: f_sco = st.slider("Score Min", 0, 100, 0)
     
     df_show = dfv[dfv['Score'] >= f_sco]
     if f_sqz: df_show = df_show[df_show['Squeeze'] == True]
     if f_vol: df_show = df_show[df_show['RVOL'] > 1.5]
     
-    st.dataframe(
-        df_show[['Ticker', 'Price', 'Score', 'Verdict', 'RSI', 'RVOL', 'ADX']],
-        column_config={
-            "Ticker": "Activo", "Price": st.column_config.NumberColumn(format="$%.2f"),
-            "Score": st.column_config.ProgressColumn("Puntaje", min_value=0, max_value=100, format="%.0f"),
-            "RVOL": st.column_config.NumberColumn("Vol. Rel.", format="%.1fx"),
-            "ADX": st.column_config.NumberColumn("Fuerza Tend.", format="%.0f"),
-        }, use_container_width=True, hide_index=True
-    )
+    if df_show.empty:
+        st.warning(f"⚠️ Se han analizado {len(dfv)} activos, pero los filtros actuales los ocultan todos. Baja el puntaje o quita los checks.")
+    else:
+        st.dataframe(
+            df_show[['Ticker', 'Price', 'Score', 'Verdict', 'RSI', 'RVOL', 'ADX']],
+            column_config={
+                "Ticker": "Activo", "Price": st.column_config.NumberColumn(format="$%.2f"),
+                "Score": st.column_config.ProgressColumn("Puntaje", min_value=0, max_value=100, format="%.0f"),
+                "RVOL": st.column_config.NumberColumn("Vol. Rel.", format="%.1fx"),
+                "ADX": st.column_config.NumberColumn("Fuerza Tend.", format="%.0f"),
+            }, use_container_width=True, hide_index=True
+        )
     
     st.divider()
     
