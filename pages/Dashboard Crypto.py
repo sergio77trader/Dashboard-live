@@ -1,18 +1,17 @@
 import streamlit as st
+import yfinance as yf
 import pandas as pd
 import numpy as np
-import requests
 import time
-import re
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="Crypto-Radar: Binance Edition")
+st.set_page_config(layout="wide", page_title="Crypto-Radar 360: Universal")
 
 # --- ESTILOS VISUALES ---
 st.markdown("""
 <style>
     .crypto-card {
-        background-color: #1e2329; /* Color Binance Dark */
+        background-color: #1e2329;
         border: 1px solid #474d57;
         padding: 15px; border-radius: 8px;
         text-align: center; margin-bottom: 10px;
@@ -22,339 +21,270 @@ st.markdown("""
         padding: 5px; border-radius: 4px; font-weight: bold; 
         text-align: center; margin-top: 10px; font-size: 0.9rem;
     }
-    .sig-long { background-color: rgba(14, 203, 129, 0.15); color: #0ecb81; border: 1px solid #0ecb81; } /* Binance Green */
-    .sig-short { background-color: rgba(246, 70, 93, 0.15); color: #f6465d; border: 1px solid #f6465d; } /* Binance Red */
+    .sig-long { background-color: rgba(14, 203, 129, 0.15); color: #0ecb81; border: 1px solid #0ecb81; }
+    .sig-short { background-color: rgba(246, 70, 93, 0.15); color: #f6465d; border: 1px solid #f6465d; }
     .sig-wait { background-color: rgba(132, 142, 156, 0.15); color: #848e9c; border: 1px solid #848e9c; }
     
     .alert-pill { font-size: 0.7rem; font-weight: bold; padding: 2px 8px; border-radius: 4px; margin: 2px; display: inline-block; }
-    .sqz-anim { animation: pulse 1.5s infinite; color: #F0B90B; border: 1px solid #F0B90B; } /* Binance Yellow */
-    
+    .sqz-anim { animation: pulse 1.5s infinite; color: #F0B90B; border: 1px solid #F0B90B; }
     @keyframes pulse { 0% {opacity: 1;} 50% {opacity: 0.5;} 100% {opacity: 1;} }
-    
-    .audit-item { font-size: 0.85rem; margin-bottom: 4px; border-bottom: 1px solid #333; padding-bottom: 2px; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- BASE DE DATOS BINANCE FUTURES (USDT) ---
-CRYPTO_DB = {
-    '👑 Majors': ['BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'ADAUSDT', 'XRPUSDT', 'AVAXUSDT', 'DOTUSDT', 'LINKUSDT'],
-    '🐸 Memes': ['DOGEUSDT', 'SHIBUSDT', 'PEPEUSDT', 'WIFUSDT', 'FLOKIUSDT', 'BONKUSDT', 'POPCATUSDT', 'BOMEUSDT', 'MEMEUSDT'],
-    '🤖 AI & DePIN': ['FETUSDT', 'RNDRUSDT', 'TAOUSDT', 'WLDUSDT', 'ARKMUSDT', 'NEARUSDT', 'ICPUSDT', 'JASMYUSDT', 'GRTUSDT'],
-    '⚡ Layer 2': ['ARBUSDT', 'OPUSDT', 'MATICUSDT', 'IMXUSDT', 'STXUSDT', 'MANTLEUSDT', 'STRKUSDT'],
-    '🔗 DeFi': ['UNIUSDT', 'AAVEUSDT', 'LDOUSDT', 'MKRUSDT', 'JUPUSDT', 'ENAUSDT', 'RUNEUSDT', 'CRVUSDT'],
-    '🎮 Gaming': ['SANDUSDT', 'MANAUSDT', 'AXSUSDT', 'GALAUSDT', 'APEUSDT', 'BEAMXUSDT', 'PIXELUSDT'],
-    '👵 Legacy': ['LTCUSDT', 'BCHUSDT', 'ETCUSDT', 'XMRUSDT', 'XLMUSDT', 'EOSUSDT']
+# --- DICCIONARIO INTELIGENTE (Traductor de Nombres) ---
+# Esto corrige el problema de "No encuentro la moneda"
+TICKER_MAP = {
+    # Memes complicados
+    'PEPE': 'PEPE24478-USD', '1000PEPE': 'PEPE24478-USD',
+    'BONK': 'BONK-USD', '1000BONK': 'BONK-USD',
+    'SHIB': 'SHIB-USD', '1000SHIB': 'SHIB-USD',
+    'WIF': 'WIF-USD', 'FLOKI': 'FLOKI-USD', 'DOGS': 'DOGS2-USD',
+    # Majors
+    'BTC': 'BTC-USD', 'ETH': 'ETH-USD', 'SOL': 'SOL-USD', 'BNB': 'BNB-USD',
+    'ADA': 'ADA-USD', 'XRP': 'XRP-USD', 'DOT': 'DOT-USD', 'LINK': 'LINK-USD',
+    # AI & Otros
+    'RNDR': 'RNDR-USD', 'FET': 'FET-USD', 'TAO': 'TAO22974-USD',
+    'WLD': 'WLD-USD', 'NEAR': 'NEAR-USD', 'ICP': 'ICP-USD',
+    'MATIC': 'MATIC-USD', 'ARB': 'ARB11841-USD', 'OP': 'OP-USD'
 }
 
-if 'binance_data' not in st.session_state: st.session_state['binance_data'] = []
+# Base de datos predefinida (Ya corregida)
+SECTORS = {
+    '👑 Majors': ['BTC', 'ETH', 'SOL', 'BNB', 'ADA', 'XRP', 'AVAX'],
+    '🐸 Memes': ['DOGE', 'SHIB', 'PEPE', 'WIF', 'FLOKI', 'BONK', 'POPCAT'],
+    '🤖 AI': ['FET', 'RNDR', 'TAO', 'WLD', 'NEAR', 'ICP', 'ARKM'],
+    '🔗 DeFi': ['UNI', 'AAVE', 'LDO', 'MKR', 'JUP', 'ENA'],
+    '⚡ L2': ['ARB', 'OP', 'MATIC', 'IMX', 'STX', 'MANTLE']
+}
 
-# --- CONEXIÓN BINANCE API (FUTURES) ---
-def get_binance_klines(symbol, interval='1d', limit=100):
-    """Conecta directamente a Binance Futures"""
-    url = "https://fapi.binance.com/fapi/v1/klines"
-    params = {'symbol': symbol, 'interval': interval, 'limit': limit}
-    
-    try:
-        response = requests.get(url, params=params, timeout=5)
-        data = response.json()
-        
-        # Binance devuelve listas, no dicts. Convertimos a DF.
-        # Estructura: [Open Time, Open, High, Low, Close, Volume, ...]
-        df = pd.DataFrame(data, columns=['Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'CloseTime', 'QVol', 'Trades', 'TakerBuyBase', 'TakerBuyQuote', 'Ignore'])
-        
-        # Convertir a float
-        cols = ['Open', 'High', 'Low', 'Close', 'Volume']
-        df[cols] = df[cols].astype(float)
-        
-        return df
-    except Exception as e:
-        return pd.DataFrame()
+if 'univ_data' not in st.session_state: st.session_state['univ_data'] = []
 
-# --- INDICADORES TÉCNICOS ---
+# --- RESOLVER TICKER ---
+def resolve_ticker(input_text):
+    """Convierte lo que escribas al formato correcto de Yahoo"""
+    clean = input_text.upper().strip().replace("USDT", "").replace("-USD", "").replace("USD", "")
+    # 1. Buscar en diccionario manual
+    if clean in TICKER_MAP:
+        return TICKER_MAP[clean], clean
+    # 2. Si no está, asumir formato estándar
+    return f"{clean}-USD", clean
+
+# --- INDICADORES ---
 def calculate_indicators(df):
     try:
-        # EMAs
         df['EMA8'] = df['Close'].ewm(span=8).mean()
         df['EMA21'] = df['Close'].ewm(span=21).mean()
-        df['EMA50'] = df['Close'].ewm(span=50).mean()
         
-        # ADX (Fuerza)
+        # ADX
         df['TR'] = np.maximum(df['High'] - df['Low'], np.maximum(abs(df['High'] - df['Close'].shift()), abs(df['Low'] - df['Close'].shift())))
         df['ATR'] = df['TR'].rolling(14).mean()
+        p_dm = df['High'].diff().clip(lower=0)
+        m_dm = df['Low'].diff().clip(upper=0).abs()
+        df['ADX'] = (100 * abs((p_dm.ewm(alpha=1/14).mean() - m_dm.ewm(alpha=1/14).mean()) / df['ATR'])).rolling(14).mean() # Aprox
         
-        plus_dm = df['High'].diff()
-        minus_dm = df['Low'].diff()
-        plus_dm[plus_dm < 0] = 0
-        minus_dm[minus_dm > 0] = 0
+        # Squeeze
+        sma = df['Close'].rolling(20).mean()
+        std = df['Close'].rolling(20).std()
+        df['BW'] = ((sma + 2*std) - (sma - 2*std)) / sma
         
-        df['DI+'] = 100 * (plus_dm.ewm(alpha=1/14).mean() / df['ATR'])
-        df['DI-'] = 100 * (abs(minus_dm).ewm(alpha=1/14).mean() / df['ATR'])
-        df['DX'] = 100 * abs(df['DI+'] - df['DI-']) / (df['DI+'] + df['DI-'])
-        df['ADX'] = df['DX'].rolling(14).mean()
-        
-        # Bollinger Squeeze
-        df['SMA20'] = df['Close'].rolling(20).mean()
-        df['StdDev'] = df['Close'].rolling(20).std()
-        df['Upper'] = df['SMA20'] + (2 * df['StdDev'])
-        df['Lower'] = df['SMA20'] - (2 * df['StdDev'])
-        df['BandWidth'] = (df['Upper'] - df['Lower']) / df['SMA20']
-        
-        # RVOL (Relative Volume)
-        df['VolAvg'] = df['Volume'].rolling(20).mean()
-        df['RVOL'] = df['Volume'] / df['VolAvg']
-        
+        # RVOL
+        df['RVOL'] = df['Volume'] / df['Volume'].rolling(20).mean()
         return df
     except: return pd.DataFrame()
 
-# --- CONTEXTO MACRO (BTC & ETH/BTC) ---
-def get_macro_context():
+# --- CONTEXTO MACRO ---
+def get_macro():
     try:
-        # 1. Bitcoin Trend
-        btc_df = get_binance_klines("BTCUSDT", interval='1d', limit=60)
-        if btc_df.empty: return "NEUTRAL", 0, 0
-        
-        btc_df['EMA50'] = btc_df['Close'].ewm(span=50).mean()
-        btc_last = btc_df.iloc[-1]
-        
-        btc_trend = "ALCISTA" if btc_last['Close'] > btc_last['EMA50'] else "BAJISTA"
-        btc_price = btc_last['Close']
-        
-        # 2. ETH/BTC (Altseason Proxy) - Binance tiene el par ETHBTC
-        pair_df = get_binance_klines("ETHBTC", interval='1d', limit=30)
-        if pair_df.empty:
-            alt_score = 0
-        else:
-            pair_df['EMA20'] = pair_df['Close'].ewm(span=20).mean()
-            pair_last = pair_df.iloc[-1]
-            # Si ETH gana a BTC -> Altseason (+1), si pierde -> Bitcoin Season (-1)
-            alt_score = 1 if pair_last['Close'] > pair_last['EMA20'] else -1
-            
-        # Penalización Macro Global
-        macro_penalty = 0
-        if btc_trend == "BAJISTA": macro_penalty = -2 # Si BTC cae, todo cae
-        
-        return btc_trend, btc_price, macro_penalty + alt_score
-        
-    except: return "NEUTRAL", 0, 0
+        btc = yf.Ticker("BTC-USD").history(period="3mo")
+        if btc.empty: return "NEUTRAL", 0
+        btc['EMA50'] = btc['Close'].ewm(span=50).mean()
+        last = btc.iloc[-1]
+        trend = "ALCISTA" if last['Close'] > last['EMA50'] else "BAJISTA"
+        return trend, last['Close']
+    except: return "NEUTRAL", 0
 
-# --- ANALIZADOR INDIVIDUAL ---
-def analyze_coin(ticker, macro_adjustment):
+# --- ANALIZADOR ---
+def analyze(ticker_input):
+    yf_symbol, display_name = resolve_ticker(ticker_input)
+    
     try:
-        df = get_binance_klines(ticker)
+        df = yf.Ticker(yf_symbol).history(period="6mo")
         if df.empty: return None
         
         df = calculate_indicators(df)
         last = df.iloc[-1]
         prev = df.iloc[-2]
         
-        score = 5 # Base
-        audit = [] # Lista de explicaciones
+        # --- LÓGICA DE PUNTAJE ---
+        score = 5
+        audit = []
         alerts = []
         
-        # 1. MACRO AJUSTE
-        score += macro_adjustment
-        if macro_adjustment < 0: audit.append(f"❌ Entorno Macro Bajista (BTC débil) [{macro_adjustment}]")
-        elif macro_adjustment > 0: audit.append(f"✅ Entorno Macro Alcista (Altseason) [+{macro_adjustment}]")
-        
-        # 2. TENDENCIA (EMA)
+        # 1. Tendencia
         if last['EMA8'] > last['EMA21']:
             score += 2
-            audit.append("✅ Tendencia Corto Plazo Alcista (EMA 8>21)")
-            if last['Close'] > last['EMA8']:
-                score += 1
-                audit.append("✅ Momentum Muy Fuerte (Precio > EMA 8)")
+            audit.append("✅ Tendencia Alcista (EMA 8 > 21)")
+            if last['Close'] > last['EMA8']: score += 1; audit.append("✅ Momentum Fuerte")
         else:
             score -= 2
-            audit.append("❌ Tendencia Corto Plazo Bajista")
+            audit.append("❌ Tendencia Bajista")
+            if last['Close'] < last['EMA8']: score -= 1
             
-        # 3. FUERZA (ADX)
-        if last['ADX'] > 25:
-            audit.append(f"💪 Tendencia Sólida (ADX {last['ADX']:.0f} > 25)")
-            # Si hay tendencia, el score se radicaliza (para bien o mal)
+        # 2. Fuerza (ADX)
+        adx = last.get('ADX', 20) # Fallback seguro
+        if np.isnan(adx): adx = 20
+        
+        if adx > 25:
+            audit.append(f"💪 Tendencia Real (ADX {adx:.0f})")
             score += 1 if score > 5 else -1
         else:
-            audit.append(f"💤 Mercado Lateral / Rango (ADX {last['ADX']:.0f})")
-            # Pull to neutral
+            audit.append(f"💤 Lateral/Ruido (ADX {adx:.0f})")
             if score > 5: score -= 1
             if score < 5: score += 1
             
-        # 4. VOLUMEN (RVOL)
-        if last['RVOL'] > 2.0:
-            score += 2 if score > 5 else -2 # Confirma la dirección
-            audit.append(f"🔥 Volumen Climático (x{last['RVOL']:.1f} vs promedio)")
-            alerts.append(f"VOL x{last['RVOL']:.1f}")
-        elif last['RVOL'] < 0.6:
-            audit.append("🧊 Poco interés (Volumen bajo)")
+        # 3. Volumen
+        rvol = last.get('RVOL', 1)
+        if np.isnan(rvol): rvol = 1
+        
+        if rvol > 2.0:
+            score += 2 if score > 5 else -2
+            audit.append(f"🔥 Volumen Climático (x{rvol:.1f})")
+            alerts.append(f"VOL x{rvol:.1f}")
             
-        # 5. SQUEEZE
-        avg_bw = df['BandWidth'].rolling(50).mean().iloc[-1]
-        is_sqz = last['BandWidth'] < (avg_bw * 0.9)
+        # 4. Squeeze
+        avg_bw = df['BW'].rolling(50).mean().iloc[-1]
+        is_sqz = last['BW'] < (avg_bw * 0.9)
         if is_sqz:
             alerts.append("💣 SQUEEZE")
-            audit.append("💣 Compresión de Volatilidad (Squeeze): Explosión inminente")
+            audit.append("💣 Alerta de Explosión (Squeeze)")
             
-        # SEÑAL FINAL
+        # Señal
+        signal = "ESPERAR"
+        sig_type = "sig-wait"
         final_score = max(0, min(10, score))
         
-        signal = "ESPERAR ✋"
-        sig_type = "sig-wait"
+        if final_score >= 8 and adx > 20: signal = "LONG 🟢"; sig_type="sig-long"
+        elif final_score <= 2 and adx > 20: signal = "SHORT 🔴"; sig_type="sig-short"
         
-        if final_score >= 8 and last['ADX'] > 20: 
-            signal = "LONG 🟢"
-            sig_type = "sig-long"
-        elif final_score <= 2 and last['ADX'] > 20: 
-            signal = "SHORT 🔴"
-            sig_type = "sig-short"
-            
         return {
-            "Ticker": ticker,
+            "Ticker": display_name,
             "Price": last['Close'],
-            "Change": ((last['Close'] - prev['Close']) / prev['Close']) * 100,
-            "Signal": signal,
-            "Type": sig_type,
-            "Score": final_score,
-            "RVOL": last['RVOL'],
-            "ADX": last['ADX'],
-            "Alerts": alerts,
-            "Audit": audit
+            "Change": ((last['Close'] - prev['Close'])/prev['Close']) * 100,
+            "Signal": signal, "Type": sig_type, "Score": final_score,
+            "Alerts": alerts, "Audit": audit, "RVOL": rvol, "ADX": adx
         }
-        
-    except: return None
+    except Exception as e:
+        return None
 
-# --- UI SIDEBAR ---
+# --- UI ---
 with st.sidebar:
     st.title("🎛️ Centro de Comando")
     
-    # Contexto BTC
-    btc_trend, btc_price, macro_adj = get_macro_context()
-    btc_color = "#0ecb81" if btc_trend == "ALCISTA" else "#f6465d"
-    
+    # Semáforo BTC
+    trend, price = get_macro()
+    btc_col = "#0ecb81" if trend == "ALCISTA" else "#f6465d"
     st.markdown(f"""
     <div style='background:#1e2329; padding:10px; border-radius:5px; border:1px solid #474d57; text-align:center;'>
-        <div style='color:#848e9c; font-size:0.8rem;'>TENDENCIA BITCOIN</div>
-        <div style='color:{btc_color}; font-size:1.3rem; font-weight:bold;'>{btc_trend}</div>
-        <div style='color:#fff;'>${btc_price:,.0f}</div>
+        <div style='color:#848e9c; font-size:0.8rem;'>CLIMA BITCOIN</div>
+        <div style='color:{btc_col}; font-size:1.3rem; font-weight:bold;'>{trend}</div>
+        <div style='color:#fff;'>${price:,.0f}</div>
     </div>
     """, unsafe_allow_html=True)
     
     st.divider()
     
-    # Selectores
-    lote = st.selectbox("Seleccionar Sector:", list(CRYPTO_DB.keys()))
-    
-    if st.button("📡 Escanear Sector (Binance)"):
-        targets = CRYPTO_DB[lote]
+    # Selector Sector
+    lote = st.selectbox("Sector:", list(SECTORS.keys()))
+    if st.button("📡 Escanear Sector"):
+        target_list = SECTORS[lote]
         prog = st.progress(0)
+        existing = [x['Ticker'] for x in st.session_state['univ_data']]
         
-        # Filtro de duplicados
-        existing = [x['Ticker'] for x in st.session_state['binance_data']]
-        run_list = [t for t in targets if t not in existing]
-        
-        for i, t in enumerate(run_list):
-            res = analyze_coin(t, macro_adj)
-            if res: st.session_state['binance_data'].append(res)
-            prog.progress((i+1)/len(run_list))
-            time.sleep(0.1) # Respetar rate limits de Binance (suaves)
-        
-        prog.empty()
+        for i, t in enumerate(target_list):
+            if t not in existing:
+                res = analyze(t)
+                if res: st.session_state['univ_data'].append(res)
+            prog.progress((i+1)/len(target_list))
         st.rerun()
         
     st.divider()
     
-    # Input Manual Inteligente
+    # Manual
     st.markdown("### ✍️ Búsqueda Manual")
-    raw_txt = st.text_input("Ticker (Ej: PEPE, BTC, SOL):")
+    txt = st.text_input("Ticker (Ej: PEPE, BTC):")
     if st.button("🔎 Buscar"):
-        if raw_txt:
-            # Limpieza para que funcione siempre
-            clean = raw_txt.upper().strip().replace("USDT","").replace("-USD","").replace("USD","")
-            target = f"{clean}USDT" # Formato Binance
+        if txt:
+            # Limpiar memoria si es re-análisis del mismo
+            clean_name = txt.upper().replace("USDT","")
+            st.session_state['univ_data'] = [x for x in st.session_state['univ_data'] if x['Ticker'] != clean_name]
             
-            # Chequear si existe en memoria
-            existing = [x['Ticker'] for x in st.session_state['binance_data']]
-            if target in existing:
-                st.warning("Ya está en pantalla.")
-            else:
-                with st.spinner(f"Consultando Binance por {target}..."):
-                    res = analyze_coin(target, macro_adj)
-                    if res: 
-                        st.session_state['binance_data'].append(res)
-                        st.rerun()
-                    else:
-                        st.error(f"No se encontró {target} en Futuros.")
+            with st.spinner(f"Analizando {clean_name}..."):
+                res = analyze(clean_name)
+                if res: 
+                    st.session_state['univ_data'].append(res)
+                    st.rerun()
+                else:
+                    st.error(f"No se encontró {clean_name}")
 
-    if st.button("🗑️ Limpiar Todo"): st.session_state['binance_data'] = []; st.rerun()
+    if st.button("🗑️ Limpiar Todo"): st.session_state['univ_data'] = []; st.rerun()
 
-# --- MAIN SCREEN ---
-st.title("🛰️ Crypto-Radar: Binance Futures Direct")
+# --- MAIN ---
+st.title("🛰️ Crypto-Radar 360: Universal")
 
-if st.session_state['binance_data']:
-    data = st.session_state['binance_data']
+if st.session_state['univ_data']:
+    data = st.session_state['univ_data']
     
     # Filtros
     c1, c2 = st.columns([3, 1])
     with c1:
-        f = st.radio("Filtros:", ["Todos", "Solo LONG 🟢", "Solo SHORT 🔴", "Solo SQUEEZE 💣"], horizontal=True)
+        f = st.radio("Filtro:", ["Todos", "LONG 🟢", "SHORT 🔴", "SQUEEZE 💣"], horizontal=True)
         
     filtered = data
-    if f == "Solo LONG 🟢": filtered = [x for x in data if "LONG" in x['Signal']]
-    elif f == "Solo SHORT 🔴": filtered = [x for x in data if "SHORT" in x['Signal']]
-    elif f == "Solo SQUEEZE 💣": filtered = [x for x in data if any("SQUEEZE" in a for a in x['Alerts'])]
+    if f == "LONG 🟢": filtered = [x for x in data if "LONG" in x['Signal']]
+    elif f == "SHORT 🔴": filtered = [x for x in data if "SHORT" in x['Signal']]
+    elif f == "SQUEEZE 💣": filtered = [x for x in data if any("SQUEEZE" in a for a in x['Alerts'])]
     
-    # Ordenar por oportunidad (Score lejos de 5)
+    # Ordenar
     filtered.sort(key=lambda x: abs(x['Score']-5), reverse=True)
     
     if not filtered:
-        st.info("No hay activos para este filtro.")
+        st.info("No hay resultados para este filtro.")
     else:
-        # GRID LAYOUT
-        num_cols = 4
-        rows = [filtered[i:i + num_cols] for i in range(0, len(filtered), num_cols)]
-        
-        for row in rows:
-            cols = st.columns(num_cols)
-            for i, item in enumerate(row):
-                with cols[i]:
-                    with st.container(border=True):
-                        # Header
-                        col_t, col_p = st.columns([1, 1])
-                        col_t.markdown(f"**{item['Ticker']}**")
-                        p_color = "green" if item['Change'] > 0 else "red"
-                        col_p.markdown(f":{p_color}[{item['Change']:+.2f}%]")
-                        
-                        st.caption(f"${item['Price']}")
-                        
-                        # Signal Box
-                        st.markdown(f'<div class="signal-box {item["Type"]}">{item["Signal"]}</div>', unsafe_allow_html=True)
-                        
-                        # Alertas
-                        alerts_html = ""
-                        for a in item['Alerts']:
-                            cls = "sqz-anim" if "SQUEEZE" in a else "alert-pill"
-                            bg = "#333" # Default dark
-                            if "VOL" in a: bg = "#673ab7"
-                            if "SQUEEZE" in a: bg = "rgba(240, 185, 11, 0.2)"
-                            
-                            alerts_html += f'<span class="alert-pill {cls}" style="background:{bg}">{a}</span> '
-                        
-                        if alerts_html:
-                            st.markdown(f'<div style="margin:8px 0;">{alerts_html}</div>', unsafe_allow_html=True)
-                        
-                        # Footer Info
-                        st.markdown(f"""
-                        <div style="font-size:0.75rem; color:#666; margin-top:5px; border-top:1px solid #333; padding-top:5px;">
-                            RVOL: {item['RVOL']:.1f}x | ADX: {item['ADX']:.0f}
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        # EXPLICACIÓN DETALLADA (AUDITORÍA)
-                        with st.expander("🔎 Ver Análisis"):
-                            st.markdown(f"**Score:** {item['Score']}/10")
-                            for line in item['Audit']:
-                                if "✅" in line or "🔥" in line: st.markdown(f":green[{line}]")
-                                elif "❌" in line: st.markdown(f":red[{line}]")
-                                elif "💣" in line: st.markdown(f":orange[{line}]")
-                                else: st.markdown(f"{line}")
+        # GRID
+        cols = st.columns(4)
+        for i, row in enumerate(filtered):
+            with cols[i % 4]:
+                with st.container(border=True):
+                    # Header
+                    c_t, c_p = st.columns([1,1])
+                    c_t.markdown(f"**{row['Ticker']}**")
+                    clr = "green" if row['Change']>0 else "red"
+                    c_p.markdown(f":{clr}[{row['Change']:+.2f}%]")
+                    
+                    st.caption(f"${row['Price']}")
+                    
+                    # Signal
+                    st.markdown(f'<div class="signal-box {row["Type"]}">{row["Signal"]}</div>', unsafe_allow_html=True)
+                    
+                    # Alerts
+                    for a in row['Alerts']:
+                        cls = "sqz-anim" if "SQUEEZE" in a else "alert-pill"
+                        bg = "#673ab7" if "VOL" in a else "#ff980033"
+                        st.markdown(f'<span class="alert-pill {cls}" style="background:{bg}">{a}</span>', unsafe_allow_html=True)
+                    
+                    # Footer
+                    st.markdown(f"""
+                    <div style="font-size:0.75rem; color:#666; margin-top:5px; border-top:1px solid #333; padding-top:5px;">
+                        Score: {row['Score']}/10 | ADX: {row['ADX']:.0f}
+                    </div>""", unsafe_allow_html=True)
+                    
+                    # EXPLICACIÓN PASO A PASO
+                    with st.expander("🔎 Ver Análisis"):
+                        for line in row['Audit']:
+                            if "✅" in line: st.markdown(f":green[{line}]")
+                            elif "❌" in line: st.markdown(f":red[{line}]")
+                            elif "💣" in line: st.markdown(f":orange[{line}]")
+                            else: st.markdown(line)
 
 else:
-    st.info("👈 Conecta con Binance seleccionando un sector en la izquierda.")
+    st.info("👈 Busca una cripto o escanea un sector.")
