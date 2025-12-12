@@ -5,12 +5,11 @@ import numpy as np
 import re
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="Crypto-Radar 360: Sniper V2.1")
+st.set_page_config(layout="wide", page_title="Crypto-Radar 360: Sniper V2.2")
 
 # --- ESTILOS VISUALES ---
 st.markdown("""
 <style>
-    /* Estilo de Tarjeta Cripto */
     .crypto-card {
         background-color: #161b22;
         border: 1px solid #30363d;
@@ -20,8 +19,6 @@ st.markdown("""
         margin-bottom: 10px;
         box-shadow: 0 4px 6px rgba(0,0,0,0.3);
     }
-    
-    /* Cajas de Señales */
     .signal-box {
         padding: 5px; border-radius: 5px; font-weight: bold; 
         text-align: center; margin-top: 10px; letter-spacing: 1px; font-size: 0.9rem;
@@ -30,19 +27,15 @@ st.markdown("""
     .sig-short { background-color: rgba(218, 54, 51, 0.2); color: #f85149; border: 1px solid #f85149; }
     .sig-wait { background-color: rgba(139, 148, 158, 0.2); color: #8b949e; border: 1px solid #30363d; }
     
-    /* Etiquetas pequeñas */
     .alert-pill { 
         font-size: 0.75rem; font-weight: bold; padding: 2px 8px; 
         border-radius: 10px; margin: 3px; display: inline-block; 
     }
-    
-    /* Animación para Squeeze */
     .sqz-anim { 
         animation: pulse 1.5s infinite; 
         color: #ff9b00; border: 1px solid #ff9b00; 
         background-color: rgba(255, 155, 0, 0.1);
     }
-    
     @keyframes pulse { 0% {opacity: 1;} 50% {opacity: 0.5;} 100% {opacity: 1;} }
 </style>
 """, unsafe_allow_html=True)
@@ -58,7 +51,6 @@ CRYPTO_DB = {
     '👵 Legacy': ['LTC-USD', 'BCH-USD', 'ETC-USD', 'XMR-USD', 'XLM-USD', 'EOS-USD']
 }
 
-# --- ESTADO ---
 if 'crypto_acc_v2' not in st.session_state: st.session_state['crypto_acc_v2'] = []
 
 # --- INDICADORES ---
@@ -91,10 +83,9 @@ def calculate_indicators(df):
         return df
     except: return pd.DataFrame()
 
-# --- CONTEXTO BTC (FIXED) ---
+# --- CONTEXTO BTC ---
 def get_btc_context():
     try:
-        # Usamos Ticker().history que es más robusto para un solo activo
         btc = yf.Ticker("BTC-USD").history(period="3mo")
         if btc.empty: return "NEUTRAL", 0
         
@@ -104,7 +95,7 @@ def get_btc_context():
         trend = "ALCISTA" if last['Close'] > last['EMA50'] else "BAJISTA"
         return trend, last['Close']
     except: 
-        return "NEUTRAL (Error Datos)", 0
+        return "NEUTRAL (Sin Datos)", 0
 
 # --- ANALISIS ---
 def analyze_coin(ticker, df_hist):
@@ -205,15 +196,14 @@ def run_scan(target_list):
 with st.sidebar:
     st.title("🎛️ Centro de Comando")
     
-    # SEMÁFORO BTC
     trend, price = get_btc_context()
     btc_col = "green" if trend == "ALCISTA" else "red"
-    # Fallback si precio es 0
     price_display = f"${price:,.0f}" if price > 0 else "Cargando..."
     
+    # HTML SEMÁFORO
     st.markdown(f"""
-    <div style='padding:10px; border:1px solid #333; border-radius:5px; text-align:center;'>
-        <div style='font-size:0.9rem; color:#888;'>Clima Bitcoin</div>
+    <div style='padding:10px; border:1px solid #333; border-radius:5px; text-align:center; background-color:#0d1117;'>
+        <div style='font-size:0.8rem; color:#888;'>Clima Bitcoin</div>
         <div style='font-size:1.2rem; font-weight:bold; color:{btc_col};'>{trend}</div>
         <div style='font-size:0.9rem;'>{price_display}</div>
     </div>
@@ -236,7 +226,7 @@ with st.sidebar:
     if st.button("🗑️ Borrar Todo"): st.session_state['crypto_acc_v2'] = []; st.rerun()
 
 # --- MAIN ---
-st.title("🛰️ Crypto-Radar 360: Sniper V2.1")
+st.title("🛰️ Crypto-Radar 360: Sniper V2.2")
 
 if st.session_state['crypto_acc_v2']:
     df = pd.DataFrame(st.session_state['crypto_acc_v2'])
@@ -259,34 +249,30 @@ if st.session_state['crypto_acc_v2']:
                 sig_class = "sig-long" if "LONG" in row['Signal'] else "sig-short" if "SHORT" in row['Signal'] else "sig-wait"
                 price_col = "#3fb950" if row['Change'] > 0 else "#f85149"
                 
-                # HTML FIX: Construcción de strings limpia
+                # HTML FIX: Construcción de etiquetas sin indentación que rompa el markdown
                 alert_html = ""
                 for alert in row['Alerts']:
                     cls = "sqz-anim" if "SQUEEZE" in alert else "alert-pill"
                     bg = "rgba(255, 155, 0, 0.2)" if "SQUEEZE" in alert else "rgba(100, 100, 255, 0.2)"
-                    # IMPORTANTE: style debe ir en comillas simples dentro del f-string para no romperlo
                     alert_html += f"<span class='alert-pill {cls}' style='background:{bg}; color:#fff;'>{alert}</span> "
                 
-                # CARD HTML
-                st.markdown(f"""
-                <div class="crypto-card">
-                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
-                        <span style="font-weight:bold; font-size:1.2rem;">{row['Ticker']}</span>
-                        <span style="color:{price_col}; font-weight:bold;">{row['Change']:+.2f}%</span>
-                    </div>
-                    
-                    <div style="font-size:0.9rem; color:#ccc;">${row['Price']:.4f}</div>
-                    
-                    <div class="signal-box {sig_class}">{row['Signal']}</div>
-                    
-                    <div style="margin: 10px 0;">{alert_html}</div>
-                    
-                    <div style="font-size:0.75rem; color:#8b949e; border-top:1px solid #30363d; padding-top:8px;">
-                        {row['Reasons']}<br>
-                        <span style="opacity:0.6; display:block; margin-top:4px;">RVOL: {row['RVOL']:.1f}x | ADX: {row['ADX']:.0f}</span>
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
+                # CARD HTML COMPACTO (Sin indentación interna para evitar el bug)
+                html_card = f"""
+<div class="crypto-card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:5px;">
+        <span style="font-weight:bold; font-size:1.2rem;">{row['Ticker']}</span>
+        <span style="color:{price_col}; font-weight:bold;">{row['Change']:+.2f}%</span>
+    </div>
+    <div style="font-size:0.9rem; color:#ccc;">${row['Price']:.4f}</div>
+    <div class="signal-box {sig_class}">{row['Signal']}</div>
+    <div style="margin: 10px 0;">{alert_html}</div>
+    <div style="font-size:0.75rem; color:#8b949e; border-top:1px solid #30363d; padding-top:8px;">
+        {row['Reasons']}<br>
+        <span style="opacity:0.6; display:block; margin-top:4px;">RVOL: {row['RVOL']:.1f}x | ADX: {row['ADX']:.0f}</span>
+    </div>
+</div>
+"""
+                st.markdown(html_card, unsafe_allow_html=True)
     else:
         st.info("No hay activos para el filtro seleccionado.")
 
