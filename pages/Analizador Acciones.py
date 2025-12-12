@@ -7,7 +7,7 @@ import numpy as np
 import time
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="Scanner Masivo: HA + ADX (Con Gráficos)")
+st.set_page_config(layout="wide", page_title="Scanner Masivo: HA + ADX (Fixed)")
 
 # --- ESTILOS VISUALES ---
 st.markdown("""
@@ -139,16 +139,24 @@ def plot_ticker_chart(ticker, signal_date, signal_type, interval):
         ))
 
         # Añadir marcador de señal
-        # Convertimos signal_date a timestamp si es string
+        # Convertimos signal_date a timestamp si es string (o ya viene como ts)
         sig_dt = pd.to_datetime(signal_date)
         
-        if sig_dt in chart_data.index:
-            y_pos = chart_data.loc[sig_dt]['Low'] * 0.95 if "COMPRA" in signal_type else chart_data.loc[sig_dt]['High'] * 1.05
+        # Ajuste de fecha para mensual (Yahoo a veces pone 1er dia del mes, a veces ultimo)
+        # Intentamos encontrar la fecha más cercana en el índice
+        if not chart_data.empty:
+            if sig_dt in chart_data.index:
+                actual_date = sig_dt
+            else:
+                # Buscamos el índice más cercano (útil para mensual)
+                actual_date = chart_data.index[chart_data.index.get_indexer([sig_dt], method='nearest')[0]]
+
+            y_pos = chart_data.loc[actual_date]['Low'] * 0.95 if "COMPRA" in signal_type else chart_data.loc[actual_date]['High'] * 1.05
             symbol = "triangle-up" if "COMPRA" in signal_type else "triangle-down"
             color = "#00FF00" if "COMPRA" in signal_type else "#FF0000"
             
             fig.add_trace(go.Scatter(
-                x=[sig_dt], y=[y_pos],
+                x=[actual_date], y=[y_pos],
                 mode='markers+text',
                 marker=dict(symbol=symbol, size=15, color=color),
                 text=[signal_type], textposition="bottom center" if "COMPRA" in signal_type else "top center",
@@ -172,7 +180,7 @@ with st.sidebar:
     st.info(f"DB: {len(TICKERS_DB)} Activos")
     
     int_main = st.selectbox("Temporalidad Gráfico", ["1mo", "1wk", "1d"], index=0)
-    int_filter = st.selectbox("Temporalidad Filtro", ["1mo", "1wk", "1d"], index=0) # Index 0 = Mensual por defecto para tu estrategia
+    int_filter = st.selectbox("Temporalidad Filtro", ["1mo", "1wk", "1d"], index=0) 
     
     st.subheader("ADX")
     p_len = st.number_input("Longitud", value=14)
@@ -229,18 +237,19 @@ if st.session_state['scan_results']:
     
     df_show = df_show.sort_values("Fecha", ascending=False)
     
+    # === CORRECCIÓN DEL ERROR ===
+    # Creamos la columna Fecha_Str en el dataframe principal para que esté disponible
+    # tanto para la tabla como para el selector del gráfico
+    df_show['Fecha_Str'] = df_show['Fecha'].dt.strftime('%Y-%m-%d')
+    
     # Tabla
     st.subheader(f"Bitácora ({len(df_show)})")
-    
-    # Formateo de tabla
-    df_display = df_show.copy()
-    df_display['Fecha_Str'] = df_display['Fecha'].dt.strftime('%Y-%m-%d') # String para tabla
     
     def highlight_signal(val):
         return f'background-color: {"#d4edda" if "COMPRA" in str(val) else "#f8d7da"}; color: black; font-weight: bold'
 
     st.dataframe(
-        df_display.style.applymap(highlight_signal, subset=['Tipo']),
+        df_show.style.applymap(highlight_signal, subset=['Tipo']),
         column_config={
             "Ticker": "Activo", "Fecha_Str": "Fecha Señal", "Precio": st.column_config.NumberColumn(format="$%.2f"),
             "ADX Gatillo": st.column_config.NumberColumn(format="%.1f"), "ADX Filtro": st.column_config.NumberColumn(format="%.1f")
@@ -250,10 +259,9 @@ if st.session_state['scan_results']:
     
     st.divider()
     
-    # --- VISUALIZADOR DE GRÁFICO (NUEVO) ---
+    # --- VISUALIZADOR DE GRÁFICO ---
     st.subheader("📉 Visualizador de Gráfico")
     
-    # Solo mostrar los tickers que están en la tabla filtrada
     available_tickers = df_show['Ticker'].tolist()
     
     if available_tickers:
@@ -267,6 +275,7 @@ if st.session_state['scan_results']:
             sig_info = df_show[df_show['Ticker'] == selected_ticker].iloc[0]
             
             with col_info:
+                # Ahora 'Fecha_Str' existe en df_show, así que no dará error
                 st.info(f"**{selected_ticker}** | Señal: {sig_info['Tipo']} el {sig_info['Fecha_Str']} a ${sig_info['Precio']:.2f}")
             
             # Graficar
