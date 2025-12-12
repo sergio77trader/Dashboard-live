@@ -20,28 +20,23 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- BASE DE DATOS DE ACTIVOS (CEDEARs / ADRs / USA) ---
+# --- BASE DE DATOS DE ACTIVOS ---
 TICKERS_DB = sorted([
-    # ARGENTINA (ADRs)
     'GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'CEPU', 'EDN', 'BFR', 'SUPV', 'CRESY', 'IRS', 'TEO', 'LOMA', 'DESP', 'VIST', 'GLOB', 'MELI',
-    # USA (BIG TECH & BLUE CHIPS)
     'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NFLX', 'CRM', 'ORCL', 'ADBE', 'IBM', 'CSCO',
     'AMD', 'INTC', 'QCOM', 'AVGO', 'TXN', 'MU',
     'JPM', 'BAC', 'C', 'WFC', 'GS', 'MS', 'V', 'MA',
     'KO', 'PEP', 'MCD', 'SBUX', 'DIS', 'NKE', 'WMT',
     'XOM', 'CVX', 'SLB', 'BA', 'CAT', 'GE',
-    # CHINA
     'BABA', 'JD', 'BIDU', 'NIO', 'PDD',
-    # BRASIL
     'PBR', 'VALE', 'ITUB', 'BBD', 'ERJ',
-    # ETFS
     'SPY', 'QQQ', 'IWM', 'DIA', 'EEM', 'EWZ', 'XLE', 'XLF', 'ARKK', 'GLD', 'SLV'
 ])
 
 # --- FUNCIONES DE CÁLCULO ---
 
 def calculate_heikin_ashi(df):
-    """Calcula Heikin Ashi iterativo (Precisión TradingView)"""
+    """Calcula Heikin Ashi iterativo"""
     df_ha = df.copy()
     df_ha['HA_Close'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
     
@@ -71,10 +66,13 @@ def get_data(ticker, interval, period):
 
 def analyze_ticker(ticker, interval, period, adx_len, adx_th):
     """
-    Analiza un ticker y devuelve la ÚLTIMA señal y el DF completo para graficar.
+    Analiza un ticker y devuelve:
+    1. La ÚLTIMA señal (para la tabla).
+    2. El DF completo (para el gráfico).
+    3. TODAS las señales históricas (para pintar en el gráfico).
     """
     df = get_data(ticker, interval, period)
-    if df is None: return None, None
+    if df is None: return None, None, []
 
     # 1. Calcular ADX
     df.ta.adx(length=adx_len, append=True)
@@ -87,34 +85,31 @@ def analyze_ticker(ticker, interval, period, adx_len, adx_th):
     signals = []
     in_position = False
     
-    # Iteramos para encontrar las señales
     for i in range(1, len(df_ha)):
         date = df_ha.index[i]
         ha_color = df_ha['Color'].iloc[i]
         adx_val = df_ha[adx_col].iloc[i]
         price = df_ha['Close'].iloc[i]
         
+        # Compra
         if not in_position and ha_color == 1 and adx_val > adx_th:
             in_position = True
             signals.append({'Fecha': date, 'Tipo': '🟢 COMPRA', 'Precio': price, 'ADX': adx_val})
             
+        # Venta
         elif in_position and ha_color == -1:
             in_position = False
             signals.append({'Fecha': date, 'Tipo': '🔴 VENTA', 'Precio': price, 'ADX': adx_val})
     
-    # Si hay señales, devolvemos la última
     last_signal = signals[-1] if signals else None
     
-    # Devolvemos la última señal encontrada y el DF con indicadores para el gráfico
-    return last_signal, df_ha
+    return last_signal, df_ha, signals
 
 # --- UI LATERAL ---
 with st.sidebar:
     st.header("⚙️ Configuración del Escáner")
-    
     st.info(f"Base de Datos: {len(TICKERS_DB)} Activos")
     
-    # Parámetros Globales
     interval = st.selectbox("Temporalidad", ["1mo", "1wk", "1d", "1h"], index=0)
     period_map = {"1mo": "max", "1wk": "10y", "1d": "5y", "1h": "730d"}
     
@@ -125,83 +120,59 @@ with st.sidebar:
     
     st.divider()
     
-    # Control de Lotes para no saturar
-    batch_size = st.slider("Tamaño del Lote de Escaneo", 5, 50, 10)
-    # Crear lotes
+    batch_size = st.slider("Tamaño del Lote", 5, 50, 10)
     batches = [TICKERS_DB[i:i + batch_size] for i in range(0, len(TICKERS_DB), batch_size)]
     batch_labels = [f"Lote {i+1}: {b[0]} ... {b[-1]}" for i, b in enumerate(batches)]
     sel_batch_idx = st.selectbox("Seleccionar Lote:", range(len(batches)), format_func=lambda x: batch_labels[x])
     
-    scan_btn = st.button("🚀 ESCANEAR LOTE SELECCIONADO", type="primary")
+    scan_btn = st.button("🚀 ESCANEAR LOTE", type="primary")
 
 # --- APP PRINCIPAL ---
 st.title("🛰️ Escáner de Señales: Heikin Ashi + ADX")
 
-# Inicializar estado para guardar resultados
 if 'scan_results' not in st.session_state:
     st.session_state['scan_results'] = []
 
 if scan_btn:
     targets = batches[sel_batch_idx]
-    
-    # Barra de progreso
     prog_bar = st.progress(0)
     status_text = st.empty()
-    
     current_results = []
     
     for i, t in enumerate(targets):
         status_text.text(f"Analizando {t}...")
-        
-        last_sig, _ = analyze_ticker(t, interval, period_map[interval], adx_len, adx_th)
+        # Desempaquetamos 3 valores, pero solo usamos el primero para la tabla
+        last_sig, _, _ = analyze_ticker(t, interval, period_map[interval], adx_len, adx_th)
         
         if last_sig:
-            # Agregamos el ticker al diccionario de señal
             last_sig['Ticker'] = t
             current_results.append(last_sig)
             
         prog_bar.progress((i + 1) / len(targets))
     
-    # Guardamos en session state (acumulativo o reemplazo según prefieras, aquí reemplazo el lote)
-    # Para hacerlo acumulativo cambiar '=' por extend, pero cuidado con duplicados.
-    # Aquí usaremos una lista acumulativa limpiando duplicados
-    
-    # 1. Traer viejos
     old_data = st.session_state['scan_results']
-    # 2. Eliminar si ya existen los que acabamos de escanear (para actualizar)
     old_data = [x for x in old_data if x['Ticker'] not in targets]
-    # 3. Sumar nuevos
     st.session_state['scan_results'] = old_data + current_results
     
-    status_text.empty()
-    prog_bar.empty()
+    status_text.empty(); prog_bar.empty()
     st.success("Escaneo Finalizado")
 
 # --- MOSTRAR RESULTADOS ---
 if st.session_state['scan_results']:
     
     df_results = pd.DataFrame(st.session_state['scan_results'])
-    
-    # Ordenar por fecha (las señales más recientes primero)
     df_results = df_results.sort_values(by="Fecha", ascending=False)
-    
-    # Formatear Fecha
     df_results['Fecha_Str'] = df_results['Fecha'].dt.strftime('%d-%m-%Y')
     
     # --- TABLA RESUMEN ---
-    st.subheader("📋 Bitácora de Últimas Alertas")
+    st.subheader("📋 Bitácora de Últimas Alertas (Resumen)")
     
-    # Filtros visuales
     c1, c2 = st.columns([1, 4])
     with c1:
-        filter_type = st.multiselect("Filtrar por Tipo:", ["🟢 COMPRA", "🔴 VENTA"], default=["🟢 COMPRA", "🔴 VENTA"])
+        filter_type = st.multiselect("Filtrar:", ["🟢 COMPRA", "🔴 VENTA"], default=["🟢 COMPRA", "🔴 VENTA"])
     
-    if filter_type:
-        df_show = df_results[df_results['Tipo'].isin(filter_type)]
-    else:
-        df_show = df_results
+    df_show = df_results[df_results['Tipo'].isin(filter_type)] if filter_type else df_results
 
-    # Estilos de tabla
     def color_signal(val):
         color = 'green' if 'COMPRA' in val else 'red'
         return f'color: {color}; font-weight: bold'
@@ -213,39 +184,36 @@ if st.session_state['scan_results']:
             "ADX": st.column_config.NumberColumn(format="%.2f"),
             "Fecha_Str": "Fecha Alerta"
         },
-        use_container_width=True,
-        hide_index=True
+        use_container_width=True, hide_index=True
     )
     
     st.divider()
     
-    # --- VISUALIZADOR DE GRÁFICO INDIVIDUAL ---
-    st.subheader("📉 Visualizador de Gráfico")
+    # --- VISUALIZADOR DE GRÁFICO (CON HISTORIAL COMPLETO) ---
+    st.subheader("📉 Visualizador de Gráfico (Histórico Completo)")
     
-    # Selector de activos (Solo los que están en la tabla)
     available_tickers = df_show['Ticker'].tolist()
     
     if available_tickers:
-        selected_ticker = st.selectbox("Selecciona un activo para ver el gráfico:", available_tickers)
+        selected_ticker = st.selectbox("Selecciona un activo para ver TODAS las señales:", available_tickers)
         
         if selected_ticker:
-            # Buscar datos de la señal seleccionada
-            signal_info = df_show[df_show['Ticker'] == selected_ticker].iloc[0]
+            # Recuperar info de la última señal para mostrar datos
+            sig_info = df_show[df_show['Ticker'] == selected_ticker].iloc[0]
             
-            # Recalcular DF para graficar (usamos caché así que es rápido)
-            with st.spinner("Generando gráfico..."):
-                _, df_chart = analyze_ticker(selected_ticker, interval, period_map[interval], adx_len, adx_th)
+            with st.spinner("Generando gráfico histórico..."):
+                # Volvemos a llamar a la función para obtener TODAS las señales y la data
+                _, df_chart, all_signals = analyze_ticker(selected_ticker, interval, period_map[interval], adx_len, adx_th)
             
             if df_chart is not None:
-                # Filtrar data reciente para que el gráfico no sea eterno
-                # Si es mensual mostramos todo, si es diario últimos 200
-                chart_limit = 200 if interval != "1mo" else 500
+                # Filtrado de velas para el gráfico (últimos N periodos)
+                chart_limit = 200 if interval != "1mo" else 1000 # Más historia si es mensual
                 chart_data = df_chart.tail(chart_limit)
                 
                 # Crear Figura
                 fig = go.Figure()
 
-                # Velas HA
+                # 1. Velas HA
                 fig.add_trace(go.Candlestick(
                     x=chart_data.index,
                     open=chart_data['HA_Open'], high=chart_data['HA_High'],
@@ -253,43 +221,53 @@ if st.session_state['scan_results']:
                     name='Heikin Ashi'
                 ))
                 
-                # Marcar la señal en el gráfico
-                signal_date = signal_info['Fecha']
-                
-                # Solo graficar la señal si entra en el rango visible
-                if signal_date >= chart_data.index[0]:
-                    # Definir color y posición
-                    is_buy = "COMPRA" in signal_info['Tipo']
-                    marker_color = "blue" if is_buy else "orange"
-                    marker_symbol = "triangle-up" if is_buy else "triangle-down"
-                    y_pos = signal_info['Precio'] * (0.95 if is_buy else 1.05)
+                # 2. Convertir lista de señales a DataFrame para filtrar fácil
+                if all_signals:
+                    df_sig_hist = pd.DataFrame(all_signals)
                     
-                    fig.add_trace(go.Scatter(
-                        x=[signal_date], y=[y_pos],
-                        mode='markers+text',
-                        marker=dict(symbol=marker_symbol, size=15, color=marker_color),
-                        text=[signal_info['Tipo']],
-                        textposition="bottom center" if is_buy else "top center",
-                        name='Última Señal'
-                    ))
+                    # Filtrar solo señales que estén dentro del rango visible del gráfico
+                    min_date = chart_data.index.min()
+                    df_sig_visible = df_sig_hist[df_sig_hist['Fecha'] >= min_date]
+                    
+                    # Separar Compras y Ventas
+                    buys = df_sig_visible[df_sig_visible['Tipo'] == '🟢 COMPRA']
+                    sells = df_sig_visible[df_sig_visible['Tipo'] == '🔴 VENTA']
+                    
+                    # Plotear Compras (Triángulo Verde Arriba)
+                    if not buys.empty:
+                        fig.add_trace(go.Scatter(
+                            x=buys['Fecha'], y=buys['Precio'] * 0.95, # Un poco abajo
+                            mode='markers',
+                            marker=dict(symbol='triangle-up', size=12, color='blue'),
+                            name='Compra',
+                            hovertemplate='<b>COMPRA</b><br>Fecha: %{x}<br>Precio: $%{y:.2f}'
+                        ))
+                        
+                    # Plotear Ventas (Triángulo Rojo Abajo)
+                    if not sells.empty:
+                        fig.add_trace(go.Scatter(
+                            x=sells['Fecha'], y=sells['Precio'] * 1.05, # Un poco arriba
+                            mode='markers',
+                            marker=dict(symbol='triangle-down', size=12, color='orange'),
+                            name='Venta',
+                            hovertemplate='<b>VENTA</b><br>Fecha: %{x}<br>Precio: $%{y:.2f}'
+                        ))
 
                 fig.update_layout(
-                    title=f"Gráfico {selected_ticker} ({interval}) - Última Señal: {signal_info['Fecha_Str']}",
+                    title=f"Historial de Señales: {selected_ticker} ({interval})",
                     xaxis_rangeslider_visible=False,
                     height=600,
-                    template="plotly_dark"
+                    template="plotly_dark",
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
                 )
                 
                 st.plotly_chart(fig, use_container_width=True)
                 
-                # Mostrar métricas del momento de la señal
-                k1, k2, k3 = st.columns(3)
-                k1.metric("Fecha Señal", signal_info['Fecha_Str'])
-                k2.metric("Precio Señal", f"${signal_info['Precio']:.2f}")
-                k3.metric("Fuerza ADX", f"{signal_info['ADX']:.2f}")
+                # Métrica rápida
+                st.info(f"Mostrando **{len(df_sig_visible)} señales** en el periodo visible del gráfico.")
 
     else:
-        st.info("No hay activos para mostrar en el gráfico.")
+        st.info("No hay activos disponibles.")
 
 else:
-    st.info("👈 Selecciona un lote en el menú lateral y presiona 'ESCANEAR' para comenzar.")
+    st.info("👈 Selecciona un lote y escanea para ver señales.")
