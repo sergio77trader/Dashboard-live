@@ -18,12 +18,9 @@ jobs:
         with:
           python-version: '3.10'
       
-      - name: Instalar Dependencias
-        run: |
-          pip install "numpy<2.0.0"
-          pip install pandas==1.3.5
-          pip install yfinance requests
-          pip install pandas_ta
+      - name: Instalar Solo Necesario
+        # Solo estas 4 librerías estándar. Imposible que falle.
+        run: pip install yfinance pandas numpy requests
 
       - name: Correr Bot
         env:
