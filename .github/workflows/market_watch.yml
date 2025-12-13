@@ -16,10 +16,10 @@ jobs:
       - name: Configurar Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.10'  # <--- ESTO ES LO QUE ARREGLA EL ERROR
+          python-version: '3.10'
       
       - name: Instalar dependencias
-        # Instalamos manual aqui para evitar conflictos con el requirements de la app visual
+        # Instalamos SOLO lo que el robot necesita, sin Streamlit
         run: pip install yfinance pandas pandas_ta numpy requests
 
       - name: Ejecutar Escáner
