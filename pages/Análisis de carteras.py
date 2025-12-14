@@ -1,181 +1,207 @@
+import streamlit as st
 import yfinance as yf
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-from matplotlib.colors import LinearSegmentedColormap
-from ipywidgets import interact, widgets, Button, HBox
-from IPython.display import display
-from google.colab import files  # IMPORTANTE para descarga en Colab
+import plotly.express as px
+import plotly.graph_objects as go
 
-def analizar_cartera(tickers_str, pesos_str, benchmark, anios):
-    tickers = [t.strip().upper() for t in tickers_str.split(",") if t.strip()]
-    if len(tickers) == 0:
-        print("Debe ingresar al menos 1 ticker.")
-        return
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="Análisis de Carteras (Plotly)", layout="wide")
 
-    if pesos_str.strip():
-        pesos = [float(p) for p in pesos_str.split(",")]
-        if len(pesos) != len(tickers):
-            print("La cantidad de pesos debe coincidir con los tickers.")
-            return
-        pesos = np.array(pesos)
-    else:
-        pesos = np.ones(len(tickers)) / len(tickers)
+st.title("📊 Análisis Profesional de Carteras")
+st.markdown("Adaptado para funcionar sin Seaborn ni dependencias externas de Excel.")
 
-    pesos = pesos / pesos.sum()
-
-    # Descargar precios
-    activos = tickers + [benchmark, "SPY", "QQQ", "DIA"]
-    activos = list(dict.fromkeys(activos))
-    data = yf.download(activos, period=f"{anios}y", auto_adjust=True)["Close"]
-    returns = data.pct_change(fill_method=None).dropna()
-    precios = data.dropna()
-
-    # Serie de cartera y benchmark
-    retornos_portafolio = returns[tickers].dot(pesos)
-    serie_portafolio = (1 + retornos_portafolio).cumprod()
-    serie_bench = (1 + returns[benchmark]).cumprod()
-
-    # CAGR función
-    def calcular_cagr(serie, años):
-        if len(serie) == 0: return np.nan
-        return (serie[-1] / serie[0])**(1/años) - 1
-
-    # Métricas cartera
-    beta = np.cov(retornos_portafolio, returns[benchmark])[0,1] / np.var(returns[benchmark])
-    volatilidad = retornos_portafolio.std() * np.sqrt(252)
-    correlacion = np.corrcoef(retornos_portafolio, returns[benchmark])[0,1]
-    rendimiento_12m = (1 + retornos_portafolio[-252:]).prod() - 1 if len(retornos_portafolio) >= 252 else np.nan
-    cagr_portafolio = calcular_cagr(serie_portafolio.values, anios)
-    sharpe_portafolio = (retornos_portafolio.mean()*252) / (retornos_portafolio.std()*np.sqrt(252))
-
-    # Métricas benchmark seleccionado
-    cagr_bench = calcular_cagr(serie_bench.values, anios)
-    volatilidad_bench = returns[benchmark].std()*np.sqrt(252)
-    rendimiento_bench_12m = (1 + returns[benchmark][-252:]).prod()-1 if len(returns[benchmark])>=252 else np.nan
-    sharpe_bench = (returns[benchmark].mean()*252) / (returns[benchmark].std()*np.sqrt(252))
-
-    # Tabla resumen
-    resultados = pd.DataFrame({
-        'Conjunto': ['Cartera', benchmark],
-        'Beta': [f"{beta:.2f}", "-"],
-        'Volatilidad Anualizada': [f"{volatilidad:.2%}", f"{volatilidad_bench:.2%}"],
-        'CAGR': [f"{cagr_portafolio:.2%}", f"{cagr_bench:.2%}"],
-        'Rendimiento 12M': [f"{rendimiento_12m:.2%}", f"{rendimiento_bench_12m:.2%}"],
-        'Correlación con Benchmark': [f"{correlacion:.2f}", "1.00"],
-        'Sharpe Ratio': [f"{sharpe_portafolio:.2f}", f"{sharpe_bench:.2f}"]
-    })
-    display(resultados)
-
-    # Matriz de correlación (usada en varios lados)
-    corr_matrix = returns[tickers].corr()
-
-    # Exportación a Excel/CSV + descarga
-    def export_excel(_):
-        with pd.ExcelWriter('resultados_cartera.xlsx') as writer:
-            resultados.to_excel(writer, index=False, sheet_name='Resumen')
-            corr_matrix.to_excel(writer, sheet_name='Correlacion')
-            pd.DataFrame({'Retorno cartera': serie_portafolio, f'Retorno {benchmark}': serie_bench}).to_excel(writer, sheet_name='Evolucion')
-        print('Archivo "resultados_cartera.xlsx" generado.')
-        files.download('resultados_cartera.xlsx')
-
-    def export_csv(_):
-        resultados.to_csv('resultados_cartera.csv', index=False)
-        corr_matrix.to_csv('correlacion_activos.csv')
-        pd.DataFrame({'Retorno cartera': serie_portafolio, f'Retorno {benchmark}': serie_bench}).to_csv('evolucion_cartera.csv')
-        print('Archivos CSV generados.')
-        files.download('resultados_cartera.csv')
-        files.download('correlacion_activos.csv')
-        files.download('evolucion_cartera.csv')
-
-    boton_excel = Button(description="Exportar a Excel")
-    boton_excel.on_click(export_excel)
-    boton_csv = Button(description="Exportar a CSV")
-    boton_csv.on_click(export_csv)
-    display(HBox([boton_excel, boton_csv]))
-
-    # Pie chart
-    fig, ax = plt.subplots(figsize=(6, 6))
-    ax.pie(pesos, labels=tickers, autopct='%1.1f%%', startangle=140)
-    ax.set_title("Composición de la Cartera")
-    plt.show()
-
-    # Matriz de correlación (heatmap)
-    cmap_custom = LinearSegmentedColormap.from_list('CelesteRojoInvert', ['lightblue', 'red'], N=256)
-    fig, ax = plt.subplots(figsize=(10, 8), dpi=100)
-    sns.heatmap(
-        corr_matrix, annot=True, fmt=".2f", annot_kws={"size": 11},
-        cmap=cmap_custom, vmin=0.0, vmax=1.0,
-        linewidths=0.5, linecolor='gray', square=True,
-        cbar_kws={"shrink": 0.8, "pad": 0.02, "label": "Correlación"},
-        ax=ax
-    )
-    ax.set_title("Matriz de Correlaciones entre Activos")
-    plt.show()
-
-    # Alerta de activos muy correlacionados
-    high_corr_pairs = []
-    for i in range(len(tickers)):
-        for j in range(i+1, len(tickers)):
-            if corr_matrix.iloc[i,j] > 0.85:
-                high_corr_pairs.append((tickers[i], tickers[j], corr_matrix.iloc[i,j]))
-    if high_corr_pairs:
-        print("\033[91mALERTA: Hay activos en cartera con correlación > 0.85:\033[0m")
-        for t1, t2, val in high_corr_pairs:
-            print(f"- {t1} y {t2}: correlación = {val:.2f}")
-    else:
-        print("No se detectan pares de activos con correlación mayor a 0.85.")
-
-    # CAGR individuales (activos y benchmarks)
-    activos_cagr = {}
-    for ticker in tickers + ["SPY", "QQQ", "DIA"]:
-        if ticker in precios:
-            serie = precios[ticker].dropna()
-            años_cagr = (len(serie) / 252)
-            activos_cagr[ticker] = calcular_cagr(serie.values, años_cagr)
-    activos_cagr['Cartera'] = cagr_portafolio
-    activos_cagr[benchmark] = cagr_bench
-
-    # Grafico de barras verticales
-    fig, ax = plt.subplots(figsize=(10, 5))
-    nombres = list(activos_cagr.keys())
-    valores = [v*100 for v in activos_cagr.values()]
-    barras = ax.bar(nombres, valores, color=['royalblue' if n in tickers else 'orange' if n=='Cartera' else 'gray' for n in nombres])
-    ax.set_ylabel('CAGR (%)')
-    ax.set_title('CAGR Anualizado - Cartera, Activos y Benchmarks')
-    plt.setp(ax.get_xticklabels(), rotation=45)
-    plt.tight_layout()
-    plt.show()
-
-    # Gráfico de evolución acumulada (cartera vs benchmark)
-    fig, ax = plt.subplots(figsize=(12, 6))
-    serie_portafolio.plot(ax=ax, label="Cartera", linewidth=2)
-    serie_bench.plot(ax=ax, label=f"Benchmark: {benchmark}", linewidth=2, linestyle='--')
-    ax.set_title("Evolución acumulada: Cartera vs Benchmark")
-    ax.set_ylabel("Multiplicador sobre el capital inicial")
-    ax.legend()
-    plt.tight_layout()
-    plt.show()
-
-# Widget interactivo único (no hace falta display antes)
-interact(
-    analizar_cartera,
-    tickers_str=widgets.Text(
+# --- BARRA LATERAL ---
+with st.sidebar:
+    st.header("Parámetros")
+    
+    tickers_str = st.text_area(
+        "Tickers (separados por coma):", 
         value='JPM, GOLD, V, MRK, FXI, EWZ, KO',
-        placeholder='Escribir hasta 50 tickers separados por coma',
-        description='Tickers:', layout=widgets.Layout(width='90%')),
-    pesos_str=widgets.Text(
+        height=100
+    )
+    
+    pesos_str = st.text_area(
+        "Pesos % (opcional, separador por coma):", 
         value='10, 20, 20, 10, 10, 10, 20',
-        placeholder='Pesos separados por coma',
-        description='Pesos:', layout=widgets.Layout(width='90%')),
-    benchmark=widgets.Dropdown(
-        options=['SPY', 'QQQ', 'DIA'],
-        value='SPY', description='Benchmark:'),
-    anios=widgets.IntText(
-    value=10,
-    description='Años:',
-    min=1
-)
+        help="Si se deja vacío, se equipondera."
+    )
+    
+    benchmark = st.selectbox("Benchmark:", ['SPY', 'QQQ', 'DIA'], index=0)
+    anios = st.slider("Años de historia:", 1, 20, 10)
+    
+    calc_btn = st.button("🚀 Calcular", type="primary")
 
-);
+# --- FUNCIONES ---
+def convert_df_to_csv(df):
+    return df.to_csv(index=True).encode('utf-8')
+
+def main():
+    if calc_btn:
+        # 1. Procesar Inputs
+        tickers = [t.strip().upper() for t in tickers_str.split(",") if t.strip()]
+        
+        if not tickers:
+            st.error("Ingresa al menos un ticker.")
+            return
+
+        # Procesar Pesos
+        if pesos_str.strip():
+            try:
+                pesos_list = [float(p) for p in pesos_str.split(",")]
+                if len(pesos_list) != len(tickers):
+                    st.error(f"Error: {len(tickers)} tickers vs {len(pesos_list)} pesos.")
+                    return
+                pesos = np.array(pesos_list)
+            except:
+                st.error("Error en formato de pesos.")
+                return
+        else:
+            pesos = np.ones(len(tickers)) / len(tickers)
+
+        # Normalizar al 100%
+        pesos = pesos / pesos.sum()
+
+        # 2. Descargar Datos
+        with st.spinner("Descargando datos..."):
+            activos = tickers + [benchmark]
+            try:
+                # Usamos yfinance
+                data = yf.download(activos, period=f"{anios}y", progress=False, auto_adjust=True)
+                
+                # Manejo de estructura de datos (MultiIndex o simple)
+                if isinstance(data.columns, pd.MultiIndex):
+                    # Si bajamos más de 1 activo, yfinance devuelve MultiIndex
+                    # Buscamos 'Close' si existe, sino tomamos todo (caso download auto-adjust=True a veces devuelve solo precio)
+                    try:
+                        precios = data["Close"]
+                    except KeyError:
+                        precios = data # A veces devuelve el DF directo si solo hay Close
+                else:
+                    precios = data["Close"] if "Close" in data else data
+
+                # Limpiar y calcular retornos
+                precios = precios.dropna()
+                returns = precios.pct_change().dropna()
+
+                if returns.empty:
+                    st.error("No hay datos suficientes.")
+                    return
+                
+                # Verificar que los tickers existan en las columnas descargadas
+                # (A veces YF cambia el nombre, ej: BRK.B -> BRK-B)
+                valid_tickers = [t for t in tickers if t in returns.columns]
+                
+                if not valid_tickers:
+                    st.error("Ningún ticker válido encontrado en la descarga.")
+                    return
+                
+                # Re-ajustar pesos si algún ticker falló
+                if len(valid_tickers) < len(tickers):
+                    st.warning(f"Tickers ignorados (sin datos): {set(tickers) - set(valid_tickers)}")
+                    # Re-normalizar pesos para los validos (simple: equiponderar lo que queda o recortar)
+                    # Para evitar errores matemáticos, aquí re-equiponderamos simple:
+                    pesos = np.ones(len(valid_tickers)) / len(valid_tickers)
+                    st.info("Se han re-calculado los pesos equitativamente entre los activos válidos.")
+
+            except Exception as e:
+                st.error(f"Error técnico: {e}")
+                return
+
+        # 3. Matemática Financiera
+        # Retorno de la cartera (producto punto matriz retornos x pesos)
+        ret_port = returns[valid_tickers].dot(pesos)
+        
+        # Series Acumuladas (Base 100 para graficar)
+        cum_port = (1 + ret_port).cumprod() * 100
+        cum_bench = (1 + returns[benchmark]).cumprod() * 100
+
+        # Métricas
+        # Beta
+        cov = np.cov(ret_port, returns[benchmark])[0,1]
+        var = np.var(returns[benchmark])
+        beta = cov / var
+        
+        # Volatilidad Anual
+        vol_port = ret_port.std() * np.sqrt(252)
+        vol_bench = returns[benchmark].std() * np.sqrt(252)
+        
+        # Correlación Cartera vs Benchmark
+        corr_bench = np.corrcoef(ret_port, returns[benchmark])[0,1]
+        
+        # CAGR
+        days = (cum_port.index[-1] - cum_port.index[0]).days
+        years = days / 365.25
+        cagr_port = (cum_port.iloc[-1] / 100) ** (1/years) - 1
+        cagr_bench = (cum_bench.iloc[-1] / 100) ** (1/years) - 1
+        
+        # Sharpe (asumiendo tasa libre riesgo 0 para simplificar)
+        sharpe = (ret_port.mean() * 252) / (ret_port.std() * np.sqrt(252))
+
+        # 4. Visualización
+        
+        # KPI ROW
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("CAGR (Anual)", f"{cagr_port:.2%}", delta=f"{cagr_port-cagr_bench:.2%}")
+        k2.metric("Volatilidad", f"{vol_port:.2%}")
+        k3.metric("Sharpe Ratio", f"{sharpe:.2f}")
+        k4.metric("Beta", f"{beta:.2f}")
+
+        # GRÁFICO DE LÍNEA (Plotly es mejor que st.line_chart)
+        st.subheader("📈 Evolución Patrimonial (Base 100)")
+        df_chart = pd.DataFrame({
+            "Mi Cartera": cum_port,
+            f"Benchmark ({benchmark})": cum_bench
+        })
+        
+        fig_line = px.line(df_chart, title=f"Rendimiento Histórico ({years:.1f} años)")
+        st.plotly_chart(fig_line, use_container_width=True)
+
+        c1, c2 = st.columns(2)
+
+        # GRÁFICO TORTA (Plotly)
+        with c1:
+            st.subheader("🍰 Composición")
+            df_pie = pd.DataFrame({'Ticker': valid_tickers, 'Peso': pesos})
+            fig_pie = px.pie(df_pie, values='Peso', names='Ticker', hole=0.4)
+            st.plotly_chart(fig_pie, use_container_width=True)
+
+        # MATRIZ CORRELACIÓN (Plotly Heatmap en vez de Seaborn)
+        with c2:
+            st.subheader("🔥 Matriz de Correlación")
+            corr_matrix = returns[valid_tickers].corr()
+            
+            fig_heat = px.imshow(
+                corr_matrix,
+                text_auto=".2f", # Muestra los números
+                aspect="auto",
+                color_continuous_scale="RdBu_r", # Rojo a Azul
+                zmin=-1, zmax=1
+            )
+            st.plotly_chart(fig_heat, use_container_width=True)
+
+        # ALERTA DE CORRELACIÓN
+        high_corr = []
+        for i in range(len(valid_tickers)):
+            for j in range(i+1, len(valid_tickers)):
+                val = corr_matrix.iloc[i,j]
+                if val > 0.85:
+                    high_corr.append(f"{valid_tickers[i]} - {valid_tickers[j]} ({val:.2f})")
+        
+        if high_corr:
+            st.warning(f"⚠️ **Alerta de Diversificación:** Pares con correlación > 0.85:\n\n" + ", ".join(high_corr))
+        else:
+            st.success("✅ **Cartera bien diversificada:** No hay correlaciones extremas entre activos.")
+
+        # DESCARGA DATOS (CSV)
+        st.divider()
+        csv_data = convert_df_to_csv(df_chart)
+        st.download_button(
+            label="📥 Descargar Datos Históricos (CSV)",
+            data=csv_data,
+            file_name="backtest_cartera.csv",
+            mime="text/csv"
+        )
+
+if __name__ == "__main__":
+    main()
