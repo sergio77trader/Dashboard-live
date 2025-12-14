@@ -10,11 +10,11 @@ from datetime import datetime
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# --- CONFIGURACIÓN ---
+# --- CONFIGURACIÓN (SOLO MENSUAL Y SEMANAL) ---
 TIMEFRAMES = [
-    ("1mo", "MENSUAL", "max"),
-    ("1wk", "SEMANAL", "10y"),
-    ("1d", "DIARIO", "5y")
+    ("1mo", "MENSUAL", "max"),  # Max historia para precisión
+    ("1wk", "SEMANAL", "10y")   # 10 años para precisión
+    # El Diario ha sido eliminado para este reporte
 ]
 
 ADX_LEN = 14
@@ -50,6 +50,7 @@ def send_message(msg):
 def calculate_heikin_ashi(df):
     df_ha = df.copy()
     df_ha['HA_Close'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
+    
     ha_open = [df['Open'].iloc[0]]
     for i in range(1, len(df)):
         ha_open.append((ha_open[-1] + df_ha['HA_Close'].iloc[i-1]) / 2)
@@ -63,15 +64,18 @@ def calculate_adx(df, period=14):
     df['H-C'] = abs(df['High'] - df['Close'].shift(1))
     df['L-C'] = abs(df['Low'] - df['Close'].shift(1))
     df['TR'] = df[['H-L', 'H-C', 'L-C']].max(axis=1)
+    
     df['UpMove'] = df['High'] - df['High'].shift(1)
     df['DownMove'] = df['Low'].shift(1) - df['Low']
     df['+DM'] = np.where((df['UpMove'] > df['DownMove']) & (df['UpMove'] > 0), df['UpMove'], 0)
     df['-DM'] = np.where((df['DownMove'] > df['UpMove']) & (df['DownMove'] > 0), df['DownMove'], 0)
     
     def wilder(x, period): return x.ewm(alpha=1/period, adjust=False).mean()
+
     tr_s = wilder(df['TR'], period).replace(0, 1)
     p_dm_s = wilder(df['+DM'], period)
     n_dm_s = wilder(df['-DM'], period)
+    
     p_di = 100 * (p_dm_s / tr_s)
     n_di = 100 * (n_dm_s / tr_s)
     dx = 100 * abs(p_di - n_di) / (p_di + n_di)
@@ -85,7 +89,6 @@ def get_last_signal(df, adx_th):
     last_signal = None
     in_position = False
     
-    # Recorrido histórico
     for i in range(1, len(df_ha)):
         color = df_ha['Color'].iloc[i]
         adx = df['ADX'].iloc[i]
@@ -120,7 +123,7 @@ def run_bot():
                     sig = get_last_signal(df, ADX_TH)
                     
                     if sig:
-                        # CLAVE: Usamos un ID único para evitar duplicados si corre varias veces
+                        # Guardamos con ID único para evitar duplicados
                         all_signals.append({
                             "ID": f"{ticker}_{label}",
                             "Ticker": ticker,
@@ -135,21 +138,18 @@ def run_bot():
         except: pass
 
     if not all_signals:
-        send_message("🤖 Sin señales.")
+        send_message("🤖 Sin señales detectadas.")
         return
 
-    # 1. Eliminar duplicados (por si acaso)
-    # Convertimos a DF para filtrar fácil
+    # Eliminar duplicados y ordenar por fecha
     df_res = pd.DataFrame(all_signals).drop_duplicates(subset=['ID'])
-    
-    # 2. Ordenar por fecha descendente
     df_res = df_res.sort_values(by='Fecha', ascending=False)
     
-    # 3. Enviar Cabecera
-    send_message(f"📊 **REPORTE SEÑALES**\nTotal: {len(df_res)}\n(Ordenadas por fecha reciente)")
+    # Cabecera
+    send_message(f"📊 **REPORTE SEMANAL Y MENSUAL**\nTotal Señales: {len(df_res)}\n(Ordenadas por fecha reciente)")
     time.sleep(1)
 
-    # 4. Enviar Señales (Todas)
+    # Enviar Señales
     for _, s in df_res.iterrows():
         icon = "🚨" if "VENTA" in s['Tipo'] else "🚀"
         msg = (
