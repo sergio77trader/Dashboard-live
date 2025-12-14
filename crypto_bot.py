@@ -5,23 +5,16 @@ import numpy as np
 import time
 from datetime import datetime
 
-# --- CREDENCIALES ---
+# --- CREDENCIALES CRIPTO ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-
-# CORRECCIÓN: Ahora busca específicamente la variable del grupo CRIPTO
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID_CRYPTO") 
 
 # --- CONFIGURACIÓN ---
-TIMEFRAMES = [
-    ("1M", "MENSUAL", 100),  
-    ("1w", "SEMANAL", 200),
-    ("1d", "DIARIO", 365)
-]
-
+TIMEFRAMES = [("1M", "MENSUAL", 100), ("1w", "SEMANAL", 250), ("1d", "DIARIO", 365)]
 ADX_TH = 20
 ADX_LEN = 14
 
-# --- LISTA DE CRIPTOS (BINANCE FUTURES USDT) ---
+# --- BASE DE DATOS CRIPTO ---
 TICKERS = sorted([
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOGEUSDT', 'SHIBUSDT', 'DOTUSDT',
     'LINKUSDT', 'TRXUSDT', 'MATICUSDT', 'LTCUSDT', 'BCHUSDT', 'NEARUSDT', 'UNIUSDT', 'ICPUSDT', 'FILUSDT', 'APTUSDT',
@@ -32,14 +25,7 @@ TICKERS = sorted([
 ])
 
 def send_message(msg):
-    # Debug: Imprimir si faltan credenciales en el log de GitHub
-    if not TELEGRAM_TOKEN:
-        print("ERROR: Falta Token")
-        return
-    if not CHAT_ID:
-        print("ERROR: Falta Chat ID Cripto")
-        return
-
+    if not TELEGRAM_TOKEN or not CHAT_ID: return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         if len(msg) > 4000:
@@ -49,152 +35,110 @@ def send_message(msg):
                 time.sleep(1)
         else:
             requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
-    except Exception as e:
-        print(f"Error enviando a Telegram: {e}")
+    except: pass
 
-# --- MOTOR DE DATOS (BINANCE API) ---
 def get_binance_data(symbol, interval, limit):
     url = "https://fapi.binance.com/fapi/v1/klines"
-    params = {'symbol': symbol, 'interval': interval, 'limit': limit}
     try:
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()
-        df = pd.DataFrame(data, columns=['Time','Open','High','Low','Close','Vol','x','x','x','x','x','x'])
+        r = requests.get(url, params={'symbol': symbol, 'interval': interval, 'limit': limit}, timeout=10)
+        df = pd.DataFrame(r.json(), columns=['Time','Open','High','Low','Close','Vol','x','x','x','x','x','x'])
         df['Time'] = pd.to_datetime(df['Time'], unit='ms')
-        df = df[['Time','Open','High','Low','Close']].astype({'Open':float,'High':float,'Low':float,'Close':float})
-        return df
+        return df[['Time','Open','High','Low','Close']].astype({'Open':float,'High':float,'Low':float,'Close':float})
     except: return pd.DataFrame()
 
-# --- CÁLCULOS MATEMÁTICOS ---
+# (Mismas funciones matemáticas que el de acciones, repetidas para que sea autónomo)
 def calculate_heikin_ashi(df):
     df_ha = df.copy()
     df_ha['HA_Close'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
     ha_open = [df['Open'].iloc[0]]
-    for i in range(1, len(df)):
-        ha_open.append((ha_open[-1] + df_ha['HA_Close'].iloc[i-1]) / 2)
+    for i in range(1, len(df)): ha_open.append((ha_open[-1] + df_ha['HA_Close'].iloc[i-1]) / 2)
     df_ha['HA_Open'] = ha_open
     df_ha['Color'] = np.where(df_ha['HA_Close'] > df_ha['HA_Open'], 1, -1)
     return df_ha
 
 def calculate_adx(df, period=14):
     df = df.copy()
-    df['H-L'] = df['High'] - df['Low']
-    df['H-C'] = abs(df['High'] - df['Close'].shift(1))
-    df['L-C'] = abs(df['Low'] - df['Close'].shift(1))
-    df['TR'] = df[['H-L', 'H-C', 'L-C']].max(axis=1)
-    df['UpMove'] = df['High'] - df['High'].shift(1)
-    df['DownMove'] = df['Low'].shift(1) - df['Low']
-    df['+DM'] = np.where((df['UpMove'] > df['DownMove']) & (df['UpMove'] > 0), df['UpMove'], 0)
-    df['-DM'] = np.where((df['DownMove'] > df['UpMove']) & (df['DownMove'] > 0), df['DownMove'], 0)
+    df['TR'] = np.maximum(df['High']-df['Low'], np.maximum(abs(df['High']-df['Close'].shift()), abs(df['Low']-df['Close'].shift())))
+    df['+DM'] = np.where((df['High']-df['High'].shift()) > (df['Low'].shift()-df['Low']), np.maximum(df['High']-df['High'].shift(),0), 0)
+    df['-DM'] = np.where((df['Low'].shift()-df['Low']) > (df['High']-df['High'].shift()), np.maximum(df['Low'].shift()-df['Low'],0), 0)
     
-    def wilder(x, period): return x.ewm(alpha=1/period, adjust=False).mean()
-    tr_s = wilder(df['TR'], period).replace(0, 1)
-    p_dm_s, n_dm_s = wilder(df['+DM'], period), wilder(df['-DM'], period)
-    p_di, n_di = 100*(p_dm_s/tr_s), 100*(n_dm_s/tr_s)
-    dx = 100 * abs(p_di - n_di) / (p_di + n_di)
+    def wilder(x, n): return x.ewm(alpha=1/n, adjust=False).mean()
+    tr_s = wilder(df['TR'], period).replace(0,1)
+    dx = 100 * abs((100*wilder(df['+DM'],period)/tr_s) - (100*wilder(df['-DM'],period)/tr_s)) / ((100*wilder(df['+DM'],period)/tr_s) + (100*wilder(df['-DM'],period)/tr_s))
     return wilder(dx, period)
 
-# --- MOTOR DE BÚSQUEDA ---
 def get_last_signal(df, adx_th):
     df['ADX'] = calculate_adx(df)
     df_ha = calculate_heikin_ashi(df)
     last_signal = None
-    in_position = False
+    in_pos = False
     
     for i in range(1, len(df_ha)):
-        c = df_ha['Color'].iloc[i]
-        a = df['ADX'].iloc[i]
-        d = df_ha['Time'].iloc[i]
-        p = df_ha['Close'].iloc[i]
-        
-        if not in_position and c == 1 and a > adx_th:
-            in_position = True
+        c, a, d, p = df_ha['Color'].iloc[i], df['ADX'].iloc[i], df_ha['Time'].iloc[i], df_ha['Close'].iloc[i]
+        if not in_pos and c == 1 and a > adx_th:
+            in_pos = True
             last_signal = {"Tipo": "🟢 LONG", "Fecha": d, "Precio": p, "ADX": a, "Color": 1}
-        elif in_position and c == -1:
-            in_position = False
+        elif in_pos and c == -1:
+            in_pos = False
             last_signal = {"Tipo": "🔴 SHORT", "Fecha": d, "Precio": p, "ADX": a, "Color": -1}
             
     if not last_signal:
         curr = df_ha.iloc[-1]
         t = "🟢 LONG" if curr['Color'] == 1 else "🔴 SHORT"
         last_signal = {"Tipo": t, "Fecha": curr['Time'], "Precio": curr['Close'], "ADX": df['ADX'].iloc[-1], "Color": curr['Color']}
-        
     return last_signal
 
 def run_bot():
-    print(f"--- START CRIPTO SCAN: {datetime.now()} ---")
+    print(f"--- CRIPTO START: {datetime.now()} ---")
     market_map = {t: {} for t in TICKERS}
-    all_signals_list = []
-
-    # 1. ESCANEO
+    all_signals = []
+    
     for interval, label, limit in TIMEFRAMES:
-        print(f"Procesando {label}...")
-        for ticker in TICKERS:
+        for t in TICKERS:
             try:
-                df = get_binance_data(ticker, interval, limit)
+                df = get_binance_data(t, interval, limit)
                 if df.empty: continue
-
                 sig = get_last_signal(df, ADX_TH)
-                
                 if sig:
-                    market_map[ticker][interval] = sig['Color']
-                    if interval == '1d': market_map[ticker]['Price'] = sig['Precio']
-                    
-                    all_signals_list.append({
-                        "Ticker": ticker.replace("USDT", ""),
-                        "TF": label,
-                        "Tipo": sig['Tipo'],
-                        "Precio": sig['Precio'],
-                        "ADX": sig['ADX'],
-                        "Fecha": sig['Fecha'],
-                        "Fecha_Str": sig['Fecha'].strftime('%d-%m-%Y')
+                    market_map[t][interval] = sig['Color']
+                    if interval == '1d': market_map[t]['Price'] = sig['Precio']
+                    all_signals.append({
+                        "Ticker": t.replace("USDT",""), "TF": label, "Data": sig, "SortDate": sig['Fecha']
                     })
-                time.sleep(0.05) 
+                time.sleep(0.05)
             except: pass
 
-    # --- REPORTE 1: MAPA CRIPTO ---
-    full_bull, starting_bull, pullback, full_bear = [], [], [], []
-    icon_map = {1: "🟢", -1: "🔴", 0: "⚪"}
-    
+    # Reporte 1
+    full_bull, starting, pullback, full_bear = [], [], [], []
     for t, d in market_map.items():
-        if '1M' not in d or '1w' not in d or '1d' not in d: continue
+        if not all(k in d for k in ['1M','1w','1d']): continue
         m, w, day = d['1M'], d['1w'], d['1d']
-        p = d.get('Price', 0)
-        clean_t = t.replace("USDT", "")
-        line = f"• {clean_t}: ${p:,.4f}"
-        
+        line = f"• {t.replace('USDT','')}: ${d.get('Price',0):.4f}"
         if m==1 and w==1 and day==1: full_bull.append(line)
-        elif m<=0 and w==1 and day==1: starting_bull.append(line)
+        elif m<=0 and w==1 and day==1: starting.append(line)
         elif m==1 and w==1 and day==-1: pullback.append(line)
         elif m==-1 and w==-1 and day==-1: full_bear.append(line)
-
-    map_msg = f"₿ **MAPA CRIPTO** ({datetime.now().strftime('%d/%m')})\nLeyenda: [Mes Sem Dia]\n\n"
-    if starting_bull: map_msg += f"🌱 **NACIMIENTO TENDENCIA**\n" + "\n".join(starting_bull) + "\n\n"
-    if full_bull: map_msg += f"🚀 **FULL BULL**\n" + "\n".join(full_bull) + "\n\n"
-    if pullback: map_msg += f"⚠️ **CORRECCIÓN**\n" + "\n".join(pullback) + "\n\n"
-    if full_bear: map_msg += f"🩸 **FULL BEAR**\n" + "\n".join(full_bear) + "\n\n"
-    
-    send_message(map_msg)
+        
+    msg = f"₿ **MAPA CRIPTO** ({datetime.now().strftime('%d/%m')})\n\n"
+    if starting: msg += f"🌱 **NACIMIENTO**\n" + "\n".join(starting) + "\n\n"
+    if full_bull: msg += f"🚀 **FULL BULL**\n" + "\n".join(full_bull) + "\n\n"
+    if pullback: msg += f"⚠️ **CORRECCIÓN**\n" + "\n".join(pullback) + "\n\n"
+    if full_bear: msg += f"🩸 **FULL BEAR**\n" + "\n".join(full_bear) + "\n\n"
+    send_message(msg)
     time.sleep(2)
 
-    # --- REPORTE 2: DETALLE ORDENADO ---
-    if all_signals_list:
-        all_signals_list.sort(key=lambda x: x['Fecha'], reverse=True)
-        send_message(f"📋 **BITÁCORA CRIPTO**\n(Ordenadas por fecha reciente)")
-        
-        for s in all_signals_list: 
-            icon = "🚨" if "SHORT" in s['Tipo'] else "🚀"
-            msg = (
-                f"{icon} **{s['Ticker']} ({s['TF']})**\n"
-                f"**{s['Tipo']}**\n"
-                f"Precio: ${s['Precio']}\n"
-                f"ADX: {s['ADX']:.1f}\n"
-                f"Fecha: {s['Fecha_Str']}"
-            )
-            send_message(msg)
-            time.sleep(0.2)
-            
-    print("Finalizado.")
+    # Reporte 2
+    if all_signals:
+        all_signals.sort(key=lambda x: x['SortDate'], reverse=True)
+        send_message("📋 **BITÁCORA CRIPTO (Ordenada)**")
+        for s in all_signals:
+            d = s['Data']
+            icon = "🚨" if "SHORT" in d['Tipo'] else "🚀"
+            txt = f"{icon} **{s['Ticker']} ({s['TF']})**\n**{d['Tipo']}**\nPrecio: ${d['Precio']}\nADX: {d['ADX']:.1f}\nFecha: {d['Fecha'].strftime('%d-%m-%Y')}"
+            send_message(txt)
+            time.sleep(0.3)
+    
+    send_message("✅ Fin reporte Cripto.")
 
 if __name__ == "__main__":
     run_bot()
