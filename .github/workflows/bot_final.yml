@@ -46,5 +46,5 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           # ¡AQUI ESTÁ EL TRUCO! Le pasamos el ID del chat de CRIPTO
           # pero lo llamamos TELEGRAM_CHAT_ID para que el script de Python lo entienda sin cambios.
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID_CRYPTO }}
+          TELEGRAM_CHAT_ID_CRYPTO: ${{ secrets.TELEGRAM_CHAT_ID_CRYPTO }}
         run: python crypto_bot.py
