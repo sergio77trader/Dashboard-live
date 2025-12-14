@@ -7,11 +7,11 @@ from datetime import datetime
 
 # --- CREDENCIALES ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-# OJO: Aquí busca el ID del grupo nuevo que conseguiste con @myidbot
+
+# CORRECCIÓN: Ahora busca específicamente la variable del grupo CRIPTO
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID_CRYPTO") 
 
 # --- CONFIGURACIÓN ---
-# Binance API: 1M (Mes), 1w (Semana), 1d (Día)
 TIMEFRAMES = [
     ("1M", "MENSUAL", 100),  
     ("1w", "SEMANAL", 200),
@@ -32,7 +32,14 @@ TICKERS = sorted([
 ])
 
 def send_message(msg):
-    if not TELEGRAM_TOKEN or not CHAT_ID: return
+    # Debug: Imprimir si faltan credenciales en el log de GitHub
+    if not TELEGRAM_TOKEN:
+        print("ERROR: Falta Token")
+        return
+    if not CHAT_ID:
+        print("ERROR: Falta Chat ID Cripto")
+        return
+
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
         if len(msg) > 4000:
@@ -42,7 +49,8 @@ def send_message(msg):
                 time.sleep(1)
         else:
             requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
-    except: pass
+    except Exception as e:
+        print(f"Error enviando a Telegram: {e}")
 
 # --- MOTOR DE DATOS (BINANCE API) ---
 def get_binance_data(symbol, interval, limit):
@@ -74,7 +82,6 @@ def calculate_adx(df, period=14):
     df['H-C'] = abs(df['High'] - df['Close'].shift(1))
     df['L-C'] = abs(df['Low'] - df['Close'].shift(1))
     df['TR'] = df[['H-L', 'H-C', 'L-C']].max(axis=1)
-    
     df['UpMove'] = df['High'] - df['High'].shift(1)
     df['DownMove'] = df['Low'].shift(1) - df['Low']
     df['+DM'] = np.where((df['UpMove'] > df['DownMove']) & (df['UpMove'] > 0), df['UpMove'], 0)
@@ -91,7 +98,6 @@ def calculate_adx(df, period=14):
 def get_last_signal(df, adx_th):
     df['ADX'] = calculate_adx(df)
     df_ha = calculate_heikin_ashi(df)
-    
     last_signal = None
     in_position = False
     
@@ -155,14 +161,14 @@ def run_bot():
         m, w, day = d['1M'], d['1w'], d['1d']
         p = d.get('Price', 0)
         clean_t = t.replace("USDT", "")
-        line = f"• {clean_t}: ${p:,.4f}" # Sin los semáforos para no ensuciar, ya están en la categoría
+        line = f"• {clean_t}: ${p:,.4f}"
         
         if m==1 and w==1 and day==1: full_bull.append(line)
         elif m<=0 and w==1 and day==1: starting_bull.append(line)
         elif m==1 and w==1 and day==-1: pullback.append(line)
         elif m==-1 and w==-1 and day==-1: full_bear.append(line)
 
-    map_msg = f"₿ **MAPA CRIPTO** ({datetime.now().strftime('%d/%m')})\n\n"
+    map_msg = f"₿ **MAPA CRIPTO** ({datetime.now().strftime('%d/%m')})\nLeyenda: [Mes Sem Dia]\n\n"
     if starting_bull: map_msg += f"🌱 **NACIMIENTO TENDENCIA**\n" + "\n".join(starting_bull) + "\n\n"
     if full_bull: map_msg += f"🚀 **FULL BULL**\n" + "\n".join(full_bull) + "\n\n"
     if pullback: map_msg += f"⚠️ **CORRECCIÓN**\n" + "\n".join(pullback) + "\n\n"
@@ -171,12 +177,11 @@ def run_bot():
     send_message(map_msg)
     time.sleep(2)
 
-    # --- REPORTE 2: BITÁCORA ORDENADA ---
+    # --- REPORTE 2: DETALLE ORDENADO ---
     if all_signals_list:
         all_signals_list.sort(key=lambda x: x['Fecha'], reverse=True)
         send_message(f"📋 **BITÁCORA CRIPTO**\n(Ordenadas por fecha reciente)")
         
-        # Enviar TODAS (sin límite, como pediste)
         for s in all_signals_list: 
             icon = "🚨" if "SHORT" in s['Tipo'] else "🚀"
             msg = (
