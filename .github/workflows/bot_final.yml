@@ -39,8 +39,12 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python mtf_bot.py
 
-        - name: Correr Bot Cripto
+      # --- BOT 2: CRIPTO (Al chat nuevo) ---
+      - name: Correr Bot Cripto
         env:
+          # Usamos el MISMO token del bot
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # ¡AQUI ESTÁ EL TRUCO! Le pasamos el ID del chat de CRIPTO
+          # pero lo llamamos TELEGRAM_CHAT_ID para que el script de Python lo entienda sin cambios.
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID_CRYPTO }}
         run: python crypto_bot.py
