@@ -6,31 +6,34 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Análisis de Carteras (Plotly)", layout="wide")
+st.set_page_config(page_title="Portfolio Architect", layout="wide")
 
-st.title("📊 Análisis Profesional de Carteras")
-st.markdown("Adaptado para funcionar sin Seaborn ni dependencias externas de Excel.")
+st.title("🏛️ Portfolio Architect: Análisis & Optimización")
+st.markdown("Herramienta profesional para auditar y mejorar la estructura de tu cartera.")
 
 # --- BARRA LATERAL ---
 with st.sidebar:
-    st.header("Parámetros")
+    st.header("🏗️ Constructor de Cartera")
     
     tickers_str = st.text_area(
-        "Tickers (separados por coma):", 
-        value='JPM, GOLD, V, MRK, FXI, EWZ, KO',
+        "Activos (Tickers):", 
+        value='JPM, GOLD, V, MRK, FXI, EWZ, KO, JD',
         height=100
     )
     
     pesos_str = st.text_area(
-        "Pesos % (opcional, separador por coma):", 
-        value='10, 20, 20, 10, 10, 10, 20',
-        help="Si se deja vacío, se equipondera."
+        "Pesos % (Opcional):", 
+        value='10, 10, 10, 10, 10, 10, 10, 30', 
+        help="Si lo dejas vacío, se asigna el mismo peso a todos."
     )
     
-    benchmark = st.selectbox("Benchmark:", ['SPY', 'QQQ', 'DIA'], index=0)
-    anios = st.slider("Años de historia:", 1, 20, 10)
+    benchmark = st.selectbox(
+        "Comparar contra:", 
+        ['SPY', 'QQQ', 'DIA', 'VT', 'BTC-USD', 'IWM', 'GLD']
+    )
     
-    calc_btn = st.button("🚀 Calcular", type="primary")
+    anios = st.slider("Historial Máximo (Años):", 1, 20, 10)
+    calc_btn = st.button("🚀 AUDITAR CARTERA", type="primary")
 
 # --- FUNCIONES ---
 def convert_df_to_csv(df):
@@ -38,170 +41,140 @@ def convert_df_to_csv(df):
 
 def main():
     if calc_btn:
-        # 1. Procesar Inputs
         tickers = [t.strip().upper() for t in tickers_str.split(",") if t.strip()]
-        
         if not tickers:
-            st.error("Ingresa al menos un ticker.")
-            return
+            st.error("Ingresa tickers."); return
 
         # Procesar Pesos
         if pesos_str.strip():
             try:
-                pesos_list = [float(p) for p in pesos_str.split(",")]
-                if len(pesos_list) != len(tickers):
-                    st.error(f"Error: {len(tickers)} tickers vs {len(pesos_list)} pesos.")
+                raw_pesos = [float(p) for p in pesos_str.split(",")]
+                if len(raw_pesos) != len(tickers):
+                    st.error(f"Error: {len(tickers)} activos vs {len(raw_pesos)} pesos.")
                     return
-                pesos = np.array(pesos_list)
-            except:
-                st.error("Error en formato de pesos.")
-                return
+                pesos = np.array(raw_pesos)
+            except: st.error("Error en formato de pesos."); return
         else:
             pesos = np.ones(len(tickers)) / len(tickers)
 
-        # Normalizar al 100%
-        pesos = pesos / pesos.sum()
+        pesos = pesos / pesos.sum() # Normalizar
 
-        # 2. Descargar Datos
-        with st.spinner("Descargando datos..."):
-            activos = tickers + [benchmark]
+        # Descarga
+        with st.spinner("Analizando mercado..."):
             try:
-                # Usamos yfinance
-                data = yf.download(activos, period=f"{anios}y", progress=False, auto_adjust=True)
+                # Descargamos todo
+                data = yf.download(tickers + [benchmark], period=f"{anios}y", progress=False, auto_adjust=True)
                 
-                # Manejo de estructura de datos (MultiIndex o simple)
                 if isinstance(data.columns, pd.MultiIndex):
-                    # Si bajamos más de 1 activo, yfinance devuelve MultiIndex
-                    # Buscamos 'Close' si existe, sino tomamos todo (caso download auto-adjust=True a veces devuelve solo precio)
-                    try:
-                        precios = data["Close"]
-                    except KeyError:
-                        precios = data # A veces devuelve el DF directo si solo hay Close
+                    try: precios = data["Close"]
+                    except: precios = data
                 else:
                     precios = data["Close"] if "Close" in data else data
 
-                # Limpiar y calcular retornos
-                precios = precios.dropna()
+                # === CORRECCIÓN INTELIGENTE DE FECHAS ===
+                # En lugar de dropna() ciego que borra todo si un activo es nuevo,
+                # buscamos la fecha donde TODOS los activos ya tienen datos.
+                
+                start_date = precios.dropna().index[0]
+                
+                # Recortamos desde esa fecha
+                precios = precios[precios.index >= start_date]
                 returns = precios.pct_change().dropna()
-
-                if returns.empty:
-                    st.error("No hay datos suficientes.")
-                    return
                 
-                # Verificar que los tickers existan en las columnas descargadas
-                # (A veces YF cambia el nombre, ej: BRK.B -> BRK-B)
+                # Check de validez
                 valid_tickers = [t for t in tickers if t in returns.columns]
+                if not valid_tickers: st.error("Sin datos."); return
                 
-                if not valid_tickers:
-                    st.error("Ningún ticker válido encontrado en la descarga.")
-                    return
+                # Aviso de recorte de historia
+                real_years = (precios.index[-1] - precios.index[0]).days / 365.25
+                if real_years < anios * 0.8:
+                    st.warning(f"⚠️ Atención: Algunos activos son muy nuevos (ej: IBIT, ETHA). El análisis se recortó a los últimos **{real_years:.1f} años** disponibles para poder comparar todo junto.")
                 
-                # Re-ajustar pesos si algún ticker falló
+                # Reajuste de pesos
                 if len(valid_tickers) < len(tickers):
-                    st.warning(f"Tickers ignorados (sin datos): {set(tickers) - set(valid_tickers)}")
-                    # Re-normalizar pesos para los validos (simple: equiponderar lo que queda o recortar)
-                    # Para evitar errores matemáticos, aquí re-equiponderamos simple:
+                    st.warning("Algunos tickers no se encontraron. Re-equiponderando...")
                     pesos = np.ones(len(valid_tickers)) / len(valid_tickers)
-                    st.info("Se han re-calculado los pesos equitativamente entre los activos válidos.")
 
-            except Exception as e:
-                st.error(f"Error técnico: {e}")
-                return
+            except Exception as e: st.error(f"Error: {e}"); return
 
-        # 3. Matemática Financiera
-        # Retorno de la cartera (producto punto matriz retornos x pesos)
+        # Cálculos
         ret_port = returns[valid_tickers].dot(pesos)
-        
-        # Series Acumuladas (Base 100 para graficar)
         cum_port = (1 + ret_port).cumprod() * 100
         cum_bench = (1 + returns[benchmark]).cumprod() * 100
 
         # Métricas
-        # Beta
         cov = np.cov(ret_port, returns[benchmark])[0,1]
         var = np.var(returns[benchmark])
         beta = cov / var
+        vol = ret_port.std() * np.sqrt(252)
+        sharpe = (ret_port.mean() * 252) / (ret_port.std() * np.sqrt(252))
         
-        # Volatilidad Anual
-        vol_port = ret_port.std() * np.sqrt(252)
-        vol_bench = returns[benchmark].std() * np.sqrt(252)
-        
-        # Correlación Cartera vs Benchmark
-        corr_bench = np.corrcoef(ret_port, returns[benchmark])[0,1]
-        
-        # CAGR
         days = (cum_port.index[-1] - cum_port.index[0]).days
         years = days / 365.25
-        cagr_port = (cum_port.iloc[-1] / 100) ** (1/years) - 1
-        cagr_bench = (cum_bench.iloc[-1] / 100) ** (1/years) - 1
-        
-        # Sharpe (asumiendo tasa libre riesgo 0 para simplificar)
-        sharpe = (ret_port.mean() * 252) / (ret_port.std() * np.sqrt(252))
+        cagr = (cum_port.iloc[-1]/100)**(1/years) - 1
+        cagr_b = (cum_bench.iloc[-1]/100)**(1/years) - 1
 
-        # 4. Visualización
+        # --- VISUALIZACIÓN ---
         
-        # KPI ROW
         k1, k2, k3, k4 = st.columns(4)
-        k1.metric("CAGR (Anual)", f"{cagr_port:.2%}", delta=f"{cagr_port-cagr_bench:.2%}")
-        k2.metric("Volatilidad", f"{vol_port:.2%}")
-        k3.metric("Sharpe Ratio", f"{sharpe:.2f}")
+        k1.metric("CAGR (Anual)", f"{cagr:.2%}", delta=f"{cagr-cagr_b:.2%}")
+        k2.metric("Volatilidad", f"{vol:.2%}")
+        k3.metric("Sharpe", f"{sharpe:.2f}")
         k4.metric("Beta", f"{beta:.2f}")
 
-        # GRÁFICO DE LÍNEA (Plotly es mejor que st.line_chart)
-        st.subheader("📈 Evolución Patrimonial (Base 100)")
-        df_chart = pd.DataFrame({
-            "Mi Cartera": cum_port,
-            f"Benchmark ({benchmark})": cum_bench
-        })
+        # DIAGNÓSTICO
+        st.divider()
+        st.subheader("⚖️ Diagnóstico de Ponderación (Robo-Advisor)")
         
-        fig_line = px.line(df_chart, title=f"Rendimiento Histórico ({years:.1f} años)")
-        st.plotly_chart(fig_line, use_container_width=True)
+        col_diag1, col_diag2 = st.columns([1, 2])
+        
+        df_weights = pd.DataFrame({'Ticker': valid_tickers, 'Peso Actual': pesos})
+        df_weights['Peso Ideal (Equi)'] = 1 / len(valid_tickers)
+        
+        alerts = []
+        for i, row in df_weights.iterrows():
+            if row['Peso Actual'] > 0.20: 
+                alerts.append(f"🔴 **{row['Ticker']}** concentrado ({row['Peso Actual']:.1%}).")
+            elif row['Peso Actual'] < 0.03:
+                alerts.append(f"🟡 **{row['Ticker']}** irrelevante (<3%).")
+        
+        with col_diag1:
+            if alerts:
+                for a in alerts: st.markdown(a)
+                st.info("Consejo: Mantén activos entre 5% y 15%.")
+            else:
+                st.success("✅ Excelente Balance.")
+                
+        with col_diag2:
+            df_melt = df_weights.melt(id_vars='Ticker', value_vars=['Peso Actual', 'Peso Ideal (Equi)'], var_name='Tipo', value_name='Peso')
+            fig_bal = px.bar(df_melt, x='Ticker', y='Peso', color='Tipo', barmode='group')
+            st.plotly_chart(fig_bal, use_container_width=True)
 
+        # GRÁFICO HISTÓRICO
+        st.subheader("📈 Curva de Capital")
+        df_chart = pd.DataFrame({"Mi Cartera": cum_port, benchmark: cum_bench})
+        st.line_chart(df_chart)
+
+        # CORRELACIÓN
         c1, c2 = st.columns(2)
-
-        # GRÁFICO TORTA (Plotly)
         with c1:
             st.subheader("🍰 Composición")
-            df_pie = pd.DataFrame({'Ticker': valid_tickers, 'Peso': pesos})
-            fig_pie = px.pie(df_pie, values='Peso', names='Ticker', hole=0.4)
+            fig_pie = px.pie(df_weights, values='Peso Actual', names='Ticker', hole=0.4)
             st.plotly_chart(fig_pie, use_container_width=True)
-
-        # MATRIZ CORRELACIÓN (Plotly Heatmap en vez de Seaborn)
-        with c2:
-            st.subheader("🔥 Matriz de Correlación")
-            corr_matrix = returns[valid_tickers].corr()
             
-            fig_heat = px.imshow(
-                corr_matrix,
-                text_auto=".2f", # Muestra los números
-                aspect="auto",
-                color_continuous_scale="RdBu_r", # Rojo a Azul
-                zmin=-1, zmax=1
-            )
-            st.plotly_chart(fig_heat, use_container_width=True)
-
-        # ALERTA DE CORRELACIÓN
-        high_corr = []
-        for i in range(len(valid_tickers)):
-            for j in range(i+1, len(valid_tickers)):
-                val = corr_matrix.iloc[i,j]
-                if val > 0.85:
-                    high_corr.append(f"{valid_tickers[i]} - {valid_tickers[j]} ({val:.2f})")
-        
-        if high_corr:
-            st.warning(f"⚠️ **Alerta de Diversificación:** Pares con correlación > 0.85:\n\n" + ", ".join(high_corr))
-        else:
-            st.success("✅ **Cartera bien diversificada:** No hay correlaciones extremas entre activos.")
-
-        # DESCARGA DATOS (CSV)
-        st.divider()
-        csv_data = convert_df_to_csv(df_chart)
-        st.download_button(
-            label="📥 Descargar Datos Históricos (CSV)",
-            data=csv_data,
-            file_name="backtest_cartera.csv",
-            mime="text/csv"
-        )
+        with c2:
+            st.subheader("🔥 Mapa de Riesgo")
+            corr = returns[valid_tickers].corr()
+            fig_corr = px.imshow(corr, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1)
+            st.plotly_chart(fig_corr, use_container_width=True)
+            
+            pairs = []
+            for i in range(len(valid_tickers)):
+                for j in range(i+1, len(valid_tickers)):
+                    if corr.iloc[i,j] > 0.85: pairs.append(f"{valid_tickers[i]}-{valid_tickers[j]}")
+            
+            if pairs: st.warning(f"⚠️ Activos Gemelos (>0.85): {', '.join(pairs)}")
+            else: st.success("✅ Diversificación Eficiente")
 
 if __name__ == "__main__":
     main()
