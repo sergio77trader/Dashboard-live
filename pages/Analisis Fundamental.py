@@ -1,54 +1,65 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import plotly.graph_objects as go
 import numpy as np
+import plotly.graph_objects as go
 import time
 from datetime import datetime
 
-# --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="SystemaTrader 360: Platinum V3 Fixed")
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="Escáner Pro: Master Database", layout="wide")
 
-# --- ESTILOS CSS ---
+# --- BASE DE DATOS MASTER (DEFINIDA AL PRINCIPIO) ---
+TICKERS_DB = sorted([
+    # ARGENTINA
+    'GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'CEPU', 'EDN', 'BFR', 'SUPV', 'CRESY', 'IRS', 'TEO', 'LOMA', 'DESP', 'VIST', 'GLOB', 'MELI', 'BIOX', 'TX',
+    # USA BIG TECH
+    'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NFLX',
+    # USA SOFTWARE
+    'CRM', 'ORCL', 'ADBE', 'IBM', 'CSCO', 'PLTR', 'SNOW', 'SHOP', 'SPOT', 'UBER', 'ABNB', 'SAP', 'INTU', 'NOW',
+    # SEMICONDUCTORES
+    'AMD', 'INTC', 'QCOM', 'AVGO', 'TXN', 'MU', 'ADI', 'AMAT', 'ARM', 'SMCI', 'TSM', 'ASML', 'LRCX', 'HPQ', 'DELL',
+    # FINANCIEROS
+    'JPM', 'BAC', 'C', 'WFC', 'GS', 'MS', 'V', 'MA', 'AXP', 'BRK-B', 'PYPL', 'SQ', 'COIN', 'BLK', 'USB', 'NU',
+    # CONSUMO
+    'KO', 'PEP', 'MCD', 'SBUX', 'DIS', 'NKE', 'WMT', 'COST', 'TGT', 'HD', 'LOW', 'PG', 'CL', 'MO', 'PM', 'KMB', 'EL',
+    # SALUD
+    'JNJ', 'PFE', 'MRK', 'LLY', 'ABBV', 'UNH', 'BMY', 'AMGN', 'GILD', 'AZN', 'NVO', 'NVS', 'CVS',
+    # INDUSTRIA
+    'BA', 'CAT', 'DE', 'GE', 'MMM', 'LMT', 'RTX', 'HON', 'UNP', 'UPS', 'FDX', 'LUV', 'DAL',
+    # AUTO
+    'F', 'GM', 'TM', 'HMC', 'STLA', 'RACE',
+    # ENERGIA
+    'XOM', 'CVX', 'SLB', 'OXY', 'HAL', 'BP', 'SHEL', 'TTE', 'PBR', 'VLO',
+    # TELECOM
+    'VZ', 'T', 'TMUS', 'VOD',
+    # CHINA
+    'BABA', 'JD', 'BIDU', 'NIO', 'PDD', 'TCEHY', 'TCOM', 'BEKE', 'XPEV', 'LI', 'SONY',
+    # LATAM
+    'VALE', 'ITUB', 'BBD', 'ERJ', 'ABEV', 'GGB', 'SID', 'NBR',
+    # MINERIA
+    'GOLD', 'NEM', 'PAAS', 'FCX', 'SCCO', 'RIO', 'BHP', 'ALB', 'SQM',
+    # ETFS
+    'SPY', 'QQQ', 'IWM', 'DIA', 'EEM', 'EWZ', 'FXI', 'XLE', 'XLF', 'XLK', 'XLV', 'XLI', 'XLP', 'XLU', 'XLY', 'ARKK', 'SMH', 'TAN', 'GLD', 'SLV', 'GDX'
+])
+
+# --- ESTILOS VISUALES ---
 st.markdown("""
 <style>
+    .stDataFrame { font-size: 0.9rem; }
     div[data-testid="stMetric"], .metric-card {
-        background-color: transparent !important;
-        border: 1px solid #e0e0e0;
+        background-color: #0e1117; border: 1px solid #303030;
         padding: 10px; border-radius: 8px; text-align: center;
-        min-height: 120px; display: flex; flex-direction: column; justify-content: center;
-    }
-    @media (prefers-color-scheme: dark) {
-        div[data-testid="stMetric"], .metric-card { border: 1px solid #404040; }
     }
     .big-score { font-size: 2rem; font-weight: 800; margin: 5px 0; }
     .score-label { font-size: 0.75rem; font-weight: 600; text-transform: uppercase; opacity: 0.8; }
     .sub-info { font-size: 0.75rem; color: #666; }
-    
-    .context-box { padding: 10px; border-radius: 5px; margin-bottom: 15px; border-left: 4px solid #ccc; font-size: 0.9rem;}
     .alert-tag { font-size: 0.7rem; font-weight: bold; padding: 2px 6px; border-radius: 4px; display: inline-block; margin-top:4px;}
 </style>
 """, unsafe_allow_html=True)
 
-# --- BASE DE DATOS MAESTRA ---
-DB_CATEGORIES = {
-    '🇦🇷 Argentina': ['GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'CEPU', 'EDN', 'BFR', 'SUPV', 'CRESY', 'IRS', 'TEO', 'LOMA', 'DESP', 'VIST', 'GLOB', 'MELI', 'BIOX'],
-    '🇺🇸 Mag 7 & Tech': ['AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NFLX', 'CRM', 'ORCL', 'ADBE', 'IBM', 'CSCO', 'PLTR'],
-    '🤖 Semis & AI': ['AMD', 'INTC', 'QCOM', 'AVGO', 'TXN', 'MU', 'ADI', 'AMAT', 'ARM', 'SMCI', 'TSM', 'ASML'],
-    '🏦 Financiero': ['JPM', 'BAC', 'C', 'WFC', 'GS', 'MS', 'V', 'MA', 'AXP', 'BRK-B', 'PYPL', 'SQ', 'COIN'],
-    '💊 Salud': ['LLY', 'NVO', 'JNJ', 'PFE', 'MRK', 'ABBV', 'UNH', 'BMY', 'AMGN'],
-    '🛒 Consumo': ['KO', 'PEP', 'MCD', 'SBUX', 'DIS', 'NKE', 'WMT', 'COST', 'TGT', 'HD', 'PG'],
-    '🏭 Industria': ['XOM', 'CVX', 'SLB', 'BA', 'CAT', 'DE', 'GE', 'MMM', 'LMT', 'F', 'GM'],
-    '🇧🇷 Brasil': ['PBR', 'VALE', 'ITUB', 'BBD', 'ERJ', 'ABEV'],
-    '🇨🇳 China': ['BABA', 'JD', 'BIDU', 'PDD', 'NIO'],
-    '⛏️ Minería': ['GOLD', 'NEM', 'FCX', 'SCCO'],
-    '📈 ETFs': ['SPY', 'QQQ', 'IWM', 'DIA', 'EEM', 'EWZ', 'XLE', 'XLF', 'XLK', 'XLV', 'ARKK', 'GLD', 'SLV', 'GDX', 'XLY', 'XLP']
-}
-CEDEAR_DATABASE = sorted(list(set([item for sublist in DB_CATEGORIES.values() for item in sublist])))
-
-# --- ESTADO (V15 - FIX CRASH) ---
-# Cambiamos el nombre de la variable para forzar limpieza de memoria
-if 'st360_db_v15' not in st.session_state: st.session_state['st360_db_v15'] = []
+# --- ESTADO (V16) ---
+if 'st360_db_v16' not in st.session_state: st.session_state['st360_db_v16'] = []
 
 # --- HELPERS MATEMÁTICOS ---
 def calculate_rsi(series, period=14):
@@ -66,7 +77,6 @@ def calculate_atr(df, period=14):
     true_range = np.max(ranges, axis=1)
     return true_range.rolling(period).mean()
 
-# --- ALERTAS VISUALES ---
 def get_rsi_alert(rsi):
     if rsi > 70: return "⚠️ SOBRECOMPRA", "#FFEBEE", "#C62828"
     if rsi < 30: return "♻️ SOBREVENTA", "#E8F5E9", "#2E7D32"
@@ -80,7 +90,6 @@ def get_atr_alert(atr, price):
     return f"✨ NORMAL ({atr_pct:.1f}%)", "#E0F2F1", "#00695C"
 
 # --- MOTOR DE CÁLCULO ---
-
 def get_technical_score(df):
     try:
         score = 0; details = []
@@ -131,8 +140,8 @@ def get_options_data(ticker, price, tk_obj):
         
         t_call, t_put = calls['openInterest'].sum(), puts['openInterest'].sum()
         pcr = t_put / t_call if t_call > 0 else 0
-        if pcr < 0.6: sentiment = "🚀 EUFORIA"
-        elif pcr > 1.4: sentiment = "🐻 MIEDO"
+        if pcr < 0.6: sentiment = "🚀 EUFORIA (Techo?)"
+        elif pcr > 1.4: sentiment = "🐻 MIEDO (Piso?)"
         else: sentiment = "⚖️ NEUTRAL"
 
         cw = calls.loc[calls['openInterest'].idxmax()]['strike']
@@ -206,7 +215,7 @@ def get_fundamental_score(tk_obj):
             
         # 2. Rentabilidad
         marg = info.get('profitMargins', 0)
-        if marg > 0.2: score+=3; details.append("Márgenes Top"); tags.append("👑 CALIDAD")
+        if marg > 0.2: score+=3; details.append("Márgenes Top (>20%)"); tags.append("👑 CALIDAD")
         elif marg > 0.1: score+=2; details.append("Rentable")
         elif marg > 0: score+=1
         else: details.append("⚠️ Pierde Dinero"); tags.append("🔥 QUEMA CAJA")
@@ -251,7 +260,6 @@ def analyze_complete(ticker):
         elif final <= 30: verdict = "💀 VENTA FUERTE"
         elif final <= 45: verdict = "🔻 VENTA"
         
-        # Parsing WR
         wr_val = 0
         if "WR:" in d_sea:
             try: wr_val = float(d_sea.split("%")[0].split(":")[-1].strip())
@@ -271,10 +279,10 @@ def analyze_complete(ticker):
 # --- UI ---
 with st.sidebar:
     st.header("⚙️ Panel de Control")
-    st.info(f"Base de Datos: {len(CEDEAR_DATABASE)} Activos")
+    st.info(f"Base de Datos Master: {len(TICKERS_DB)} Activos")
     
     batch_size = st.slider("Tamaño del Lote", 1, 10, 3)
-    batches = [CEDEAR_DATABASE[i:i + batch_size] for i in range(0, len(CEDEAR_DATABASE), batch_size)]
+    batches = [TICKERS_DB[i:i + batch_size] for i in range(0, len(TICKERS_DB), batch_size)]
     batch_labels = [f"Lote {i+1}: {b[0]} ... {b[-1]}" for i, b in enumerate(batches)]
     sel_batch = st.selectbox("Seleccionar Lote:", range(len(batches)), format_func=lambda x: batch_labels[x])
     
@@ -282,17 +290,16 @@ with st.sidebar:
     if c1.button("▶️ ESCANEAR", type="primary"):
         targets = batches[sel_batch]
         prog = st.progress(0)
-        # USAMOS V15 PARA EVITAR ERROR
-        mem = [x['Ticker'] for x in st.session_state['st360_db_v15']]
+        mem = [x['Ticker'] for x in st.session_state['st360_db_v16']]
         run = [t for t in targets if t not in mem]
         for i, t in enumerate(run):
             r = analyze_complete(t)
-            if r: st.session_state['st360_db_v15'].append(r)
+            if r: st.session_state['st360_db_v16'].append(r)
             prog.progress((i+1)/len(run))
             time.sleep(0.5) 
         prog.empty(); st.rerun()
         
-    if c2.button("🗑️ Limpiar"): st.session_state['st360_db_v15'] = []; st.rerun()
+    if c2.button("🗑️ Limpiar"): st.session_state['st360_db_v16'] = []; st.rerun()
     st.divider()
     mt = st.text_input("Ticker Manual:").upper().strip()
     if st.button("Analizar"):
@@ -300,14 +307,14 @@ with st.sidebar:
             with st.spinner("Descargando Fundamentales..."):
                 r = analyze_complete(mt)
                 if r:
-                    st.session_state['st360_db_v15'] = [x for x in st.session_state['st360_db_v15'] if x['Ticker']!=mt]
-                    st.session_state['st360_db_v15'].append(r)
+                    st.session_state['st360_db_v16'] = [x for x in st.session_state['st360_db_v16'] if x['Ticker']!=mt]
+                    st.session_state['st360_db_v16'].append(r)
                     st.rerun()
 
-st.title("SystemaTrader 360: Fundamental Edition")
+st.title("SystemaTrader 360: Fundamental Edition (Fixed)")
 
-if st.session_state['st360_db_v15']:
-    dfv = pd.DataFrame(st.session_state['st360_db_v15'])
+if st.session_state['st360_db_v16']:
+    dfv = pd.DataFrame(st.session_state['st360_db_v16'])
     if 'Score' in dfv.columns: dfv = dfv.sort_values("Score", ascending=False)
     
     # Pre-cálculo filtros
@@ -318,10 +325,9 @@ if st.session_state['st360_db_v15']:
         if "Debajo MA200" in tech_list: return "📉 Bajista"
         return "⚖️ Lateral"
     
-    # Check robusto por si la lista está vacía
     dfv['Trend_Cat'] = dfv['D_Tec'].apply(lambda x: get_tec_trend(x) if isinstance(x, list) else "N/A")
     
-    # FILTROS AVANZADOS
+    # FILTROS
     with st.expander("🔍 FILTROS AVANZADOS (Click para abrir)", expanded=True):
         t1, t2, t3, t4 = st.tabs(["📊 Técnico", "💎 Fundamental", "🧱 Estructura", "📅 Estacional"])
         
@@ -332,7 +338,6 @@ if st.session_state['st360_db_v15']:
             
         with t2:
             st.caption("Filtra por etiquetas de calidad:")
-            # Fix robusto para evitar KeyError si la columna no existe o está vacía
             if 'Fun_Tags' in dfv.columns:
                 all_tags = sorted(list(set([t for sublist in dfv['Fun_Tags'] if isinstance(sublist, list) for t in sublist])))
                 f_fund = st.multiselect("Calidad / Valor:", all_tags)
@@ -348,7 +353,7 @@ if st.session_state['st360_db_v15']:
         with t4:
             f_win = st.slider("WinRate Mínimo Histórico (%)", 0, 100, 0)
 
-    # --- APLICACIÓN DE FILTROS ---
+    # APLICACIÓN DE FILTROS
     df_show = dfv.copy()
     min_sc = st.slider("Filtrar por Score Mínimo Global:", 0, 100, 0)
     df_show = df_show[df_show['Score'] >= min_sc]
@@ -369,7 +374,7 @@ if st.session_state['st360_db_v15']:
     if f_win > 0:
         df_show = df_show[df_show['WR'] >= f_win]
 
-    # --- VISUALIZACIÓN ---
+    # VISUALIZACIÓN
     if df_show.empty:
         st.warning("⚠️ No hay activos que cumplan con todos los filtros seleccionados.")
     else:
@@ -391,13 +396,13 @@ if st.session_state['st360_db_v15']:
         valid_tickers = df_show['Ticker'].tolist()
         if valid_tickers:
             sel = st.selectbox("Inspección Profunda (Filtrados):", valid_tickers)
-            it = next((x for x in st.session_state['st360_db_v15'] if x['Ticker'] == sel), None)
+            it = next((x for x in st.session_state['st360_db_v16'] if x['Ticker'] == sel), None)
             
             if it:
                 rsi_msg, rsi_bg, rsi_txt = get_rsi_alert(it['RSI'])
                 atr_msg, atr_bg, atr_txt = get_atr_alert(it['ATR'], it['Price'])
                 
-                # --- TARJETAS ---
+                # TARJETAS
                 k1, k2, k3, k4 = st.columns(4)
                 sc = it['Score']
                 clr = "#00C853" if sc >= 70 else "#D32F2F" if sc <= 40 else "#FBC02D"
@@ -411,7 +416,7 @@ if st.session_state['st360_db_v15']:
                 with k4:
                     st.markdown(f"""<div class="metric-card" style="border:2px solid {clr};"><div class="score-label" style="color:{clr};">SCORE FINAL</div><div class="big-score" style="color:{clr};">{sc:.0f}</div><div style="font-weight:bold; color:{clr};">{it['Verdict']}</div></div>""", unsafe_allow_html=True)
 
-                # --- AUDITORÍA ---
+                # AUDITORÍA
                 with st.expander("📊 Auditoría de los 4 Pilares"):
                     c_tec, c_fun = st.columns(2)
                     with c_tec:
