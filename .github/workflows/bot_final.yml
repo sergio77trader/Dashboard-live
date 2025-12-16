@@ -44,4 +44,4 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID_CRYPTO: ${{ secrets.TELEGRAM_CHAT_ID_CRYPTO }}
-        run: python crypto_bybit.py
+        run: python crypto_bot.py
