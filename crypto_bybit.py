@@ -2,6 +2,7 @@ import os
 import requests
 import pandas as pd
 import numpy as np
+import yfinance as yf
 import time
 from datetime import datetime
 
@@ -9,18 +10,18 @@ from datetime import datetime
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID_CRYPTO") 
 
-# --- CONFIGURACIÓN ---
-# Intervalos Bybit: D=Diario, W=Semanal, M=Mensual
+# --- CONFIGURACIÓN ESTRATEGIA ---
+# Usamos códigos estándar internos: "M", "W", "D"
 TIMEFRAMES = [
-    ("D", "DIARIO"),
+    ("M", "MENSUAL"),
     ("W", "SEMANAL"),
-    ("M", "MENSUAL")
+    ("D", "DIARIO")
 ]
 
 ADX_TH = 20
 ADX_LEN = 14
 
-# --- LISTA DE CRIPTOS (Futuros USDT) ---
+# --- LISTA BINANCE FUTURES (USDT) ---
 TICKERS = sorted([
     'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'BNBUSDT', 'XRPUSDT', 'ADAUSDT', 'AVAXUSDT', 'DOGEUSDT', 'SHIBUSDT', 'DOTUSDT',
     'LINKUSDT', 'TRXUSDT', 'MATICUSDT', 'LTCUSDT', 'BCHUSDT', 'NEARUSDT', 'UNIUSDT', 'ICPUSDT', 'FILUSDT', 'APTUSDT',
@@ -31,12 +32,9 @@ TICKERS = sorted([
 ])
 
 def send_message(msg):
-    if not TELEGRAM_TOKEN or not CHAT_ID: 
-        print("❌ Error: Faltan credenciales de Telegram.")
-        return
+    if not TELEGRAM_TOKEN or not CHAT_ID: return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        # Cortar mensajes largos
         if len(msg) > 4000:
             parts = [msg[i:i+4000] for i in range(0, len(msg), 4000)]
             for p in parts:
@@ -44,49 +42,70 @@ def send_message(msg):
                 time.sleep(1)
         else:
             requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
-    except Exception as e: 
-        print(f"❌ Error enviando a Telegram: {e}")
+    except: pass
 
-# --- MOTOR DE DATOS (BYBIT API) ---
-def get_bybit_data(symbol, interval):
-    url = "https://api.bybit.com/v5/market/kline"
-    params = {
-        "category": "linear",
-        "symbol": symbol,
-        "interval": interval,
-        "limit": 200 # Necesitamos historia para ADX
-    }
+# --- MOTOR DE DATOS HÍBRIDO (Anti-Bloqueo) ---
+def fetch_data(symbol, tf_code):
+    # Headers para parecer un navegador real y evitar bloqueos
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    
+    # Mapeo de intervalos
+    binance_map = {"M": "1M", "W": "1w", "D": "1d"}
+    bybit_map = {"M": "M", "W": "W", "D": "D"}
+    yahoo_map = {"M": "1mo", "W": "1wk", "D": "1d"}
+    
+    # 1. INTENTO BINANCE
     try:
-        r = requests.get(url, params=params, timeout=10).json()
-        if r['retCode'] == 0:
-            raw = r['result']['list']
-            # Bybit devuelve orden inverso (Nuevo -> Viejo). Lo invertimos.
-            df = pd.DataFrame(raw, columns=['Time','Open','High','Low','Close','Vol','Turn'])
-            df = df.astype({'Open':float, 'High':float, 'Low':float, 'Close':float})
-            df['Time'] = pd.to_datetime(pd.to_numeric(df['Time']), unit='ms')
-            
-            # Ordenar cronológicamente (Viejo -> Nuevo)
-            df = df.iloc[::-1].reset_index(drop=True)
-            return df
-        else:
-            print(f"⚠️ Bybit error para {symbol}: {r['retMsg']}")
-    except Exception as e: 
-        print(f"⚠️ Error conexión {symbol}: {e}")
-    return pd.DataFrame()
+        url = "https://fapi.binance.com/fapi/v1/klines"
+        params = {'symbol': symbol, 'interval': binance_map[tf_code], 'limit': 150}
+        r = requests.get(url, params=params, headers=headers, timeout=5)
+        if r.status_code == 200:
+            data = r.json()
+            df = pd.DataFrame(data, columns=['Time','Open','High','Low','Close','Vol','x','x','x','x','x','x'])
+            df['Time'] = pd.to_datetime(df['Time'], unit='ms')
+            return df[['Time','Open','High','Low','Close','Vol']].astype(float)
+    except: pass
 
-# --- CÁLCULOS MATEMÁTICOS ---
+    # 2. INTENTO BYBIT (Si Binance falla)
+    try:
+        url = "https://api.bybit.com/v5/market/kline"
+        params = {"category": "linear", "symbol": symbol, "interval": bybit_map[tf_code], "limit": 150}
+        r = requests.get(url, params=params, headers=headers, timeout=5).json()
+        if r['retCode'] == 0:
+            df = pd.DataFrame(r['result']['list'], columns=['Time','Open','High','Low','Close','Vol','Turn'])
+            df = df.astype(float).iloc[::-1].reset_index(drop=True) # Invertir orden
+            df['Time'] = pd.to_datetime(df['Time'], unit='ms')
+            return df[['Time','Open','High','Low','Close','Vol']]
+    except: pass
+
+    # 3. INTENTO YAHOO (Respaldo final - Garantía de datos)
+    try:
+        # Convertir ticker: BTCUSDT -> BTC-USD
+        y_sym = symbol.replace("1000", "").replace("USDT", "-USD")
+        # Fixes manuales
+        if "PEPE" in symbol: y_sym = "PEPE24478-USD"
+        if "BONK" in symbol: y_sym = "BONK-USD"
+        if "SHIB" in symbol: y_sym = "SHIB-USD"
+        if "WIF" in symbol: y_sym = "WIF-USD"
+        
+        df = yf.download(y_sym, interval=yahoo_map[tf_code], period="2y", progress=False, auto_adjust=True)
+        if not df.empty:
+            df = df.reset_index()
+            # Normalizar nombres de columnas
+            df.rename(columns={'Date': 'Time', 'Datetime': 'Time'}, inplace=True)
+            return df[['Time','Open','High','Low','Close','Volume']]
+    except: pass
+
+    return pd.DataFrame() # Vacío si todo falla
+
+# --- CÁLCULOS ---
 def calculate_heikin_ashi(df):
     df_ha = df.copy()
-    # HA Close
     df_ha['HA_Close'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
-    
-    # HA Open Iterativo
     ha_open = [df['Open'].iloc[0]]
     for i in range(1, len(df)):
         ha_open.append((ha_open[-1] + df_ha['HA_Close'].iloc[i-1]) / 2)
     df_ha['HA_Open'] = ha_open
-    
-    # Color
     df_ha['Color'] = np.where(df_ha['HA_Close'] > df_ha['HA_Open'], 1, -1)
     return df_ha
 
@@ -99,26 +118,18 @@ def calculate_adx(df, period=14):
     
     df['UpMove'] = df['High'] - df['High'].shift(1)
     df['DownMove'] = df['Low'].shift(1) - df['Low']
-    
     df['+DM'] = np.where((df['UpMove'] > df['DownMove']) & (df['UpMove'] > 0), df['UpMove'], 0)
     df['-DM'] = np.where((df['DownMove'] > df['UpMove']) & (df['DownMove'] > 0), df['DownMove'], 0)
     
     def wilder(x, n): return x.ewm(alpha=1/n, adjust=False).mean()
-    
     tr_s = wilder(df['TR'], period).replace(0, 1)
-    p_dm_s = wilder(df['+DM'], period)
-    n_dm_s = wilder(df['-DM'], period)
-    
-    p_di = 100 * (p_dm_s / tr_s)
-    n_di = 100 * (n_dm_s / tr_s)
+    p_di = 100 * (wilder(df['+DM'], period)/tr_s)
+    n_di = 100 * (wilder(df['-DM'], period)/tr_s)
     dx = 100 * abs(p_di - n_di) / (p_di + n_di)
     return wilder(dx, period)
 
-# --- BÚSQUEDA DE SEÑAL ---
-def get_last_signal(df, adx_th):
-    # Validar datos suficientes
-    if len(df) < 50: return None
-
+# --- ANÁLISIS ---
+def get_signal(df, adx_th):
     df['ADX'] = calculate_adx(df)
     df_ha = calculate_heikin_ashi(df)
     
@@ -131,16 +142,13 @@ def get_last_signal(df, adx_th):
         d = df_ha['Time'].iloc[i]
         p = df_ha['Close'].iloc[i]
         
-        # COMPRA
         if not in_pos and c == 1 and a > adx_th:
             in_pos = True
             last_signal = {"Tipo": "🟢 LONG", "Fecha": d, "Precio": p, "ADX": a, "Color": 1}
-        # VENTA
         elif in_pos and c == -1:
             in_pos = False
             last_signal = {"Tipo": "🔴 SHORT", "Fecha": d, "Precio": p, "ADX": a, "Color": -1}
             
-    # Estado actual si no hubo cruce reciente
     if not last_signal:
         curr = df_ha.iloc[-1]
         t = "🟢 LONG" if curr['Color'] == 1 else "🔴 SHORT"
@@ -148,33 +156,28 @@ def get_last_signal(df, adx_th):
         
     return last_signal
 
-# --- EJECUCIÓN ---
+# --- MAIN LOOP ---
 def run_bot():
-    print(f"--- START CRIPTO SCAN: {datetime.now()} ---")
-    send_message("⚡ **INICIANDO ANÁLISIS CRIPTO (BYBIT)...**")
+    print(f"--- SCAN: {datetime.now()} ---")
+    send_message("⚡ **ESCANEO CRIPTO INICIADO (Modo Híbrido)**")
     
     market_map = {t: {} for t in TICKERS}
-    all_signals_list = []
+    all_signals = []
     
-    # 1. ESCANEO
-    for interval, label in TIMEFRAMES:
-        print(f"--> Analizando {label}...")
-        
+    for tf_code, label in TIMEFRAMES:
+        print(f"Analizando {label}...")
         for ticker in TICKERS:
             try:
-                df = get_bybit_data(ticker, interval)
+                df = fetch_data(ticker, tf_code)
                 if df.empty: continue
                 
-                sig = get_last_signal(df, ADX_TH)
-                
+                sig = get_signal(df, ADX_TH)
                 if sig:
-                    # Guardar para Mapa (Semáforo)
-                    market_map[ticker][interval] = sig['Color']
-                    if interval == 'D': market_map[ticker]['Price'] = sig['Precio']
+                    market_map[ticker][tf_code] = sig['Color']
+                    if tf_code == 'D': market_map[ticker]['Price'] = sig['Precio']
                     
-                    # Guardar para Bitácora
-                    all_signals_list.append({
-                        "Ticker": ticker.replace("USDT", ""),
+                    all_signals.append({
+                        "Ticker": ticker.replace("USDT",""),
                         "TF": label,
                         "Tipo": sig['Tipo'],
                         "Precio": sig['Precio'],
@@ -182,76 +185,42 @@ def run_bot():
                         "Fecha": sig['Fecha'],
                         "Fecha_Str": sig['Fecha'].strftime('%d-%m-%Y')
                     })
-            except Exception as e:
-                print(f"Error procesando {ticker}: {e}")
-            
-            # Pequeña pausa para no saturar API
-            time.sleep(0.05)
+                time.sleep(0.1)
+            except: pass
 
-    # --- REPORTE 1: EL MAPA ---
-    # Lógica relajada: Si tiene Diario y Semanal, ya entra en el mapa
+    # --- REPORTE 1: MAPA ---
     full_bull, starting, pullback, full_bear = [], [], [], []
-    
     for t, d in market_map.items():
-        # Verificamos si al menos tiene D y W (Diario y Semanal)
-        if 'D' not in d or 'W' not in d: continue
-        
-        day = d['D']
-        w = d['W']
-        # Si tiene Mensual lo usamos, si no asumimos Neutro (0) para no romper
-        m = d.get('M', 0)
-        
+        if not all(k in d for k in ['M','W','D']): continue
+        m, w, day = d['M'], d['W'], d['D']
         p = d.get('Price', 0)
-        clean_t = t.replace("USDT", "")
+        line = f"• {t.replace('USDT','')}: ${p:,.4f}"
         
-        # Simbología para el mensaje (si falta mensual ponemos ?)
-        ico_m = "🟢" if m==1 else "🔴" if m==-1 else "⚪"
-        ico_w = "🟢" if w==1 else "🔴"
-        ico_d = "🟢" if day==1 else "🔴"
-        
-        line = f"• {clean_t}: ${p:,.4f} [{ico_m} {ico_w} {ico_d}]"
-        
-        if w==1 and day==1: 
-            if m==1: full_bull.append(line)
-            else: starting.append(line)
-        elif w==1 and day==-1: pullback.append(line)
-        elif w==-1 and day==-1: full_bear.append(line)
+        if m==1 and w==1 and day==1: full_bull.append(line)
+        elif m<=0 and w==1 and day==1: starting.append(line)
+        elif m==1 and w==1 and day==-1: pullback.append(line)
+        elif m==-1 and w==-1 and day==-1: full_bear.append(line)
 
-    map_msg = f"₿ **MAPA CRIPTO** ({datetime.now().strftime('%d/%m')})\nLeyenda: [Mes Sem Dia]\n\n"
-    if starting: map_msg += f"🌱 **NACIMIENTO**\n" + "\n".join(starting) + "\n\n"
-    if full_bull: map_msg += f"🚀 **FULL BULL**\n" + "\n".join(full_bull) + "\n\n"
-    if pullback: map_msg += f"⚠️ **CORRECCIÓN**\n" + "\n".join(pullback) + "\n\n"
-    if full_bear: map_msg += f"🩸 **FULL BEAR**\n" + "\n".join(full_bear[:15]) + ("\n..." if len(full_bear)>15 else "")
+    msg = f"₿ **MAPA CRIPTO** ({datetime.now().strftime('%d/%m')})\nLeyenda: [Mes Sem Dia]\n\n"
+    if starting: msg += f"🌱 **NACIMIENTO**\n" + "\n".join(starting) + "\n\n"
+    if full_bull: msg += f"🚀 **FULL BULL**\n" + "\n".join(full_bull) + "\n\n"
+    if pullback: msg += f"⚠️ **CORRECCIÓN**\n" + "\n".join(pullback) + "\n\n"
+    if full_bear: msg += f"🩸 **FULL BEAR**\n" + "\n".join(full_bear[:15]) + "\n..."
     
-    send_message(map_msg)
+    send_message(msg)
     time.sleep(2)
-    
-    # --- REPORTE 2: BITÁCORA ORDENADA ---
-    if all_signals_list:
-        all_signals_list.sort(key=lambda x: x['Fecha'], reverse=True)
-        
-        send_message(f"📋 **BITÁCORA DETALLADA**\n(Últimas señales vigentes, ordenadas por fecha):")
-        
-        # Enviar TODAS
-        count = 0
-        for s in all_signals_list:
-            icon = "🚨" if "SHORT" in s['Tipo'] else "🚀"
-            msg = (
-                f"{icon} **{s['Ticker']} ({s['TF']})**\n"
-                f"**{s['Tipo']}**\n"
-                f"Precio: ${s['Precio']}\n"
-                f"ADX: {s['ADX']:.1f}\n"
-                f"Fecha: {s['Fecha_Str']}"
-            )
-            send_message(msg)
-            time.sleep(0.2)
-            count += 1
-            
-        print(f"Enviados {count} mensajes detallados.")
-    else:
-        send_message("⚠️ No se encontraron señales. Revisa si la API de Bybit responde.")
 
-    send_message("✅ Reporte Cripto finalizado.")
+    # --- REPORTE 2: BITÁCORA ---
+    if all_signals:
+        all_signals.sort(key=lambda x: x['Fecha'], reverse=True)
+        send_message(f"📋 **BITÁCORA ORDENADA**")
+        for s in all_signals:
+            icon = "🚨" if "SHORT" in s['Tipo'] else "🚀"
+            txt = f"{icon} **{s['Ticker']} ({s['TF']})**\n**{s['Tipo']}**\nPrecio: ${s['Precio']}\nADX: {s['ADX']:.1f}\nFecha: {s['Fecha_Str']}"
+            send_message(txt)
+            time.sleep(0.2)
+            
+    send_message("✅ Finalizado.")
 
 if __name__ == "__main__":
     run_bot()
