@@ -13,7 +13,7 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID_CRYPTO")
 # --- CONFIGURACIÓN ---
 # Tuplas: (Intervalo Kucoin, Etiqueta, Cantidad de velas)
 TIMEFRAMES = [
-    ("1week", "MENSUAL", 500), # Bajamos semanas para construir el mes
+    ("1week", "MENSUAL", 600), # Bajamos semanas para construir el mes
     ("1week", "SEMANAL", 200),
     ("1day", "DIARIO", 300)
 ]
@@ -21,8 +21,7 @@ TIMEFRAMES = [
 ADX_TH = 20
 ADX_LEN = 14
 
-# --- LISTA DE MONEDAS (FORMATO: SIN GUIÓN, EJ: BTC, ETH) ---
-# El script le agregará "-USDT" automáticamente para KuCoin
+# --- LISTA DE MONEDAS (KuCoin Spot/Futures) ---
 COINS = sorted([
     'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOGE', 'SHIB', 'DOT',
     'LINK', 'TRX', 'MATIC', 'LTC', 'BCH', 'NEAR', 'UNI', 'ICP', 'FIL', 'APT',
@@ -47,60 +46,58 @@ def send_message(msg):
 
 # --- MOTOR DE DATOS (KUCOIN API) ---
 def get_kucoin_data(symbol, k_interval):
-    # KuCoin Spot API (Funciona perfecto para ver tendencia)
     url = "https://api.kucoin.com/api/v1/market/candles"
-    
-    # Formato símbolo KuCoin: BTC-USDT
     target = f"{symbol}-USDT"
+    
+    # Ajuste de límite según temporalidad para no traer data de más
+    limit = 1500 if k_interval == '1week' and 'MENSUAL' else 300
     
     params = {
         'symbol': target,
         'type': k_interval,
-        'limit': 1500 if k_interval == '1week' else 300 # Más historia para calcular mensual
+        'limit': limit
     }
     
     try:
-        r = requests.get(url, params=params, timeout=10).json()
+        r = requests.get(url, params=params, timeout=5).json() # Timeout corto para no trabarse
         if r['code'] == '200000':
-            # Data: [time, open, close, high, low, vol, turnover]
             data = r['data']
             df = pd.DataFrame(data, columns=['Time','Open','Close','High','Low','Vol','Turn'])
             df = df.astype(float)
             df['Time'] = pd.to_datetime(df['Time'], unit='s')
-            
             # Ordenar: Viejo -> Nuevo
             df = df.sort_values('Time', ascending=True).reset_index(drop=True)
             return df
     except: pass
     return pd.DataFrame()
 
-# --- CONVERTIR SEMANAL A MENSUAL ---
+# --- TRUCO MATEMÁTICO: CONVERTIR SEMANAL A MENSUAL ---
 def resample_to_monthly(df_weekly):
     if df_weekly.empty: return pd.DataFrame()
-    
-    # Resampleo usando Pandas
     df_weekly.set_index('Time', inplace=True)
     
-    logic = {
-        'Open': 'first',
-        'High': 'max',
-        'Low': 'min',
-        'Close': 'last',
-        'Vol': 'sum'
-    }
-    # 'ME' es Month End
-    df_monthly = df_weekly.resample('ME').agg(logic).dropna()
+    logic = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}
+    
+    # Resampleo a Fin de Mes
+    try:
+        df_monthly = df_weekly.resample('M').agg(logic).dropna()
+    except:
+        # Compatibilidad con versiones viejas de pandas
+        df_monthly = df_weekly.resample('1M').agg(logic).dropna()
+        
     df_monthly = df_monthly.reset_index()
     return df_monthly
 
-# --- CÁLCULOS MATEMÁTICOS ---
+# --- CÁLCULOS ---
 def calculate_heikin_ashi(df):
     df_ha = df.copy()
     df_ha['HA_Close'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
+    
     ha_open = [df['Open'].iloc[0]]
     for i in range(1, len(df)):
         ha_open.append((ha_open[-1] + df_ha['HA_Close'].iloc[i-1]) / 2)
     df_ha['HA_Open'] = ha_open
+    
     df_ha['Color'] = np.where(df_ha['HA_Close'] > df_ha['HA_Open'], 1, -1)
     return df_ha
 
@@ -110,21 +107,27 @@ def calculate_adx(df, period=14):
     df['H-C'] = abs(df['High'] - df['Close'].shift(1))
     df['L-C'] = abs(df['Low'] - df['Close'].shift(1))
     df['TR'] = df[['H-L', 'H-C', 'L-C']].max(axis=1)
+    
     df['UpMove'] = df['High'] - df['High'].shift(1)
     df['DownMove'] = df['Low'].shift(1) - df['Low']
+    
     df['+DM'] = np.where((df['UpMove'] > df['DownMove']) & (df['UpMove'] > 0), df['UpMove'], 0)
     df['-DM'] = np.where((df['DownMove'] > df['UpMove']) & (df['DownMove'] > 0), df['DownMove'], 0)
     
     def wilder(x, n): return x.ewm(alpha=1/n, adjust=False).mean()
+    
     tr_s = wilder(df['TR'], period).replace(0, 1)
-    p_dm_s, n_dm_s = wilder(df['+DM'], period), wilder(df['-DM'], period)
-    p_di, n_di = 100*(p_dm_s/tr_s), 100*(n_dm_s/tr_s)
+    p_dm_s = wilder(df['+DM'], period)
+    n_dm_s = wilder(df['-DM'], period)
+    
+    p_di = 100 * (p_dm_s / tr_s)
+    n_di = 100 * (n_dm_s / tr_s)
     dx = 100 * abs(p_di - n_di) / (p_di + n_di)
     return wilder(dx, period)
 
-# --- ANÁLISIS ---
+# --- BÚSQUEDA DE SEÑAL ---
 def get_last_signal(df, adx_th):
-    if len(df) < 20: return None # No hay datos suficientes
+    if len(df) < 20: return None
     
     df['ADX'] = calculate_adx(df)
     df_ha = calculate_heikin_ashi(df)
@@ -155,34 +158,30 @@ def get_last_signal(df, adx_th):
 # --- EJECUCIÓN PRINCIPAL ---
 def run_bot():
     print(f"--- KUCOIN SCAN START: {datetime.now()} ---")
-    send_message("⚡ **INICIANDO ESCANEO (KuCoin Data)...**")
     
     market_map = {t: {} for t in COINS}
     all_signals_list = []
 
-    # BUCLE DE ESCANEO
-    # La tupla es: (Intervalo API, Etiqueta Reporte, Limite API)
+    # 1. BUCLE DE ANÁLISIS
     for k_int, label, _ in TIMEFRAMES:
         print(f"Procesando {label}...")
-        
         for coin in COINS:
             try:
-                # 1. Obtener Datos
+                # Obtener Datos
                 df = get_kucoin_data(coin, k_int)
                 
-                # 2. Truco para Mensual: Si el label es MENSUAL, usamos la data SEMANAL descargada y la convertimos
-                if label == "MENSUAL":
-                    df = resample_to_monthly(df)
+                # Conversión a Mensual si hace falta
+                if label == "MENSUAL": df = resample_to_monthly(df)
 
                 if df.empty: continue
 
-                # 3. Analizar
+                # Analizar
                 sig = get_last_signal(df, ADX_TH)
                 
                 if sig:
                     # Guardar para Mapa
-                    # Mapeamos 'MENSUAL' -> 'M', 'SEMANAL' -> 'W', 'DIARIO' -> 'D'
-                    key_map = "M" if label == "MENSUAL" else "W" if label == "SEMANAL" else "D"
+                    # Mapeamos 'MENSUAL' -> '1mo', 'SEMANAL' -> '1wk', 'DIARIO' -> '1d' para coincidir keys
+                    key_map = "1mo" if label == "MENSUAL" else "1wk" if label == "SEMANAL" else "1d"
                     
                     market_map[coin][key_map] = sig['Color']
                     if label == 'DIARIO': market_map[coin]['Price'] = sig['Precio']
@@ -197,22 +196,27 @@ def run_bot():
                         "Fecha": sig['Fecha'],
                         "Fecha_Str": sig['Fecha'].strftime('%d-%m-%Y')
                     })
-                time.sleep(0.05)
+                
+                # Pausa mínima para no saturar CPU/API
+                time.sleep(0.01)
             except: pass
 
     # --- REPORTE 1: EL MAPA ---
     full_bull, starting, pullback, full_bear = [], [], [], []
+    icon_map = {1: "🟢", -1: "🔴", 0: "⚪"}
     
     for t, d in market_map.items():
-        if not all(k in d for k in ['M','W','D']): continue
+        # Verificamos si tenemos datos de las 3 temporalidades
+        # Usamos las keys mapeadas arriba
+        if not all(k in d for k in ['1mo','1wk','1d']): continue
         
-        m, w, day = d['M'], d['W'], d['D']
+        m, w, day = d['1mo'], d['1wk'], d['1d']
         p = d.get('Price', 0)
         
-        # Iconos visuales
-        i_m = "🟢" if m==1 else "🔴"
-        i_w = "🟢" if w==1 else "🔴"
-        i_d = "🟢" if day==1 else "🔴"
+        # Iconos visuales para el mapa
+        i_m = icon_map.get(m, "⚪")
+        i_w = icon_map.get(w, "⚪")
+        i_d = icon_map.get(day, "⚪")
         
         line = f"• {t}: ${p:,.4f} [{i_m} {i_w} {i_d}]"
         
@@ -225,14 +229,16 @@ def run_bot():
     if starting: map_msg += f"🌱 **NACIMIENTO**\n" + "\n".join(starting) + "\n\n"
     if full_bull: map_msg += f"🚀 **FULL BULL**\n" + "\n".join(full_bull) + "\n\n"
     if pullback: map_msg += f"⚠️ **CORRECCIÓN**\n" + "\n".join(pullback) + "\n\n"
-    if full_bear: map_msg += f"🩸 **FULL BEAR**\n" + "\n".join(full_bear[:15]) + "\n..."
+    if full_bear: map_msg += f"🩸 **FULL BEAR**\n" + "\n".join(full_bear[:15]) + ("\n..." if len(full_bear)>15 else "")
     
     send_message(map_msg)
     time.sleep(2)
 
     # --- REPORTE 2: BITÁCORA ---
     if all_signals_list:
+        # Ordenar por fecha descendente
         all_signals_list.sort(key=lambda x: x['Fecha'], reverse=True)
+        
         send_message(f"📋 **BITÁCORA KUCOIN**\n(Señales ordenadas por fecha):")
         
         for s in all_signals_list:
@@ -245,9 +251,9 @@ def run_bot():
                 f"Fecha: {s['Fecha_Str']}"
             )
             send_message(msg)
-            time.sleep(0.2)
+            time.sleep(0.1)
     
-    send_message("✅ Reporte finalizado.")
+    print("Reporte finalizado.")
 
 if __name__ == "__main__":
     run_bot()
