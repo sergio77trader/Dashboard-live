@@ -19,7 +19,8 @@ TIMEFRAMES = [
 ADX_TH = 20
 ADX_LEN = 14
 
-# --- LISTA DE MONEDAS ---
+# --- LISTA DE MONEDAS (ORDENADA POR IMPORTANCIA) ---
+# BTC y ETH van primero obligatoriamente
 TOP_COINS = ['BTC', 'ETH']
 ALTCOINS = sorted([
     'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOGE', 'SHIB', 'DOT',
@@ -29,12 +30,14 @@ ALTCOINS = sorted([
     'AXS', 'AAVE', 'SNX', 'MKR', 'CRV', 'DYDX', 'JUP', 'PYTH', 'ENA', 'RUNE',
     'FTM', 'ATOM', 'ALGO', 'VET', 'EGLD', 'STX', 'IMX', 'KAS', 'TAO'
 ])
+# Unimos las listas: Primero los reyes, luego el resto
 COINS = TOP_COINS + [c for c in ALTCOINS if c not in TOP_COINS]
 
 def send_message(msg):
     if not TELEGRAM_TOKEN or not CHAT_ID: return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        # Dividir mensajes si superan el límite de 4096 caracteres
         if len(msg) > 4000:
             parts = [msg[i:i+4000] for i in range(0, len(msg), 4000)]
             for p in parts:
@@ -44,11 +47,13 @@ def send_message(msg):
             requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
     except: pass
 
-# --- MOTOR DE DATOS (KUCOIN) ---
+# --- MOTOR DE DATOS (KUCOIN API) ---
 def get_kucoin_data(symbol, k_interval):
     url = "https://api.kucoin.com/api/v1/market/candles"
     target = f"{symbol}-USDT"
+    # Ajuste de límite
     limit = 1500 if k_interval == '1week' else 300
+    
     params = {'symbol': target, 'type': k_interval, 'limit': limit}
     try:
         r = requests.get(url, params=params, timeout=5).json()
@@ -62,12 +67,15 @@ def get_kucoin_data(symbol, k_interval):
     except: pass
     return pd.DataFrame()
 
+# --- CONVERTIR SEMANAL A MENSUAL ---
 def resample_to_monthly(df_weekly):
     if df_weekly.empty: return pd.DataFrame()
     df_weekly.set_index('Time', inplace=True)
     logic = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}
-    try: df_monthly = df_weekly.resample('ME').agg(logic).dropna()
-    except: df_monthly = df_weekly.resample('M').agg(logic).dropna()
+    try:
+        df_monthly = df_weekly.resample('ME').agg(logic).dropna()
+    except:
+        df_monthly = df_weekly.resample('M').agg(logic).dropna()
     df_monthly = df_monthly.reset_index()
     return df_monthly
 
@@ -88,7 +96,6 @@ def calculate_adx(df, period=14):
     df['H-C'] = abs(df['High'] - df['Close'].shift(1))
     df['L-C'] = abs(df['Low'] - df['Close'].shift(1))
     df['TR'] = df[['H-L', 'H-C', 'L-C']].max(axis=1)
-    
     df['UpMove'] = df['High'] - df['High'].shift(1)
     df['DownMove'] = df['Low'].shift(1) - df['Low']
     df['+DM'] = np.where((df['UpMove'] > df['DownMove']) & (df['UpMove'] > 0), df['UpMove'], 0)
@@ -103,21 +110,10 @@ def calculate_adx(df, period=14):
     dx = 100 * abs(p_di - n_di) / (p_di + n_di)
     return wilder(dx, period)
 
-def calculate_atr(df, period=14):
-    """Cálculo de ATR para gestión de riesgo"""
-    df = df.copy()
-    df['H-L'] = df['High'] - df['Low']
-    df['H-C'] = abs(df['High'] - df['Close'].shift(1))
-    df['L-C'] = abs(df['Low'] - df['Close'].shift(1))
-    df['TR'] = df[['H-L', 'H-C', 'L-C']].max(axis=1)
-    return df['TR'].rolling(period).mean()
-
 # --- BÚSQUEDA DE SEÑAL ---
 def get_last_signal(df, adx_th):
     if len(df) < 20: return None
-    
     df['ADX'] = calculate_adx(df)
-    df['ATR'] = calculate_atr(df) # Calculamos ATR
     df_ha = calculate_heikin_ashi(df)
     
     last_signal = None
@@ -128,45 +124,30 @@ def get_last_signal(df, adx_th):
         a = df['ADX'].iloc[i]
         d = df_ha['Time'].iloc[i]
         p = df_ha['Close'].iloc[i]
-        atr = df['ATR'].iloc[i]
         
-        # Lógica de Niveles (2 ATR para SL, 3 ATR para TP)
-        # Si es compra, SL abajo. Si es venta, SL arriba.
-        sl = p - (2 * atr) if c == 1 else p + (2 * atr)
-        tp = p + (3 * atr) if c == 1 else p - (3 * atr)
-        
-        # COMPRA
         if not in_pos and c == 1 and a > adx_th:
             in_pos = True
-            last_signal = {"Tipo": "🟢 LONG", "Fecha": d, "Precio": p, "ADX": a, "Color": 1, "SL": sl, "TP": tp}
-        # VENTA
+            last_signal = {"Tipo": "🟢 LONG", "Fecha": d, "Precio": p, "ADX": a, "Color": 1}
         elif in_pos and c == -1:
             in_pos = False
-            last_signal = {"Tipo": "🔴 SHORT", "Fecha": d, "Precio": p, "ADX": a, "Color": -1, "SL": sl, "TP": tp}
+            last_signal = {"Tipo": "🔴 SHORT", "Fecha": d, "Precio": p, "ADX": a, "Color": -1}
             
     if not last_signal:
         curr = df_ha.iloc[-1]
-        atr = df['ATR'].iloc[-1]
-        p = curr['Close']
-        c = curr['Color']
-        
-        # Calcular niveles actuales
-        sl = p - (2 * atr) if c == 1 else p + (2 * atr)
-        tp = p + (3 * atr) if c == 1 else p - (3 * atr)
-        
-        t = "🟢 LONG" if c == 1 else "🔴 SHORT"
-        last_signal = {"Tipo": t, "Fecha": curr['Time'], "Precio": p, "ADX": df['ADX'].iloc[-1], "Color": c, "SL": sl, "TP": tp}
+        t = "🟢 LONG" if curr['Color'] == 1 else "🔴 SHORT"
+        last_signal = {"Tipo": t, "Fecha": curr['Time'], "Precio": curr['Close'], "ADX": df['ADX'].iloc[-1], "Color": curr['Color']}
         
     return last_signal
 
 # --- EJECUCIÓN PRINCIPAL ---
 def run_bot():
     print(f"--- SCAN: {datetime.now()} ---")
-    send_message("⚡ **INICIANDO ESCANEO (KuCoin + Risk Management)...**")
+    send_message("⚡ **INICIANDO ESCANEO (KuCoin)...**")
     
     market_map = {t: {} for t in COINS}
     all_signals_list = []
 
+    # 1. BUCLE DE ANÁLISIS
     for k_int, label, _ in TIMEFRAMES:
         for coin in COINS:
             try:
@@ -176,30 +157,33 @@ def run_bot():
 
                 sig = get_last_signal(df, ADX_TH)
                 if sig:
-                    # Mapa
+                    # Mapeo de claves
                     key_map = "1mo" if label == "MENSUAL" else "1wk" if label == "SEMANAL" else "1d"
                     market_map[coin][key_map] = sig['Color']
                     if label == 'DIARIO': market_map[coin]['Price'] = sig['Precio']
                     
-                    # Bitácora con Riesgo
+                    # Guardar para Bitácora
                     all_signals_list.append({
-                        "Ticker": coin, "TF": label, 
-                        "Tipo": sig['Tipo'], "Precio": sig['Precio'], "ADX": sig['ADX'],
-                        "SL": sig['SL'], "TP": sig['TP'],
+                        "Ticker": coin, "TF": label, "Tipo": sig['Tipo'],
+                        "Precio": sig['Precio'], "ADX": sig['ADX'],
                         "Fecha": sig['Fecha'], "Fecha_Str": sig['Fecha'].strftime('%d-%m-%Y')
                     })
                 time.sleep(0.02)
             except: pass
 
     # --- REPORTE 1: EL MAPA ---
+    # Listas para clasificar
     full_bull, starting, pullback, full_bear = [], [], [], []
     icon_map = {1: "🟢", -1: "🔴", 0: "⚪"}
     
+    # IMPORTANTE: Iteramos sobre la lista COINS original para mantener el orden (BTC primero)
     for t in COINS:
         d = market_map.get(t, {})
         if not all(k in d for k in ['1mo','1wk','1d']): continue
+        
         m, w, day = d['1mo'], d['1wk'], d['1d']
         p = d.get('Price', 0)
+        
         line = f"• {t}: ${p:,.4f} [{icon_map[m]} {icon_map[w]} {icon_map[day]}]"
         
         if m==1 and w==1 and day==1: full_bull.append(line)
@@ -211,6 +195,8 @@ def run_bot():
     if starting: map_msg += f"🌱 **NACIMIENTO**\n" + "\n".join(starting) + "\n\n"
     if full_bull: map_msg += f"🚀 **FULL BULL**\n" + "\n".join(full_bull) + "\n\n"
     if pullback: map_msg += f"⚠️ **CORRECCIÓN**\n" + "\n".join(pullback) + "\n\n"
+    
+    # AQUI ESTABA EL CAMBIO: Quitamos el límite [:15]
     if full_bear: map_msg += f"🩸 **FULL BEAR**\n" + "\n".join(full_bear) + "\n\n"
     
     send_message(map_msg)
@@ -219,7 +205,7 @@ def run_bot():
     # --- REPORTE 2: BITÁCORA ---
     if all_signals_list:
         all_signals_list.sort(key=lambda x: x['Fecha'], reverse=True)
-        send_message(f"📋 **BITÁCORA CON RIESGO**\n(Señales ordenadas por fecha):")
+        send_message(f"📋 **BITÁCORA**\n(Señales ordenadas por fecha):")
         
         for s in all_signals_list:
             icon = "🚨" if "SHORT" in s['Tipo'] else "🚀"
@@ -228,8 +214,6 @@ def run_bot():
                 f"**{s['Tipo']}**\n"
                 f"Precio: ${s['Precio']}\n"
                 f"ADX: {s['ADX']:.1f}\n"
-                f"🛡 SL: ${s['SL']:.4f}\n"
-                f"🎯 TP: ${s['TP']:.4f}\n"
                 f"Fecha: {s['Fecha_Str']}"
             )
             send_message(msg)
