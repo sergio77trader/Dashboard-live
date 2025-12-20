@@ -18,8 +18,24 @@ TIMEFRAMES = [
 ]
 ADX_TH = 20
 
-# --- BASE DE DATOS ---
-TICKERS = sorted(['GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'AAPL', 'MSFT', 'NVDA', 'META', 'TSLA', 'MELI', 'VIST', 'GLOB', 'SPY', 'QQQ']) # Agrega los que faltan
+# --- BASE DE DATOS COMPLETA (TODOS LOS TICKERS) ---
+TICKERS = sorted([
+    'GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'CEPU', 'EDN', 'BFR', 'SUPV', 'CRESY', 'IRS', 'TEO', 'LOMA', 'DESP', 'VIST', 'GLOB', 'MELI', 'BIOX', 'TX',
+    'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NFLX',
+    'CRM', 'ORCL', 'ADBE', 'IBM', 'CSCO', 'PLTR', 'SNOW', 'SHOP', 'SPOT', 'UBER', 'ABNB', 'SAP', 'INTU', 'NOW',
+    'AMD', 'INTC', 'QCOM', 'AVGO', 'TXN', 'MU', 'ADI', 'AMAT', 'ARM', 'SMCI', 'TSM', 'ASML', 'LRCX', 'HPQ', 'DELL',
+    'JPM', 'BAC', 'C', 'WFC', 'GS', 'MS', 'V', 'MA', 'AXP', 'BRK-B', 'PYPL', 'SQ', 'COIN', 'BLK', 'USB', 'NU',
+    'KO', 'PEP', 'MCD', 'SBUX', 'DIS', 'NKE', 'WMT', 'COST', 'TGT', 'HD', 'LOW', 'PG', 'CL', 'MO', 'PM', 'KMB', 'EL',
+    'JNJ', 'PFE', 'MRK', 'LLY', 'ABBV', 'UNH', 'BMY', 'AMGN', 'GILD', 'AZN', 'NVO', 'NVS', 'CVS',
+    'BA', 'CAT', 'DE', 'GE', 'MMM', 'LMT', 'RTX', 'HON', 'UNP', 'UPS', 'FDX', 'LUV', 'DAL',
+    'F', 'GM', 'TM', 'HMC', 'STLA', 'RACE',
+    'XOM', 'CVX', 'SLB', 'OXY', 'HAL', 'BP', 'SHEL', 'TTE', 'PBR', 'VLO',
+    'VZ', 'T', 'TMUS', 'VOD',
+    'BABA', 'JD', 'BIDU', 'NIO', 'PDD', 'TCEHY', 'TCOM', 'BEKE', 'XPEV', 'LI', 'SONY',
+    'VALE', 'ITUB', 'BBD', 'ERJ', 'ABEV', 'GGB', 'SID', 'NBR',
+    'GOLD', 'NEM', 'PAAS', 'FCX', 'SCCO', 'RIO', 'BHP', 'ALB', 'SQM',
+    'SPY', 'QQQ', 'IWM', 'DIA', 'EEM', 'EWZ', 'FXI', 'XLE', 'XLF', 'XLK', 'XLV', 'XLI', 'XLP', 'XLU', 'XLY', 'ARKK', 'SMH', 'TAN', 'GLD', 'SLV', 'GDX'
+])
 
 def send_message(msg):
     if not TELEGRAM_TOKEN or not CHAT_ID: return
@@ -52,6 +68,7 @@ def calculate_adx(df, period=14):
     return wilder(100 * abs(p_di - n_di) / (p_di + n_di), period)
 
 def get_last_signal(df, adx_th):
+    if len(df) < 20: return None
     df['ADX'] = calculate_adx(df)
     df_ha = calculate_heikin_ashi(df)
     last_sig, in_pos = None, False
@@ -69,46 +86,58 @@ def get_last_signal(df, adx_th):
 # --- MOTOR PRINCIPAL ---
 def run_bot():
     print(f"--- START SCAN: {datetime.now()} ---")
+    send_message("⚡ **INICIANDO ESCANEO DE ACTIVOS (+100)...**")
+    
     master_data = {}
     ahora = datetime.now()
 
+    # Descarga por Timeframe
     for interval, label, period in TIMEFRAMES:
+        print(f"Descargando {label}...")
         try:
             data = yf.download(TICKERS, interval=interval, period=period, group_by='ticker', progress=False, auto_adjust=True)
             for ticker in TICKERS:
-                if ticker not in master_data: 
-                    master_data[ticker] = {'DIARIO':None,'SEMANAL':None,'MENSUAL':None,'Price':0,'LastDate':datetime(2000,1,1)}
+                if ticker not in master_data:
+                    master_data[ticker] = {'DIARIO':None, 'SEMANAL':None, 'MENSUAL':None, 'Price':0, 'LastDate':datetime(2000,1,1)}
                 
-                df = data[ticker].dropna() if len(TICKERS)>1 else data.dropna()
-                if df.empty: continue
-                
-                sig = get_last_signal(df, ADX_TH)
-                if sig:
-                    master_data[ticker][label] = sig
-                    if label == 'DIARIO': master_data[ticker]['Price'] = df['Close'].iloc[-1]
-                    if sig['F'] > master_data[ticker]['LastDate']: master_data[ticker]['LastDate'] = sig['F']
-        except Exception as e: print(f"Error en {label}: {e}")
+                try:
+                    df = data[ticker].dropna() if len(TICKERS)>1 else data.dropna()
+                    if df.empty: continue
+                    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+                    
+                    sig = get_last_signal(df, ADX_TH)
+                    if sig:
+                        master_data[ticker][label] = sig
+                        if label == 'DIARIO': master_data[ticker]['Price'] = df['Close'].iloc[-1]
+                        if sig['F'] > master_data[ticker]['LastDate']:
+                            master_data[ticker]['LastDate'] = sig['F']
+                except: pass
+        except Exception as e: print(f"Error general en {label}: {e}")
 
-    # Ordenar por actividad reciente
-    sorted_tickers = sorted([i for i in master_data.items() if i[1]['DIARIO']], key=lambda x: x[1]['LastDate'], reverse=True)
+    # Filtrar solo tickers que tienen al menos una señal y ordenar por fecha reciente
+    active_tickers = [i for i in master_data.items() if i[1]['LastDate'] > datetime(2000,1,1)]
+    sorted_tickers = sorted(active_tickers, key=lambda x: x[1]['LastDate'], reverse=True)
     
     report_msg = "📋 **REPORTE TÉCNICO DE ACTIVOS**\n\n"
     
     for ticker, info in sorted_tickers:
-        ficha = f"**{ticker}** | ${info['Price']:,.2f}\n"
+        # Encabezado por activo
+        price_now = info['Price'] if info['Price'] > 0 else (info['DIARIO']['P'] if info['DIARIO'] else 0)
+        ficha = f"**{ticker}** | ${price_now:,.2f}\n"
         ficha += "━━━━━━━━━━━━━━━━━━\n"
         
+        # Líneas de Timeframe
         for tf_key, tf_label in [('DIARIO','D'), ('SEMANAL','S'), ('MENSUAL','M')]:
             s = info[tf_key]
             if s:
                 ball = "🟢" if s['C'] == 1 else "🔴"
-                # Lógica de resaltado: Si la señal tiene menos de 48hs de antigüedad
+                # Resaltar señales de las últimas 48 horas
                 es_reciente = (ahora - s['F'].replace(tzinfo=None)).days <= 2
                 
                 linea = f"{ball} **{tf_label}** {s['T']} | ${s['P']:,.2f} | ADX:{s['A']:.1f} | {s['F'].strftime('%d/%m/%Y')}"
                 
                 if es_reciente:
-                    ficha += f"🆕 **{linea}**\n" # Negrita total y marcador NEW
+                    ficha += f"🆕 **{linea}**\n"
                 else:
                     ficha += f"{linea}\n"
             else:
@@ -117,12 +146,16 @@ def run_bot():
         ficha += "━━━━━━━━━━━━━━━━━━\n\n"
         report_msg += ficha
         
+        # Control de longitud de mensaje para Telegram
         if len(report_msg) > 3500:
             send_message(report_msg)
             report_msg = ""
             time.sleep(1)
 
-    if report_msg: send_message(report_msg)
+    if report_msg:
+        send_message(report_msg)
+
+    send_message("✅ **Escaneo completado.**")
 
 if __name__ == "__main__":
     run_bot()
