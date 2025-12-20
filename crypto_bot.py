@@ -11,13 +11,12 @@ CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID_CRYPTO")
 
 # --- CONFIGURACIÓN ---
 TIMEFRAMES = [
-    ("1week", "MENSUAL", 600),
-    ("1week", "SEMANAL", 200),
-    ("1day", "DIARIO", 300)
+    ("1week", "MENSUAL"),
+    ("1week", "SEMANAL"),
+    ("1day", "DIARIO")
 ]
 
 ADX_TH = 20
-ADX_LEN = 14
 
 # --- LISTA DE MONEDAS ---
 TOP_COINS = ['BTC', 'ETH']
@@ -48,7 +47,7 @@ def send_message(msg):
 def get_kucoin_data(symbol, k_interval):
     url = "https://api.kucoin.com/api/v1/market/candles"
     target = f"{symbol}-USDT"
-    limit = 1500 if k_interval == '1week' else 300
+    limit = 1500 if k_interval == '1week' else 500
     params = {'symbol': target, 'type': k_interval, 'limit': limit}
     try:
         r = requests.get(url, params=params, timeout=5).json()
@@ -61,12 +60,11 @@ def get_kucoin_data(symbol, k_interval):
 
 def resample_to_monthly(df_weekly):
     if df_weekly.empty: return pd.DataFrame()
-    df_weekly.set_index('Time', inplace=True)
-    logic = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}
+    df_weekly = df_weekly.set_index('Time')
     try:
-        df_monthly = df_weekly.resample('ME').agg(logic).dropna()
+        df_monthly = df_weekly.resample('ME').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}).dropna()
     except:
-        df_monthly = df_weekly.resample('M').agg(logic).dropna()
+        df_monthly = df_weekly.resample('M').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}).dropna()
     return df_monthly.reset_index()
 
 # --- CÁLCULOS ---
@@ -119,68 +117,90 @@ def get_last_signal(df, adx_th):
 # --- EJECUCIÓN PRINCIPAL ---
 def run_bot():
     print(f"--- SCAN: {datetime.now()} ---")
-    send_message("⚡ **INICIANDO ESCANEO (KuCoin)...**")
+    send_message("⚡ **INICIANDO ESCANEO TÉCNICO COMPLETO...**")
     
-    market_map = {t: {'1mo': 0, '1wk': 0, '1d': 0, 'Price': 0} for t in COINS}
-    all_signals_list = []
+    # Estructura: master_data[coin] = { 'DIARIO': sig, 'SEMANAL': sig, 'MENSUAL': sig, 'LastDate': date, 'Price': price }
+    master_data = {}
 
-    for k_int, label, _ in TIMEFRAMES:
+    for k_int, label in TIMEFRAMES:
         for coin in COINS:
             try:
+                if coin not in master_data:
+                    master_data[coin] = {'MENSUAL': None, 'SEMANAL': None, 'DIARIO': None, 'Price': 0, 'LastDate': datetime(2000,1,1)}
+                
                 df = get_kucoin_data(coin, k_int)
                 if label == "MENSUAL": df = resample_to_monthly(df)
                 if df.empty: continue
                 
                 sig = get_last_signal(df, ADX_TH)
                 if sig:
-                    key = "1mo" if label == "MENSUAL" else "1wk" if label == "SEMANAL" else "1d"
-                    market_map[coin][key] = sig['Color']
-                    if label == 'DIARIO': market_map[coin]['Price'] = sig['Precio']
-                    
-                    all_signals_list.append({
-                        "Ticker": coin, "TF": label, "Tipo": sig['Tipo'],
-                        "Precio": sig['Precio'], "ADX": sig['ADX'],
-                        "Fecha": sig['Fecha'], "Fecha_Str": sig['Fecha'].strftime('%d-%m-%Y')
-                    })
-                time.sleep(0.02)
+                    master_data[coin][label] = sig
+                    # Actualizar el precio (usamos el diario por ser más actual)
+                    if label == 'DIARIO': master_data[coin]['Price'] = sig['Precio']
+                    # Guardar la fecha más reciente de las señales para ordenar luego
+                    if sig['Fecha'] > master_data[coin]['LastDate']:
+                        master_data[coin]['LastDate'] = sig['Fecha']
+                time.sleep(0.01)
             except: pass
 
-    # --- REPORTE 1: MAPA DE OPORTUNIDADES ---
-    categories = {"BULL": [], "PULLBACK": [], "STARTING": [], "BOUNCE": [], "BEAR": []}
-    icon_map = {1: "🟢", -1: "🔴", 0: "⚪"}
-    
-    for t, d in market_map.items():
-        m, w, day, p = d['1mo'], d['1wk'], d['1d'], d['Price']
-        if m == 0 and w == 0 and day == 0: continue
-        line = f"• {t}: ${p:,.4f} [{icon_map[m]}{icon_map[w]}{icon_map[day]}]"
-        
-        if m == 1 and w == 1 and day == 1: categories["BULL"].append(line)
-        elif m == 1 and w == 1 and day == -1: categories["PULLBACK"].append(line)
-        elif m <= 0 and w == 1 and day == 1: categories["STARTING"].append(line)
-        elif w == -1 and day == 1: categories["BOUNCE"].append(line)
-        elif m == -1 and w == -1 and day == -1: categories["BEAR"].append(line)
+    # 1. ORDENAR LAS MONEDAS POR LA ACTIVIDAD MÁS RECIENTE
+    sorted_coins = sorted(master_data.items(), key=lambda x: x[1]['LastDate'], reverse=True)
 
-    map_msg = f"🦄 **MAPA DE MERCADO** ({datetime.now().strftime('%d/%m')})\nLeyenda: [M W D]\n\n"
-    if categories["STARTING"]: map_msg += "🌱 **NACIENDO** (Sem/Dia Verde)\n" + "\n".join(categories["STARTING"]) + "\n\n"
-    if categories["PULLBACK"]: map_msg += "💎 **PULLBACK** (Compra en dip)\n" + "\n".join(categories["PULLBACK"]) + "\n\n"
-    if categories["BULL"]: map_msg += "🚀 **FULL BULL** (Todo verde)\n" + "\n".join(categories["BULL"]) + "\n\n"
-    if categories["BOUNCE"]: map_msg += "⚠️ **REBOTE BEAR** (Cuidado)\n" + "\n".join(categories["BOUNCE"]) + "\n\n"
-    if categories["BEAR"]: map_msg += "🩸 **FULL BEAR** (Todo rojo)\n" + "\n".join(categories["BEAR"]) + "\n\n"
+    # 2. CONSTRUIR MAPA DE OPORTUNIDADES (Resumen rápido)
+    categories = {"💎 PULLBACK": [], "🌱 NACIENDO": [], "🚀 FULL BULL": [], "🩸 FULL BEAR": []}
+    icon_map = {1: "🟢", -1: "🔴", 0: "⚪"}
+
+    for t, d in sorted_coins:
+        m = d['MENSUAL']['Color'] if d['MENSUAL'] else 0
+        w = d['SEMANAL']['Color'] if d['SEMANAL'] else 0
+        day = d['DIARIO']['Color'] if d['DIARIO'] else 0
+        p = d['Price']
+        
+        line = f"• {t}: ${p:,.2f} [{icon_map[m]}{icon_map[w]}{icon_map[day]}]"
+        
+        if m == 1 and w == 1 and day == 1: categories["🚀 FULL BULL"].append(line)
+        elif m == 1 and w == 1 and day == -1: categories["💎 PULLBACK"].append(line)
+        elif m <= 0 and w == 1 and day == 1: categories["🌱 NACIENDO"].append(line)
+        elif m == -1 and w == -1 and day == -1: categories["🩸 FULL BEAR"].append(line)
+
+    map_msg = f"🦄 **MAPA DE OPORTUNIDADES** ({datetime.now().strftime('%d/%m')})\n\n"
+    for cat, items in categories.items():
+        if items:
+            map_msg += f"**{cat}**\n" + "\n".join(items) + "\n\n"
     
     send_message(map_msg)
     time.sleep(2)
 
-    # --- REPORTE 2: BITÁCORA ---
-    if all_signals_list:
-        all_signals_list.sort(key=lambda x: x['Fecha'], reverse=True)
-        send_message(f"📋 **BITÁCORA DE SEÑALES**\n(Últimos cambios detectados):")
-        for s in all_signals_list[:20]: # Mostramos las últimas 20 para no saturar
-            icon = "🚨" if "SHORT" in s['Tipo'] else "🚀"
-            msg = f"{icon} **{s['Ticker']} ({s['TF']})**\n{s['Tipo']} | ADX: {s['ADX']:.1f}\nPrecio: ${s['Precio']}\nFecha: {s['Fecha_Str']}"
-            send_message(msg)
-            time.sleep(0.1)
+    # 3. CONSTRUIR BITÁCORA POR ACTIVO (Fichas Técnicas)
+    log_msg = "📋 **BITÁCORA TÉCNICA POR ACTIVO**\n*(Ordenada por señal más reciente)*\n\n"
     
-    send_message("✅ **Escaneo completado.**")
+    for t, d in sorted_coins:
+        # Solo procesar si tiene al menos una temporalidad
+        if not d['DIARIO'] and not d['SEMANAL'] and not d['MENSUAL']: continue
+        
+        price_header = f"**{t}** | ${d['Price']:,.2f}\n"
+        last_act = f"📅 Actividad: *{d['LastDate'].strftime('%d/%m/%Y')}*\n"
+        
+        lines = []
+        for tf in ["DIARIO", "SEMANAL", "MENSUAL"]:
+            s = d[tf]
+            if s:
+                lines.append(f"• **{tf[0]}**: {s['Tipo']} | ADX: {s['ADX']:.1f} | {s['Fecha'].strftime('%d/%m/%y')}")
+            else:
+                lines.append(f"• **{tf[0]}**: Sin datos")
+        
+        log_msg += price_header + last_act + "\n".join(lines) + "\n\n"
+        
+        # Enviar cada 5 monedas para evitar que el mensaje sea demasiado largo para Telegram
+        if len(log_msg) > 3000:
+            send_message(log_msg)
+            log_msg = ""
+            time.sleep(0.5)
+
+    if log_msg:
+        send_message(log_msg)
+
+    send_message("✅ **Escaneo Finalizado.**")
 
 if __name__ == "__main__":
     run_bot()
