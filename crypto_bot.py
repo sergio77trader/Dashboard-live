@@ -17,7 +17,7 @@ TIMEFRAMES = [
     ("1day", "DIARIO")
 ]
 ADX_TH = 20
-ESTADO_FILE = "estado_mercado.json" # Archivo para persistencia
+ESTADO_FILE = "estado_mercado.json"
 
 # --- LISTA DE MONEDAS ---
 TOP_COINS = ['BTC', 'ETH']
@@ -31,22 +31,20 @@ ALTCOINS = sorted([
 ])
 COINS = TOP_COINS + [c for c in ALTCOINS if c not in TOP_COINS]
 
-# --- FUNCIONES DE PERSISTENCIA ---
+# --- PERSISTENCIA (Para el 🆕 NEW) ---
 def cargar_estado_anterior():
     if os.path.exists(ESTADO_FILE):
         try:
-            with open(ESTADO_FILE, 'r') as f:
-                return json.load(f)
+            with open(ESTADO_FILE, 'r') as f: return json.load(f)
         except: return {}
     return {}
 
 def guardar_estado_actual(estado):
     try:
-        with open(ESTADO_FILE, 'w') as f:
-            json.dump(estado, f)
+        with open(ESTADO_FILE, 'w') as f: json.dump(estado, f)
     except: pass
 
-# --- FUNCIONES TÉCNICAS (IGUALES AL ANTERIOR) ---
+# --- FUNCIONES DE TELEGRAM ---
 def send_message(msg):
     if not TELEGRAM_TOKEN or not CHAT_ID: return
     try:
@@ -60,6 +58,7 @@ def send_message(msg):
             requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
     except: pass
 
+# --- MOTOR DE DATOS ---
 def get_kucoin_data(symbol, k_interval):
     url = "https://api.kucoin.com/api/v1/market/candles"
     params = {'symbol': f"{symbol}-USDT", 'type': k_interval, 'limit': 1000 if k_interval=='1week' else 400}
@@ -81,6 +80,7 @@ def resample_to_monthly(df_weekly):
         df_monthly = df_temp.resample('M').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}).dropna()
     return df_monthly.reset_index()
 
+# --- INDICADORES ---
 def calculate_heikin_ashi(df):
     df_ha = df.copy()
     df_ha['HA_Close'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
@@ -120,14 +120,14 @@ def get_last_signal(df, adx_th):
         last_signal = {"Tipo": "🟢 LONG" if curr['Color']==1 else "🔴 SHORT", "Fecha": curr['Time'], "Precio": curr['Close'], "ADX": df['ADX'].iloc[-1], "Color": curr['Color']}
     return last_signal
 
-# --- MOTOR PRINCIPAL ---
+# --- EJECUCIÓN PRINCIPAL ---
 def run_bot():
-    print(f"--- INICIO SCAN: {datetime.now()} ---")
-    send_message("⚡ **INICIANDO ESCANEO TÉCNICO...**")
+    print(f"--- SCAN: {datetime.now()} ---")
+    send_message("⚡ **INICIANDO ESCANEO...**")
     
     estado_anterior = cargar_estado_anterior()
     master_data = {}
-    estado_actual_para_guardar = {}
+    estado_para_guardar = {}
 
     for k_int, label in TIMEFRAMES:
         for coin in COINS:
@@ -145,50 +145,43 @@ def run_bot():
                 time.sleep(0.01)
             except: pass
 
-    # 1. ORDENAR POR FECHA
     sorted_coins = sorted(master_data.items(), key=lambda x: x[1]['LastDate'], reverse=True)
 
-    # 2. MAPA DE MERCADO CON DETECCIÓN DE CAMBIOS
+    # --- 1. REPORTE: MAPA ---
     categories = {"🚀 FULL BULL": [], "💎 PULLBACK": [], "🌱 NACIENDO": [], "🩸 FULL BEAR": [], "🌀 MIXTAS": []}
     icon_map = {1: "🟢", -1: "🔴", 0: "⚪"}
 
     for t, d in sorted_coins:
-        m = d['MENSUAL']['Color'] if d['MENSUAL'] else 0
-        w = d['SEMANAL']['Color'] if d['SEMANAL'] else 0
-        day = d['DIARIO']['Color'] if d['DIARIO'] else 0
-        
-        # Guardar estado para la próxima ejecución
-        estado_actual_para_guardar[t] = [m, w, day]
-        
-        # Comparar con estado anterior
-        previo = estado_anterior.get(t, [0, 0, 0])
-        es_nuevo = " 🆕" if [m, w, day] != previo else ""
-        
+        m, w, day = (d['MENSUAL']['Color'] if d['MENSUAL'] else 0), (d['SEMANAL']['Color'] if d['SEMANAL'] else 0), (d['DIARIO']['Color'] if d['DIARIO'] else 0)
+        estado_para_guardar[t] = [m, w, day]
+        es_nuevo = " 🆕" if [m, w, day] != estado_anterior.get(t, [0, 0, 0]) else ""
         line = f"• {t}: ${d['Price']:,.2f} [{icon_map[m]}{icon_map[w]}{icon_map[day]}]{es_nuevo}"
         
-        if m == 1 and w == 1 and day == 1: categories["🚀 FULL BULL"].append(line)
-        elif m == 1 and w == 1 and day == -1: categories["💎 PULLBACK"].append(line)
-        elif m <= 0 and w == 1 and day == 1: categories["🌱 NACIENDO"].append(line)
-        elif m == -1 and w == -1 and day == -1: categories["🩸 FULL BEAR"].append(line)
+        if m==1 and w==1 and day==1: categories["🚀 FULL BULL"].append(line)
+        elif m==1 and w==1 and day==-1: categories["💎 PULLBACK"].append(line)
+        elif m<=0 and w==1 and day==1: categories["🌱 NACIENDO"].append(line)
+        elif m==-1 and w==-1 and day==-1: categories["🩸 FULL BEAR"].append(line)
         else: categories["🌀 MIXTAS"].append(line)
 
     map_msg = f"🦄 **MAPA DE MERCADO** ({datetime.now().strftime('%d/%m')})\n\n"
-    for cat in ["🚀 FULL BULL", "💎 PULLBACK", "🌱 NACIENDO", "🩸 FULL BEAR", "🌀 MIXTAS"]:
-        if categories[cat]:
-            map_msg += f"**{cat}**\n" + "\n".join(categories[cat]) + "\n\n"
-    
+    for cat in categories:
+        if categories[cat]: map_msg += f"**{cat}**\n" + "\n".join(categories[cat]) + "\n\n"
     send_message(map_msg)
-    guardar_estado_actual(estado_actual_para_guardar)
+    guardar_estado_actual(estado_para_guardar)
 
-    # 3. BITÁCORA TÉCNICA (FICHAS)
-    log_msg = "📋 **BITÁCORA TÉCNICA**\n\n"
+    # --- 2. REPORTE: BITÁCORA (Ficha por Activo) ---
+    log_msg = "📋 **BITÁCORA TÉCNICA**\n*(Precios corresponden a la señal)*\n\n"
     for t, d in sorted_coins:
         if not d['DIARIO'] and not d['SEMANAL']: continue
-        ficha = f"**{t}** | ${d['Price']:,.2f}\n"
-        ficha += f"📅 Últ. Señal: {d['LastDate'].strftime('%d/%m/%Y')}\n"
+        ficha = f"**{t}** | Actual: ${d['Price']:,.2f}\n"
+        ficha += f"📅 Últ. Actividad: {d['LastDate'].strftime('%d/%m/%Y')}\n"
         for tf in ["DIARIO", "SEMANAL", "MENSUAL"]:
             s = d[tf]
-            ficha += f"• **{tf[0]}**: {s['Tipo']} | ADX: {s['ADX']:.1f} | {s['Fecha'].strftime('%d/%m/%y')}\n" if s else f"• **{tf[0]}**: Sin datos\n"
+            if s:
+                # Aquí agregamos el precio de la señal: s['Precio']
+                ficha += f"• **{tf[0]}**: {s['Tipo']} | @ ${s['Precio']:,.2f} | ADX: {s['ADX']:.1f} | {s['Fecha'].strftime('%d/%m/%y')}\n"
+            else:
+                ficha += f"• **{tf[0]}**: Sin datos\n"
         log_msg += ficha + "\n"
         if len(log_msg) > 3500:
             send_message(log_msg); log_msg = ""; time.sleep(0.5)
