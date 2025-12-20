@@ -19,7 +19,6 @@ TIMEFRAMES = [
 ADX_TH = 20
 ADX_LEN = 14
 
-# --- LISTA DE MONEDAS (ORDENADA POR IMPORTANCIA) ---
 TOP_COINS = ['BTC', 'ETH']
 ALTCOINS = sorted([
     'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOGE', 'SHIB', 'DOT',
@@ -35,47 +34,32 @@ def send_message(msg):
     if not TELEGRAM_TOKEN or not CHAT_ID: return
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        if len(msg) > 4000:
-            parts = [msg[i:i+4000] for i in range(0, len(msg), 4000)]
-            for p in parts:
-                requests.post(url, data={"chat_id": CHAT_ID, "text": p, "parse_mode": "Markdown"})
-                time.sleep(1)
-        else:
-            requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
     except: pass
 
-# --- MOTOR DE DATOS (KUCOIN API) ---
 def get_kucoin_data(symbol, k_interval):
     url = "https://api.kucoin.com/api/v1/market/candles"
     target = f"{symbol}-USDT"
     limit = 1500 if k_interval == '1week' else 300
-    
     params = {'symbol': target, 'type': k_interval, 'limit': limit}
     try:
         r = requests.get(url, params=params, timeout=5).json()
         if r['code'] == '200000':
-            data = r['data']
-            df = pd.DataFrame(data, columns=['Time','Open','Close','High','Low','Vol','Turn'])
-            df = df.astype(float)
+            df = pd.DataFrame(r['data'], columns=['Time','Open','Close','High','Low','Vol','Turn']).astype(float)
             df['Time'] = pd.to_datetime(df['Time'], unit='s')
-            df = df.sort_values('Time', ascending=True).reset_index(drop=True)
-            return df
+            return df.sort_values('Time').reset_index(drop=True)
     except: pass
     return pd.DataFrame()
 
-# --- CONVERTIR SEMANAL A MENSUAL ---
 def resample_to_monthly(df_weekly):
     if df_weekly.empty: return pd.DataFrame()
     df_weekly.set_index('Time', inplace=True)
-    logic = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}
     try:
-        df_monthly = df_weekly.resample('ME').agg(logic).dropna()
+        df_monthly = df_weekly.resample('ME').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}).dropna()
     except:
-        df_monthly = df_weekly.resample('M').agg(logic).dropna()
-    df_monthly = df_monthly.reset_index()
-    return df_monthly
+        df_monthly = df_weekly.resample('M').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}).dropna()
+    return df_monthly.reset_index()
 
-# --- CÁLCULOS MATEMÁTICOS ---
 def calculate_heikin_ashi(df):
     df_ha = df.copy()
     df_ha['HA_Close'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
@@ -96,126 +80,99 @@ def calculate_adx(df, period=14):
     df['DownMove'] = df['Low'].shift(1) - df['Low']
     df['+DM'] = np.where((df['UpMove'] > df['DownMove']) & (df['UpMove'] > 0), df['UpMove'], 0)
     df['-DM'] = np.where((df['DownMove'] > df['UpMove']) & (df['DownMove'] > 0), df['DownMove'], 0)
-    
     def wilder(x, n): return x.ewm(alpha=1/n, adjust=False).mean()
     tr_s = wilder(df['TR'], period).replace(0, 1)
-    p_dm_s = wilder(df['+DM'], period)
-    n_dm_s = wilder(df['-DM'], period)
-    p_di = 100 * (p_dm_s / tr_s)
-    n_di = 100 * (n_dm_s / tr_s)
+    p_di = 100 * (wilder(df['+DM'], period) / tr_s)
+    n_di = 100 * (wilder(df['-DM'], period) / tr_s)
     dx = 100 * abs(p_di - n_di) / (p_di + n_di)
     return wilder(dx, period)
 
-# --- BÚSQUEDA DE SEÑAL ---
 def get_last_signal(df, adx_th):
     if len(df) < 20: return None
     df['ADX'] = calculate_adx(df)
     df_ha = calculate_heikin_ashi(df)
-    
-    last_signal = None
-    in_pos = False
-    
-    for i in range(1, len(df_ha)):
-        c = df_ha['Color'].iloc[i]
-        a = df['ADX'].iloc[i]
-        d = df_ha['Time'].iloc[i]
-        p = df_ha['Close'].iloc[i]
-        
-        if not in_pos and c == 1 and a > adx_th:
-            in_pos = True
-            last_signal = {"Tipo": "🟢 LONG", "Fecha": d, "Precio": p, "ADX": a, "Color": 1}
-        elif in_pos and c == -1:
-            in_pos = False
-            last_signal = {"Tipo": "🔴 SHORT", "Fecha": d, "Precio": p, "ADX": a, "Color": -1}
-            
-    if not last_signal:
-        curr = df_ha.iloc[-1]
-        t = "🟢 LONG" if curr['Color'] == 1 else "🔴 SHORT"
-        last_signal = {"Tipo": t, "Fecha": curr['Time'], "Precio": curr['Close'], "ADX": df['ADX'].iloc[-1], "Color": curr['Color']}
-        
-    return last_signal
+    curr = df_ha.iloc[-1]
+    return {
+        "Tipo": "🟢 LONG" if curr['Color'] == 1 else "🔴 SHORT",
+        "Fecha": curr['Time'],
+        "Precio": curr['Close'],
+        "ADX": df['ADX'].iloc[-1],
+        "Color": int(curr['Color'])
+    }
 
-# --- EJECUCIÓN PRINCIPAL ---
 def run_bot():
     print(f"--- SCAN: {datetime.now()} ---")
-    send_message("⚡ **INICIANDO ESCANEO (KuCoin)...**")
+    send_message("⚡ **INICIANDO ESCANEO DE MERCADO...**")
     
-    market_map = {t: {} for t in COINS}
-    all_signals_list = []
+    market_map = {t: {'1mo': 0, '1wk': 0, '1d': 0, 'Price': 0} for t in COINS}
 
-    # 1. BUCLE DE ANÁLISIS
     for k_int, label, _ in TIMEFRAMES:
         for coin in COINS:
             try:
                 df = get_kucoin_data(coin, k_int)
                 if label == "MENSUAL": df = resample_to_monthly(df)
                 if df.empty: continue
-
                 sig = get_last_signal(df, ADX_TH)
                 if sig:
-                    # Mapeo de claves
-                    key_map = "1mo" if label == "MENSUAL" else "1wk" if label == "SEMANAL" else "1d"
-                    market_map[coin][key_map] = sig['Color']
+                    key = "1mo" if label == "MENSUAL" else "1wk" if label == "SEMANAL" else "1d"
+                    market_map[coin][key] = sig['Color']
                     if label == 'DIARIO': market_map[coin]['Price'] = sig['Precio']
-                    
-                    # Guardar para Bitácora
-                    all_signals_list.append({
-                        "Ticker": coin, "TF": label, "Tipo": sig['Tipo'],
-                        "Precio": sig['Precio'], "ADX": sig['ADX'],
-                        "Fecha": sig['Fecha'], "Fecha_Str": sig['Fecha'].strftime('%d-%m-%Y')
-                    })
-                time.sleep(0.02)
+                time.sleep(0.05)
             except: pass
 
-    # --- REPORTE 1: EL MAPA ---
-    full_bull, starting, pullback, full_bear = [], [], [], []
+    # --- LÓGICA DE CATEGORIZACIÓN MEJORADA ---
+    full_bull, pullbacks, starting, bounces, full_bear, mixed = [], [], [], [], [], []
     icon_map = {1: "🟢", -1: "🔴", 0: "⚪"}
     
     for t, d in market_map.items():
-        # --- MODIFICACIÓN CLAVE: USAR .get() Y PERMITIR DATOS INCOMPLETOS ---
-        m = d.get('1mo', 0)
-        w = d.get('1wk', 0)
-        day = d.get('1d', 0)
+        m, w, day, p = d['1mo'], d['1wk'], d['1d'], d['Price']
+        if m == 0 and w == 0: continue # Sin datos suficientes
         
-        # Solo saltamos si no tiene absolutamente NADA
-        if m == 0 and w == 0 and day == 0: continue
+        line = f"• {t}: ${p:,.4f} [{icon_map[m]}{icon_map[w]}{icon_map[day]}]"
         
-        p = d.get('Price', 0)
-        
-        line = f"• {t}: ${p:,.4f} [{icon_map[m]} {icon_map[w]} {icon_map[day]}]"
-        
-        if m==1 and w==1 and day==1: full_bull.append(line)
-        elif m<=0 and w==1 and day==1: starting.append(line)
-        elif m==1 and w==1 and day==-1: pullback.append(line)
-        elif m==-1 and w==-1 and day==-1: full_bear.append(line)
+        # 1. TODO VERDE
+        if m == 1 and w == 1 and day == 1:
+            full_bull.append(line)
+        # 2. PULLBACK EN TENDENCIA ALCISTA (M y W verdes, pero diario rojo: OPORTUNIDAD)
+        elif m == 1 and w == 1 and day == -1:
+            pullbacks.append(line)
+        # 3. INICIO DE TENDENCIA (Semanal y Diario arrancan verde, Mensual todavía no)
+        elif m <= 0 and w == 1 and day == 1:
+            starting.append(line)
+        # 4. TODO ROJO
+        elif m == -1 and w == -1 and day == -1:
+            full_bear.append(line)
+        # 5. REBOTE EN TENDENCIA BAJISTA (M y W rojos, pero diario verde)
+        elif w == -1 and day == 1:
+            bounces.append(line)
+        # 6. RESTO DE COMBINACIONES
+        else:
+            mixed.append(line)
 
-    map_msg = f"🦄 **MAPA KUCOIN** ({datetime.now().strftime('%d/%m')})\nLeyenda: [Mes Sem Dia]\n\n"
-    if starting: map_msg += f"🌱 **NACIMIENTO**\n" + "\n".join(starting) + "\n\n"
-    if full_bull: map_msg += f"🚀 **FULL BULL**\n" + "\n".join(full_bull) + "\n\n"
-    if pullback: map_msg += f"⚠️ **CORRECCIÓN**\n" + "\n".join(pullback) + "\n\n"
-    if full_bear: map_msg += f"🩸 **FULL BEAR**\n" + "\n".join(full_bear) + "\n\n"
+    # --- CONSTRUCCIÓN DEL MENSAJE ---
+    msg = f"🦄 **MAPA DE MERCADO** ({datetime.now().strftime('%d/%m %H:%M')})\n"
+    msg += "Leyenda: [Mes Sem Dia]\n\n"
     
-    send_message(map_msg)
-    time.sleep(2)
+    if full_bull:
+        msg += f"🚀 **FULL BULL** (Fuerza total)\n" + "\n".join(full_bull) + "\n\n"
+    if pullbacks:
+        msg += f"💎 **PULLBACKS** (Oportunidad Compra)\n" + "\n".join(pullbacks) + "\n\n"
+    if starting:
+        msg += f"🌱 **NACIENDO** (Cambio tendencia)\n" + "\n".join(starting) + "\n\n"
+    if bounces:
+        msg += f"⚠️ **REBOTES** (Cuidado, Bearish)\n" + "\n".join(bounces) + "\n\n"
+    if full_bear:
+        msg += f"🩸 **FULL BEAR** (Evitar)\n" + "\n".join(full_bear) + "\n\n"
+    
+    # Enviar reporte principal
+    send_message(msg)
+    
+    # Reporte de otros movimientos (opcional, para no saturar)
+    if mixed:
+        msg_mixed = "🌀 **OTRAS SEÑALES / MIXTO**\n" + "\n".join(mixed[:15]) # Limitado a 15
+        send_message(msg_mixed)
 
-    # --- REPORTE 2: BITÁCORA ---
-    if all_signals_list:
-        all_signals_list.sort(key=lambda x: x['Fecha'], reverse=True)
-        send_message(f"📋 **BITÁCORA**\n(Señales ordenadas por fecha):")
-        
-        for s in all_signals_list:
-            icon = "🚨" if "SHORT" in s['Tipo'] else "🚀"
-            msg = (
-                f"{icon} **{s['Ticker']} ({s['TF']})**\n"
-                f"**{s['Tipo']}**\n"
-                f"Precio: ${s['Precio']}\n"
-                f"ADX: {s['ADX']:.1f}\n"
-                f"Fecha: {s['Fecha_Str']}"
-            )
-            send_message(msg)
-            time.sleep(0.1)
-    
-    send_message("✅ Fin del reporte.")
+    send_message("✅ **Escaneo completado.**")
 
 if __name__ == "__main__":
     run_bot()
