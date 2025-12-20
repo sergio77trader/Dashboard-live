@@ -47,7 +47,7 @@ def send_message(msg):
 def get_kucoin_data(symbol, k_interval):
     url = "https://api.kucoin.com/api/v1/market/candles"
     target = f"{symbol}-USDT"
-    limit = 1500 if k_interval == '1week' else 500
+    limit = 1000 if k_interval == '1week' else 400
     params = {'symbol': target, 'type': k_interval, 'limit': limit}
     try:
         r = requests.get(url, params=params, timeout=5).json()
@@ -60,11 +60,11 @@ def get_kucoin_data(symbol, k_interval):
 
 def resample_to_monthly(df_weekly):
     if df_weekly.empty: return pd.DataFrame()
-    df_weekly = df_weekly.set_index('Time')
+    df_temp = df_weekly.set_index('Time')
     try:
-        df_monthly = df_weekly.resample('ME').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}).dropna()
+        df_monthly = df_temp.resample('ME').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}).dropna()
     except:
-        df_monthly = df_weekly.resample('M').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}).dropna()
+        df_monthly = df_temp.resample('M').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}).dropna()
     return df_monthly.reset_index()
 
 # --- CÁLCULOS ---
@@ -109,17 +109,17 @@ def get_last_signal(df, adx_th):
         elif in_pos and c == -1:
             in_pos = False
             last_signal = {"Tipo": "🔴 SHORT", "Fecha": d, "Precio": p, "ADX": a, "Color": -1}
+    
     if not last_signal:
         curr = df_ha.iloc[-1]
         last_signal = {"Tipo": "🟢 LONG" if curr['Color']==1 else "🔴 SHORT", "Fecha": curr['Time'], "Precio": curr['Close'], "ADX": df['ADX'].iloc[-1], "Color": curr['Color']}
     return last_signal
 
-# --- EJECUCIÓN PRINCIPAL ---
+# --- EJECUCIÓN ---
 def run_bot():
-    print(f"--- SCAN: {datetime.now()} ---")
-    send_message("⚡ **INICIANDO ESCANEO TÉCNICO COMPLETO...**")
+    print(f"--- INICIO SCAN: {datetime.now()} ---")
+    send_message("⚡ **INICIANDO ESCANEO DE MERCADO (Pullbacks y Tendencias)...**")
     
-    # Estructura: master_data[coin] = { 'DIARIO': sig, 'SEMANAL': sig, 'MENSUAL': sig, 'LastDate': date, 'Price': price }
     master_data = {}
 
     for k_int, label in TIMEFRAMES:
@@ -135,19 +135,23 @@ def run_bot():
                 sig = get_last_signal(df, ADX_TH)
                 if sig:
                     master_data[coin][label] = sig
-                    # Actualizar el precio (usamos el diario por ser más actual)
                     if label == 'DIARIO': master_data[coin]['Price'] = sig['Precio']
-                    # Guardar la fecha más reciente de las señales para ordenar luego
                     if sig['Fecha'] > master_data[coin]['LastDate']:
                         master_data[coin]['LastDate'] = sig['Fecha']
                 time.sleep(0.01)
             except: pass
 
-    # 1. ORDENAR LAS MONEDAS POR LA ACTIVIDAD MÁS RECIENTE
+    # 1. ORDENAR TODO POR FECHA
     sorted_coins = sorted(master_data.items(), key=lambda x: x[1]['LastDate'], reverse=True)
 
-    # 2. CONSTRUIR MAPA DE OPORTUNIDADES (Resumen rápido)
-    categories = {"💎 PULLBACK": [], "🌱 NACIENDO": [], "🚀 FULL BULL": [], "🩸 FULL BEAR": []}
+    # 2. MAPA DE OPORTUNIDADES (SIN FILTROS QUE ELIMINEN MONEDAS)
+    categories = {
+        "🚀 FULL BULL": [],
+        "💎 PULLBACK": [],
+        "🌱 NACIENDO": [],
+        "🩸 FULL BEAR": [],
+        "🌀 MIXTAS / OTRAS": []
+    }
     icon_map = {1: "🟢", -1: "🔴", 0: "⚪"}
 
     for t, d in sorted_coins:
@@ -158,41 +162,46 @@ def run_bot():
         
         line = f"• {t}: ${p:,.2f} [{icon_map[m]}{icon_map[w]}{icon_map[day]}]"
         
-        if m == 1 and w == 1 and day == 1: categories["🚀 FULL BULL"].append(line)
-        elif m == 1 and w == 1 and day == -1: categories["💎 PULLBACK"].append(line)
-        elif m <= 0 and w == 1 and day == 1: categories["🌱 NACIENDO"].append(line)
-        elif m == -1 and w == -1 and day == -1: categories["🩸 FULL BEAR"].append(line)
+        if m == 1 and w == 1 and day == 1:
+            categories["🚀 FULL BULL"].append(line)
+        elif m == 1 and w == 1 and day == -1:
+            categories["💎 PULLBACK"].append(line)
+        elif (m <= 0) and w == 1 and day == 1:
+            categories["🌱 NACIENDO"].append(line)
+        elif m == -1 and w == -1 and day == -1:
+            categories["🩸 FULL BEAR"].append(line)
+        else:
+            # ESTA CATEGORÍA ASEGURA QUE NINGUNA MONEDA SE QUEDE FUERA
+            categories["🌀 MIXTAS / OTRAS"].append(line)
 
-    map_msg = f"🦄 **MAPA DE OPORTUNIDADES** ({datetime.now().strftime('%d/%m')})\n\n"
-    for cat, items in categories.items():
-        if items:
-            map_msg += f"**{cat}**\n" + "\n".join(items) + "\n\n"
+    map_msg = f"🦄 **MAPA DE MERCADO** ({datetime.now().strftime('%d/%m')})\n\n"
+    for cat in ["🚀 FULL BULL", "💎 PULLBACK", "🌱 NACIENDO", "🩸 FULL BEAR", "🌀 MIXTAS / OTRAS"]:
+        if categories[cat]:
+            map_msg += f"**{cat}**\n" + "\n".join(categories[cat]) + "\n\n"
     
     send_message(map_msg)
-    time.sleep(2)
+    time.sleep(1)
 
-    # 3. CONSTRUIR BITÁCORA POR ACTIVO (Fichas Técnicas)
-    log_msg = "📋 **BITÁCORA TÉCNICA POR ACTIVO**\n*(Ordenada por señal más reciente)*\n\n"
+    # 3. BITÁCORA TÉCNICA (TODAS LAS MONEDAS)
+    log_msg = "📋 **BITÁCORA TÉCNICA POR ACTIVO**\n\n"
     
     for t, d in sorted_coins:
-        # Solo procesar si tiene al menos una temporalidad
-        if not d['DIARIO'] and not d['SEMANAL'] and not d['MENSUAL']: continue
+        if not d['DIARIO'] and not d['SEMANAL']: continue
         
-        price_header = f"**{t}** | ${d['Price']:,.2f}\n"
-        last_act = f"📅 Actividad: *{d['LastDate'].strftime('%d/%m/%Y')}*\n"
+        ficha = f"**{t}** | ${d['Price']:,.2f}\n"
+        ficha += f"📅 Últ. Señal: {d['LastDate'].strftime('%d/%m/%Y')}\n"
         
-        lines = []
         for tf in ["DIARIO", "SEMANAL", "MENSUAL"]:
             s = d[tf]
             if s:
-                lines.append(f"• **{tf[0]}**: {s['Tipo']} | ADX: {s['ADX']:.1f} | {s['Fecha'].strftime('%d/%m/%y')}")
+                ficha += f"• **{tf[0]}**: {s['Tipo']} | ADX: {s['ADX']:.1f} | {s['Fecha'].strftime('%d/%m/%y')}\n"
             else:
-                lines.append(f"• **{tf[0]}**: Sin datos")
+                ficha += f"• **{tf[0]}**: Sin datos\n"
         
-        log_msg += price_header + last_act + "\n".join(lines) + "\n\n"
+        log_msg += ficha + "\n"
         
-        # Enviar cada 5 monedas para evitar que el mensaje sea demasiado largo para Telegram
-        if len(log_msg) > 3000:
+        # Particionar mensajes largos
+        if len(log_msg) > 3500:
             send_message(log_msg)
             log_msg = ""
             time.sleep(0.5)
@@ -200,7 +209,7 @@ def run_bot():
     if log_msg:
         send_message(log_msg)
 
-    send_message("✅ **Escaneo Finalizado.**")
+    send_message("✅ **Escaneo completado.**")
 
 if __name__ == "__main__":
     run_bot()
