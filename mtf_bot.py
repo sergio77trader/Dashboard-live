@@ -4,39 +4,22 @@ import pandas as pd
 import numpy as np
 import requests
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # --- CREDENCIALES ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-# --- CONFIGURACIÓN (D, S, M) ---
+# --- CONFIGURACIÓN ---
 TIMEFRAMES = [
     ("1d", "DIARIO", "2y"),
     ("1wk", "SEMANAL", "10y"),
     ("1mo", "MENSUAL", "max")
 ]
-
 ADX_TH = 20
 
 # --- BASE DE DATOS ---
-TICKERS = sorted([
-    'GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'CEPU', 'EDN', 'BFR', 'SUPV', 'CRESY', 'IRS', 'TEO', 'LOMA', 'DESP', 'VIST', 'GLOB', 'MELI', 'BIOX', 'TX',
-    'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NFLX',
-    'CRM', 'ORCL', 'ADBE', 'IBM', 'CSCO', 'PLTR', 'SNOW', 'SHOP', 'SPOT', 'UBER', 'ABNB', 'SAP', 'INTU', 'NOW',
-    'AMD', 'INTC', 'QCOM', 'AVGO', 'TXN', 'MU', 'ADI', 'AMAT', 'ARM', 'SMCI', 'TSM', 'ASML', 'LRCX', 'HPQ', 'DELL',
-    'JPM', 'BAC', 'C', 'WFC', 'GS', 'MS', 'V', 'MA', 'AXP', 'BRK-B', 'PYPL', 'SQ', 'COIN', 'BLK', 'USB', 'NU',
-    'KO', 'PEP', 'MCD', 'SBUX', 'DIS', 'NKE', 'WMT', 'COST', 'TGT', 'HD', 'LOW', 'PG', 'CL', 'MO', 'PM', 'KMB', 'EL',
-    'JNJ', 'PFE', 'MRK', 'LLY', 'ABBV', 'UNH', 'BMY', 'AMGN', 'GILD', 'AZN', 'NVO', 'NVS', 'CVS',
-    'BA', 'CAT', 'DE', 'GE', 'MMM', 'LMT', 'RTX', 'HON', 'UNP', 'UPS', 'FDX', 'LUV', 'DAL',
-    'F', 'GM', 'TM', 'HMC', 'STLA', 'RACE',
-    'XOM', 'CVX', 'SLB', 'OXY', 'HAL', 'BP', 'SHEL', 'TTE', 'PBR', 'VLO',
-    'VZ', 'T', 'TMUS', 'VOD',
-    'BABA', 'JD', 'BIDU', 'NIO', 'PDD', 'TCEHY', 'TCOM', 'BEKE', 'XPEV', 'LI', 'SONY',
-    'VALE', 'ITUB', 'BBD', 'ERJ', 'ABEV', 'GGB', 'SID', 'NBR',
-    'GOLD', 'NEM', 'PAAS', 'FCX', 'SCCO', 'RIO', 'BHP', 'ALB', 'SQM',
-    'SPY', 'QQQ', 'IWM', 'DIA', 'EEM', 'EWZ', 'FXI', 'XLE', 'XLF', 'XLK', 'XLV', 'XLI', 'XLP', 'XLU', 'XLY', 'ARKK', 'SMH', 'TAN', 'GLD', 'SLV', 'GDX'
-])
+TICKERS = sorted(['GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'AAPL', 'MSFT', 'NVDA', 'META', 'TSLA', 'MELI', 'VIST', 'GLOB', 'SPY', 'QQQ']) # Agrega los que faltan
 
 def send_message(msg):
     if not TELEGRAM_TOKEN or not CHAT_ID: return
@@ -87,41 +70,51 @@ def get_last_signal(df, adx_th):
 def run_bot():
     print(f"--- START SCAN: {datetime.now()} ---")
     master_data = {}
+    ahora = datetime.now()
 
     for interval, label, period in TIMEFRAMES:
         try:
             data = yf.download(TICKERS, interval=interval, period=period, group_by='ticker', progress=False, auto_adjust=True)
             for ticker in TICKERS:
-                if ticker not in master_data: master_data[ticker] = {'DIARIO':None,'SEMANAL':None,'MENSUAL':None,'Price':0,'LastDate':datetime(2000,1,1)}
+                if ticker not in master_data: 
+                    master_data[ticker] = {'DIARIO':None,'SEMANAL':None,'MENSUAL':None,'Price':0,'LastDate':datetime(2000,1,1)}
+                
                 df = data[ticker].dropna() if len(TICKERS)>1 else data.dropna()
-                if df.empty or len(df)<20: continue
-                if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+                if df.empty: continue
                 
                 sig = get_last_signal(df, ADX_TH)
                 if sig:
                     master_data[ticker][label] = sig
                     if label == 'DIARIO': master_data[ticker]['Price'] = df['Close'].iloc[-1]
                     if sig['F'] > master_data[ticker]['LastDate']: master_data[ticker]['LastDate'] = sig['F']
-        except: pass
+        except Exception as e: print(f"Error en {label}: {e}")
 
-    # Ordenar y enviar
+    # Ordenar por actividad reciente
     sorted_tickers = sorted([i for i in master_data.items() if i[1]['DIARIO']], key=lambda x: x[1]['LastDate'], reverse=True)
     
     report_msg = "📋 **REPORTE TÉCNICO DE ACTIVOS**\n\n"
     
     for ticker, info in sorted_tickers:
         ficha = f"**{ticker}** | ${info['Price']:,.2f}\n"
-        ficha += "──────────────────\n"
+        ficha += "━━━━━━━━━━━━━━━━━━\n"
         
         for tf_key, tf_label in [('DIARIO','D'), ('SEMANAL','S'), ('MENSUAL','M')]:
             s = info[tf_key]
             if s:
                 ball = "🟢" if s['C'] == 1 else "🔴"
-                ficha += f"{ball} **{tf_label}** {s['T']} ${s['P']:,.2f} ADX:{s['A']:.1f} {s['F'].strftime('%d/%m/%Y')}\n"
+                # Lógica de resaltado: Si la señal tiene menos de 48hs de antigüedad
+                es_reciente = (ahora - s['F'].replace(tzinfo=None)).days <= 2
+                
+                linea = f"{ball} **{tf_label}** {s['T']} | ${s['P']:,.2f} | ADX:{s['A']:.1f} | {s['F'].strftime('%d/%m/%Y')}"
+                
+                if es_reciente:
+                    ficha += f"🆕 **{linea}**\n" # Negrita total y marcador NEW
+                else:
+                    ficha += f"{linea}\n"
             else:
-                ficha += f"⚪ **{tf_label}** Sin Datos\n"
+                ficha += f"⚪ **{tf_label}** | Sin Datos\n"
         
-        ficha += "──────────────────\n\n"
+        ficha += "━━━━━━━━━━━━━━━━━━\n\n"
         report_msg += ficha
         
         if len(report_msg) > 3500:
