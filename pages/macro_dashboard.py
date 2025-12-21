@@ -1,182 +1,279 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import pandas_ta as ta
 import plotly.express as px
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="Global Macro Dashboard")
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(layout="wide", page_title="SystemaTrader: Macro Dashboard Ultimate")
 
-# --- BASE DE DATOS DE ACTIVOS ---
+# --- ESTILOS CSS ---
+st.markdown("""
+<style>
+    .metric-card {
+        background-color: #0e1117; border: 1px solid #303030;
+        padding: 10px; border-radius: 8px; text-align: center;
+    }
+    .bull { color: #00FF00; font-weight: bold; }
+    .bear { color: #FF0000; font-weight: bold; }
+    .neutral { color: #FFA500; font-weight: bold; }
+</style>
+""", unsafe_allow_html=True)
+
+# --- BASE DE DATOS DE ACTIVOS ESTRATÉGICOS ---
 ASSETS = {
-    "🟡 METALES & ENERGÍA": {
-        "Oro (Gold Trust)": "GLD",
-        "Plata (Silver Trust)": "SLV",
-        "Cobre (Miners ETF)": "COPX", # Proxy de Cobre/Bronce
-        "Petróleo (US Oil)": "USO",
-        "Litio (Lithium ETF)": "LIT"
+    "📊 ÍNDICES & RIESGO": {
+        "S&P 500 (USA)": "SPY",
+        "Nasdaq 100 (Tech)": "QQQ",
+        "Russell 2000 (PyMEs)": "IWM",
+        "Mundo (Ex-USA)": "VXUS",
+        "Miedo (VIX)": "^VIX"
+    },
+    "🟡 COMMODITIES & AGRO": {
+        "Oro (Refugio)": "GLD",
+        "Plata (Ind/Refugio)": "SLV",
+        "Cobre (Economía)": "COPX",
+        "Petróleo (Energía)": "USO",
+        "Soja (Clave Arg)": "SOYB"
     },
     "🪙 CRIPTO": {
         "Bitcoin": "BTC-USD",
         "Ethereum": "ETH-USD",
         "Solana": "SOL-USD"
     },
-    "🌎 MERCADOS": {
-        "🇺🇸 S&P 500": "SPY",
-        "🇺🇸 Nasdaq 100": "QQQ",
-        "🇦🇷 Argentina (ETF)": "ARGT",
-        "🇦🇷 Galicia ADR": "GGAL",
-        "🇧🇷 Brasil (ETF)": "EWZ",
-        "🇨🇳 China (Large Cap)": "FXI"
+    "🇦🇷 ARGENTINA & LATAM": {
+        "Argentina ETF": "ARGT",
+        "Galicia ADR": "GGAL",
+        "YPF ADR": "YPF",
+        "Brasil ETF": "EWZ"
     },
-    "💵 MONEDAS & BONOS": {
+    "🇨🇳 ASIA": {
+        "China Large-Cap": "FXI",
+        "Alibaba": "BABA"
+    },
+    "💵 TASAS & BONOS": {
         "Dólar Index": "DX-Y.NYB",
-        "Bonos 20y USA": "TLT"
+        "Bonos 20y+": "TLT"
     }
 }
 
-# Aplanar diccionario para búsquedas
-ALL_TICKERS = {name: ticker for category in ASSETS.values() for name, ticker in category.items()}
+# Aplanar para uso interno
+ALL_TICKERS = {name: ticker for cat in ASSETS.values() for name, ticker in cat.items()}
 REVERSE_MAP = {v: k for k, v in ALL_TICKERS.items()}
 
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("⚙️ Configuración")
-    
-    # Selector de Tiempo
-    time_range = st.selectbox(
-        "Rango de Tiempo:",
-        options=["1 Mes", "3 Meses", "6 Meses", "YTD (Año actual)", "1 Año", "5 Años"],
-        index=3
-    )
-    
-    # Mapeo de tiempo a periodos de yfinance
-    period_map = {
-        "1 Mes": "1mo", "3 Meses": "3mo", "6 Meses": "6mo", 
-        "YTD (Año actual)": "ytd", "1 Año": "1y", "5 Años": "5y"
-    }
-    
-    st.divider()
-    st.subheader("Selección de Activos")
-    
-    selected_tickers = []
-    for category, items in ASSETS.items():
-        st.markdown(f"**{category}**")
-        # Por defecto seleccionamos algunos clave
-        defaults = [t for n, t in items.items() if t in ['GLD', 'BTC-USD', 'SPY', 'ARGT']]
-        sel = st.multiselect(f"Activos {category}", list(items.values()), format_func=lambda x: REVERSE_MAP[x], default=defaults if category in ["🟡 METALES & ENERGÍA", "🪙 CRIPTO", "🌎 MERCADOS"] else [])
-        selected_tickers.extend(sel)
-
-# --- FUNCIÓN DE DATOS ---
-@st.cache_data(ttl=300) # Cache de 5 minutos
+# --- FUNCIONES DE CÁLCULO ---
+@st.cache_data(ttl=300)
 def get_data(tickers, period):
     if not tickers: return pd.DataFrame()
+    # Descargamos
     data = yf.download(tickers, period=period, progress=False, group_by='ticker', auto_adjust=True)
     return data
 
-# --- LÓGICA PRINCIPAL ---
-st.title("🌍 Global Macro Dashboard")
-st.markdown("Comparativa de rendimiento entre **Materias Primas, Cripto y Mercados Globales**.")
+def analyze_trend(df, ticker, context):
+    """
+    Genera una recomendación basada en la temporalidad seleccionada.
+    """
+    try:
+        # Extraer serie de precios
+        close = df[ticker]['Close'] if isinstance(df.columns, pd.MultiIndex) else df['Close']
+        close = close.dropna()
+        
+        if close.empty: return "Sin Datos", "gray"
+
+        last_price = close.iloc[-1]
+        
+        # Calcular indicadores básicos
+        rsi = ta.rsi(close, length=14).iloc[-1] if len(close) > 14 else 50
+        sma_short = close.rolling(20).mean().iloc[-1] if len(close) > 20 else last_price
+        sma_long = close.rolling(50).mean().iloc[-1] if len(close) > 50 else last_price
+        sma_macro = close.rolling(200).mean().iloc[-1] if len(close) > 200 else last_price
+
+        # LÓGICA DINÁMICA SEGÚN TEMPORALIDAD
+        signal = "NEUTRAL"
+        color = "neutral"
+        reason = ""
+
+        if context == "CORTO PLAZO":
+            # Miramos RSI y SMA 20 (Momentum)
+            if last_price > sma_short:
+                if rsi > 70: 
+                    signal = "SOBRECOMPRA"; color = "neutral"; reason = "Tendencia alcista pero extendida (RSI > 70). Cuidado."
+                else: 
+                    signal = "ALCISTA"; color = "bull"; reason = "Precio sobre media de 20 días. Momentum positivo."
+            else:
+                if rsi < 30: 
+                    signal = "SOBREVENTA"; color = "bull"; reason = "Posible rebote técnico (RSI < 30)."
+                else: 
+                    signal = "BAJISTA"; color = "bear"; reason = "Precio bajo media de 20 días. Debilidad."
+
+        elif context == "MEDIANO PLAZO":
+            # Miramos SMA 50
+            if last_price > sma_long:
+                signal = "TENDENCIA SANA"; color = "bull"; reason = "Cotiza sobre la media de 50 ruedas."
+            else:
+                signal = "DÉBIL"; color = "bear"; reason = "Perdió la media de 50 ruedas."
+
+        elif context == "LARGO PLAZO":
+            # Miramos SMA 200 (La madre de las tendencias)
+            if last_price > sma_macro:
+                signal = "BULL MARKET"; color = "bull"; reason = "Estructuralmente Alcista (> SMA 200)."
+            else:
+                signal = "BEAR MARKET"; color = "bear"; reason = "Estructuralmente Bajista (< SMA 200)."
+
+        return signal, color, reason, rsi
+
+    except Exception as e:
+        return "Error", "gray", str(e), 0
+
+# --- SIDEBAR ---
+with st.sidebar:
+    st.title("🎛️ Centro de Mando")
+    
+    # Selector de Tiempo Inteligente
+    time_options = {
+        "1 Mes (Corto Plazo)": "1mo",
+        "3 Meses (Corto Plazo)": "3mo",
+        "6 Meses (Mediano Plazo)": "6mo",
+        "YTD (Año Actual)": "ytd",
+        "1 Año (Mediano Plazo)": "1y",
+        "5 Años (Largo Plazo)": "5y"
+    }
+    
+    selected_time_label = st.selectbox("Temporalidad de Análisis:", list(time_options.keys()), index=3)
+    selected_period = time_options[selected_time_label]
+    
+    # Determinar contexto para el algoritmo
+    if "Mes" in selected_time_label: context = "CORTO PLAZO"
+    elif "Año" in selected_time_label or "YTD" in selected_time_label: context = "MEDIANO PLAZO"
+    else: context = "LARGO PLAZO" # 5 Años
+    
+    st.info(f"Modo Análisis: **{context}**")
+    
+    st.divider()
+    
+    # Selección de Activos
+    st.subheader("Activos a Vigilar")
+    selected_tickers = []
+    
+    # Pre-seleccionados recomendados
+    defaults = ['SPY', 'BTC-USD', 'GLD', 'ARGT', '^VIX', 'SOYB']
+    
+    for cat, items in ASSETS.items():
+        with st.expander(cat, expanded=True):
+            sel = st.multiselect(
+                "Seleccionar:", 
+                list(items.values()), 
+                format_func=lambda x: REVERSE_MAP[x],
+                default=[x for x in list(items.values()) if x in defaults],
+                key=cat
+            )
+            selected_tickers.extend(sel)
+
+# --- APP PRINCIPAL ---
+st.title(f"🌍 Tablero Macro Global: Visión {context}")
 
 if selected_tickers:
-    df_raw = get_data(selected_tickers, period_map[time_range])
+    # Descarga
+    with st.spinner("Conectando con mercados globales..."):
+        df_raw = get_data(selected_tickers, selected_period)
     
     if not df_raw.empty:
-        # 1. NORMALIZACIÓN DE DATOS (Base 0%)
-        # Necesitamos un DF con solo los precios de cierre ("Close")
+        # Preparar datos de cierre para gráficos
         df_close = pd.DataFrame()
-        
-        # Manejo de MultiIndex de Yahoo
-        if len(selected_tickers) > 1:
-            for t in selected_tickers:
-                # Intentamos obtener Close, si falla (datos incompletos), lo saltamos
-                try:
+        for t in selected_tickers:
+            try:
+                # Manejo robusto de MultiIndex
+                if isinstance(df_raw.columns, pd.MultiIndex):
                     df_close[t] = df_raw[t]['Close']
-                except: pass
-        else:
-             df_close[selected_tickers[0]] = df_raw['Close']
+                else:
+                    if len(selected_tickers) == 1: df_close[t] = df_raw['Close']
+            except: pass
         
         df_close = df_close.dropna()
         
-        if not df_close.empty:
-            # Calcular rendimiento porcentual acumulado
-            # (Precio Actual / Precio Inicial) - 1
-            df_normalized = (df_close / df_close.iloc[0] - 1) * 100
+        # 1. TABLA DE RECOMENDACIONES (La joya del script)
+        st.subheader("1. Diagnóstico de Tendencia")
+        
+        analysis_data = []
+        for t in selected_tickers:
+            name = REVERSE_MAP.get(t, t)
+            # Llamamos a la función inteligente
+            sig, col, reason, rsi = analyze_trend(df_raw, t, context)
             
-            # --- TARJETAS DE RENDIMIENTO ---
-            st.subheader("📊 Rendimiento en el periodo seleccionado")
+            # Formato de cambio
+            start = df_close[t].iloc[0]
+            end = df_close[t].iloc[-1]
+            change = ((end - start) / start) * 100
             
-            # Crear columnas dinámicas (máx 4 por fila)
-            cols = st.columns(4)
-            for i, ticker in enumerate(df_close.columns):
-                with cols[i % 4]:
-                    start_price = df_close[ticker].iloc[0]
-                    end_price = df_close[ticker].iloc[-1]
-                    change = ((end_price - start_price) / start_price) * 100
-                    
-                    name = REVERSE_MAP.get(ticker, ticker)
-                    
-                    st.metric(
-                        label=name,
-                        value=f"${end_price:,.2f}",
-                        delta=f"{change:+.2f}%"
-                    )
+            analysis_data.append({
+                "Activo": name,
+                "Precio": end,
+                "Rendimiento": change,
+                "Estado": sig,
+                "Análisis Automático": reason,
+                "RSI": rsi,
+                "Color": col
+            })
             
-            st.divider()
+        # Mostrar como Dataframe con estilo
+        df_an = pd.DataFrame(analysis_data)
+        
+        # Función para colorear
+        def color_status(val):
+            color = 'green' if val in ['ALCISTA', 'TENDENCIA SANA', 'BULL MARKET', 'SOBREVENTA'] else \
+                    'red' if val in ['BAJISTA', 'DÉBIL', 'BEAR MARKET'] else 'orange'
+            return f'color: {color}; font-weight: bold'
 
-            # --- GRÁFICO DE LÍNEAS (COMPARATIVA) ---
-            st.subheader("📈 Evolución Comparada (%)")
-            
-            # Convertir a formato largo para Plotly
-            df_chart = df_normalized.reset_index().melt(id_vars='Date', var_name='Activo', value_name='Rendimiento %')
-            # Poner nombres bonitos
-            df_chart['Nombre'] = df_chart['Activo'].map(REVERSE_MAP)
-            
-            fig = px.line(
-                df_chart, x='Date', y='Rendimiento %', color='Nombre',
-                hover_data={'Activo': True},
-                height=500
-            )
-            fig.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.5)
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # --- MATRIZ DE CORRELACIÓN ---
-            st.divider()
-            col1, col2 = st.columns([1, 2])
-            
-            with col1:
-                st.subheader("🧩 Correlaciones")
-                st.info("""
-                **¿Cómo leer esto?**
-                * **1.0 (Rojo):** Se mueven idénticos.
-                * **-1.0 (Azul):** Se mueven al revés (Cobertura).
-                * **0 (Blanco):** No tienen relación.
-                
-                *Ej: Si Bitcoin tiene correlación alta con Nasdaq, no es refugio, es riesgo.*
-                """)
-                
-            with col2:
-                # Calcular correlación sobre retornos diarios (log returns es más preciso pero simple return sirve)
-                daily_returns = df_close.pct_change().dropna()
-                corr_matrix = daily_returns.corr()
-                
-                # Reemplazar tickers por nombres reales en la matriz
-                corr_matrix.columns = [REVERSE_MAP.get(c, c) for c in corr_matrix.columns]
-                corr_matrix.index = [REVERSE_MAP.get(i, i) for i in corr_matrix.index]
-                
-                fig_corr = px.imshow(
-                    corr_matrix, 
-                    text_auto=".2f", 
-                    aspect="auto",
-                    color_continuous_scale="RdBu_r", # Rojo a Azul invertido
-                    zmin=-1, zmax=1
-                )
-                st.plotly_chart(fig_corr, use_container_width=True)
+        st.dataframe(
+            df_an.style.applymap(color_status, subset=['Estado']),
+            column_config={
+                "Precio": st.column_config.NumberColumn(format="$%.2f"),
+                "Rendimiento": st.column_config.NumberColumn(format="%.2f%%"),
+                "RSI": st.column_config.NumberColumn(format="%.0f"),
+            },
+            use_container_width=True,
+            hide_index=True
+        )
 
-        else:
-            st.warning("Datos insuficientes para graficar en este periodo (quizás algún activo es muy nuevo).")
+        st.divider()
+
+        # 2. GRÁFICO COMPARATIVO
+        st.subheader("2. Evolución Comparada (%)")
+        # Normalizar a %
+        df_norm = (df_close / df_close.iloc[0] - 1) * 100
+        df_chart = df_norm.reset_index().melt(id_vars='Date', var_name='Ticker', value_name='Rendimiento')
+        df_chart['Nombre'] = df_chart['Ticker'].map(REVERSE_MAP)
+        
+        fig = px.line(df_chart, x='Date', y='Rendimiento', color='Nombre', height=500)
+        fig.add_hline(y=0, line_dash="dash", line_color="white", opacity=0.3)
+        st.plotly_chart(fig, use_container_width=True)
+
+        # 3. MATRIZ DE CORRELACIÓN
+        st.subheader("3. Relaciones de Mercado (Correlación)")
+        
+        c1, c2 = st.columns([1, 2])
+        with c1:
+            st.info("""
+            **¿Cómo leer esto?**
+            * **Rojo (+1):** Se mueven igual.
+            * **Azul (-1):** Se mueven opuestos.
+            * **Blanco (0):** Sin relación.
+            
+            *Busca colores AZULES para cubrirte.*
+            """)
+        with c2:
+            corr = df_close.pct_change().corr()
+            # Poner nombres reales
+            corr.index = [REVERSE_MAP.get(x,x) for x in corr.index]
+            corr.columns = [REVERSE_MAP.get(x,x) for x in corr.columns]
+            
+            fig_corr = px.imshow(corr, text_auto=".2f", color_continuous_scale="RdBu_r", zmin=-1, zmax=1, aspect="auto")
+            st.plotly_chart(fig_corr, use_container_width=True)
+
     else:
-        st.error("No se pudieron descargar datos. Revisa tu conexión.")
+        st.error("No se pudieron obtener datos. Intenta con menos activos o revisa la conexión.")
+
 else:
-    st.info("👈 Selecciona activos en el menú lateral para comenzar.")
+    st.info("👈 Selecciona activos para comenzar el análisis.")
