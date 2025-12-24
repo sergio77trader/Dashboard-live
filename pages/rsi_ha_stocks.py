@@ -5,7 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="Stock Matrix: Precision Fix")
+st.set_page_config(layout="wide", page_title="Stock Matrix: High Precision")
 
 # --- ESTILOS VISUALES ---
 st.markdown("""
@@ -39,23 +39,32 @@ TICKERS = sorted([
     'SPY', 'QQQ', 'IWM', 'DIA', 'EEM', 'EWZ', 'FXI', 'XLE', 'XLF', 'XLK', 'XLV', 'XLI', 'XLP', 'XLU', 'XLY', 'ARKK', 'SMH', 'TAN', 'GLD', 'SLV', 'GDX'
 ])
 
-# --- MATEMÁTICA EXACTA (WILDER'S SMOOTHING) ---
+# --- MATEMÁTICA EXACTA (TRADINGVIEW STYLE) ---
 def calculate_rsi(series, period=14):
+    """
+    Calcula el RSI usando Wilder's Smoothing (RMA) con suficiente historial.
+    """
     if len(series) < period: return 50.0
+    
     delta = series.diff()
+    
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
-    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
-    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+    
+    # Media Móvil de Wilder (alpha = 1/n)
+    # adjust=False es CLAVE para que coincida con la recursividad de TradingView
+    avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
+    
     return rsi.iloc[-1]
 
 def calculate_heikin_ashi_daily(df):
-    """Calcula el color HA. Retorna la última vela CONFIRMADA (Ayer) si el mercado está abierto, o la de Hoy si está muy clara."""
     if df.empty: return 0
     
-    # Inicialización
+    # HA Open y Close Iterativo (Precisión máxima)
     ha_open = [df['Open'].iloc[0]]
     ha_close = [(df['Open'].iloc[0] + df['High'].iloc[0] + df['Low'].iloc[0] + df['Close'].iloc[0]) / 4]
     
@@ -65,30 +74,24 @@ def calculate_heikin_ashi_daily(df):
         ha_close.append(current_close)
         ha_open.append(current_open)
         
-    # Análisis de la vela ACTUAL (Hoy)
     last_c = ha_close[-1]
     last_o = ha_open[-1]
-    color_today = 1 if last_c > last_o else -1
     
-    # Análisis de la vela PREVIA (Ayer - Confirmada)
-    prev_c = ha_close[-2]
-    prev_o = ha_open[-2]
-    color_yesterday = 1 if prev_c > prev_o else -1
-    
-    # --- FILTRO DE ESTABILIDAD ---
-    # Si hoy es rojo pero ayer fue verde, y la vela de hoy es muy pequeña (doji), 
-    # preferimos mantener el color de ayer para no dar señales falsas por ruido intradía.
-    # Pero si la vela de hoy es fuerte, tomamos la de hoy.
-    
-    return color_today # Por ahora dejamos la de hoy, pero con el cálculo corregido.
+    return 1 if last_c > last_o else -1
 
 # --- MOTOR DE DATOS ---
 @st.cache_data(ttl=1800) 
 def fetch_all_data(tickers):
     try:
-        # Descargamos datos. Importante: auto_adjust=True para que coincida con gráficos ajustados por dividendos
-        df_d = yf.download(tickers, period="2y", interval="1d", group_by='ticker', progress=False, auto_adjust=True)
-        df_h = yf.download(tickers, period="60d", interval="1h", group_by='ticker', progress=False, auto_adjust=True)
+        # AUMENTO DE HISTORIAL PARA PRECISIÓN MATEMÁTICA
+        
+        # 1. Diario: Bajamos 5 años (antes 2). Más historia = RSI más preciso.
+        df_d = yf.download(tickers, period="5y", interval="1d", group_by='ticker', progress=False, auto_adjust=True)
+        
+        # 2. Intradía: Bajamos 730 días (El máximo absoluto de Yahoo para 1h).
+        # Esto estabiliza el RSI de 4h y 1h.
+        df_h = yf.download(tickers, period="730d", interval="1h", group_by='ticker', progress=False, auto_adjust=True)
+        
         return df_d, df_h
     except Exception as e:
         return None, None
@@ -112,20 +115,29 @@ def process_tickers(tickers):
             if d_df.empty or h_df.empty: continue
             
             # --- CÁLCULOS ---
-            w_df = d_df['Close'].resample('W-FRI').last()
+            
+            # 1. RSI Semanal (Data diaria resampleada a Viernes)
+            w_df = d_df['Close'].resample('W-FRI').last().dropna()
             rsi_w = calculate_rsi(w_df)
             
+            # 2. RSI Diario
             rsi_d = calculate_rsi(d_df['Close'])
-            
-            # Aquí usamos la función corregida de HA
             ha_color = calculate_heikin_ashi_daily(d_df)
             
+            # 3. RSI 4 Horas (Data horaria resampleada)
             h4_df = h_df['Close'].resample('4h').last().dropna()
             rsi_4h = calculate_rsi(h4_df)
+            
+            # 4. RSI 1 Hora
             rsi_1h = calculate_rsi(h_df['Close'])
             
             # --- ESTRATEGIA ---
             all_rsis = [rsi_w, rsi_d, rsi_4h, rsi_1h]
+            # Validamos que los RSI no sean NaN (por falta de datos en activos nuevos)
+            all_rsis = [x for x in all_rsis if not np.isnan(x)]
+            
+            if not all_rsis: continue
+
             is_overbought = any(r > 70 for r in all_rsis)
             is_oversold = any(r < 30 for r in all_rsis)
             
@@ -164,7 +176,7 @@ def process_tickers(tickers):
     return results
 
 # --- INTERFAZ ---
-st.title("📊 Stock Matrix: Precision Fix")
+st.title("📊 Stock Matrix: High Precision")
 
 if 'stock_results' not in st.session_state:
     st.session_state['stock_results'] = []
@@ -199,13 +211,12 @@ with st.sidebar:
 if st.session_state['stock_results']:
     df = pd.DataFrame(st.session_state['stock_results'])
     
-    # Mapeo de prioridad
     priority = {"🟢 LONG": 4, "🔴 SHORT": 4, "⚠️ Techo (Esperar HA Rojo)": 2, "⚠️ Piso (Esperar HA Verde)": 2, "NEUTRO": 1}
     df['Prio'] = df['Señal'].map(priority).fillna(1)
     df = df.sort_values(by='Prio', ascending=False)
     
-    # ESTILOS
     def style_rsi(val):
+        if pd.isna(val): return ''
         if val >= 70: return 'color: #ff4b4b; font-weight: bold;'
         if val <= 30: return 'color: #00c853; font-weight: bold;'
         return 'color: #aaa;'
