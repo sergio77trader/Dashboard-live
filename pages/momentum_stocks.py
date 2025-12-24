@@ -1,22 +1,25 @@
-import streamlit as st
+import os
 import yfinance as yf
 import pandas as pd
 import numpy as np
+import requests
+import time
+from datetime import datetime, timedelta
+
+# --- CREDENCIALES ---
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="Stocks: HA + MACD Momentum")
+TIMEFRAMES = [
+    ("1d", "DIARIO", "2y"),
+    ("1wk", "SEMANAL", "10y"),
+    ("1mo", "MENSUAL", "max")
+]
+ADX_TH = 20
+ADX_LEN = 14
 
-# --- ESTILOS ---
-st.markdown("""
-<style>
-    div[data-testid="stMetric"], .metric-card {
-        background-color: #0e1117; border: 1px solid #303030;
-        padding: 10px; border-radius: 8px; text-align: center;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# --- BASE DE DATOS ACCIONES ---
+# --- BASE DE DATOS COMPLETA ---
 TICKERS = sorted([
     'GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'CEPU', 'EDN', 'BFR', 'SUPV', 'CRESY', 'IRS', 'TEO', 'LOMA', 'DESP', 'VIST', 'GLOB', 'MELI', 'BIOX', 'TX',
     'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NFLX',
@@ -35,143 +38,153 @@ TICKERS = sorted([
     'SPY', 'QQQ', 'IWM', 'DIA', 'EEM', 'EWZ', 'FXI', 'XLE', 'XLF', 'XLK', 'XLV', 'XLI', 'XLP', 'XLU', 'XLY', 'ARKK', 'SMH', 'TAN', 'GLD', 'SLV', 'GDX'
 ])
 
-# --- FUNCIONES MATEMÁTICAS ---
+def send_message(msg):
+    if not TELEGRAM_TOKEN or not CHAT_ID: return
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+        requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
+    except: pass
+
+# --- CÁLCULOS MATEMÁTICOS ---
 def calculate_heikin_ashi(df):
     df_ha = df.copy()
     df_ha['HA_Close'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
-    
-    # Inicialización
     ha_open = [df['Open'].iloc[0]]
     for i in range(1, len(df)):
         ha_open.append((ha_open[-1] + df_ha['HA_Close'].iloc[i-1]) / 2)
     df_ha['HA_Open'] = ha_open
-    
     df_ha['Color'] = np.where(df_ha['HA_Close'] > df_ha['HA_Open'], 1, -1)
     return df_ha
 
-def calculate_macd(df, fast=12, slow=26, signal=9):
-    exp1 = df['Close'].ewm(span=fast, adjust=False).mean()
-    exp2 = df['Close'].ewm(span=slow, adjust=False).mean()
-    macd = exp1 - exp2
-    sig = macd.ewm(span=signal, adjust=False).mean()
-    hist = macd - sig
-    return hist
+def calculate_adx(df, period=14):
+    df = df.copy()
+    df['H-L'] = df['High'] - df['Low']
+    df['H-C'] = abs(df['High'] - df['Close'].shift(1))
+    df['L-C'] = abs(df['Low'] - df['Close'].shift(1))
+    df['TR'] = df[['H-L', 'H-C', 'L-C']].max(axis=1)
+    df['UpMove'] = df['High'] - df['High'].shift(1)
+    df['DownMove'] = df['Low'].shift(1) - df['Low']
+    df['+DM'] = np.where((df['UpMove'] > df['DownMove']) & (df['UpMove'] > 0), df['UpMove'], 0)
+    df['-DM'] = np.where((df['DownMove'] > df['UpMove']) & (df['DownMove'] > 0), df['DownMove'], 0)
+    def wilder(x, p): return x.ewm(alpha=1/p, adjust=False).mean()
+    tr_s = wilder(df['TR'], period).replace(0, 1)
+    p_di = 100 * (wilder(df['+DM'], period) / tr_s)
+    n_di = 100 * (wilder(df['-DM'], period) / tr_s)
+    return wilder(100 * abs(p_di - n_di) / (p_di + n_di), period)
 
-def resample_data(df, hours):
-    logic = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}
-    return df.resample(f"{hours}h").agg(logic).dropna()
-
-def analyze_timeframe(df):
-    if df is None or len(df) < 30: return {"Señal": "Insuf. Datos", "Score": 0}
-    
+def get_last_signal(df, adx_th):
+    if len(df) < 20: return None
+    df['ADX'] = calculate_adx(df)
     df_ha = calculate_heikin_ashi(df)
-    hist = calculate_macd(df)
     
-    # Datos actuales y previos
-    curr_color = df_ha['Color'].iloc[-1]
-    prev_color = df_ha['Color'].iloc[-2]
+    last_sig = None
+    in_pos = False
     
-    curr_hist = hist.iloc[-1]
-    prev_hist = hist.iloc[-2]
-    
-    # Lógica de Cambio
-    ha_flip_green = (prev_color == -1) and (curr_color == 1)
-    ha_flip_red   = (prev_color == 1) and (curr_color == -1)
-    
-    hist_subiendo = curr_hist > prev_hist
-    hist_bajando  = curr_hist < prev_hist
-    
-    signal = "NEUTRO"
-    
-    # ESTRATEGIA
-    if ha_flip_green and (curr_hist < 0) and hist_subiendo:
-        signal = "🟢 ENTRADA LONG"
-    elif ha_flip_red and (curr_hist > 0) and hist_bajando:
-        signal = "🔴 ENTRADA SHORT"
-    else:
-        if curr_color == 1 and hist_bajando: signal = "⚠️ SALIDA LONG"
-        elif curr_color == -1 and hist_subiendo: signal = "⚠️ SALIDA SHORT"
-        elif curr_color == 1: signal = "🔼 MANTENER LONG"
-        elif curr_color == -1: signal = "🔽 MANTENER SHORT"
-
-    return {
-        "Señal": signal,
-        "Precio": df['Close'].iloc[-1],
-        "HA": "Verde" if curr_color == 1 else "Rojo",
-        "Hist": curr_hist,
-        "Hist_Dir": "↗️" if hist_subiendo else "↘️"
-    }
-
-def get_data(ticker, tf_code):
-    try:
-        # Descarga inteligente según TF
-        if tf_code == "15m": df = yf.download(ticker, interval="15m", period="5d", progress=False)
-        elif tf_code == "1h": df = yf.download(ticker, interval="1h", period="200d", progress=False)
-        elif tf_code in ["2h", "4h", "12h"]:
-            df = yf.download(ticker, interval="1h", period="200d", progress=False)
-            if not df.empty: df = resample_data(df, int(tf_code.replace("h","")))
-        elif tf_code == "1d": df = yf.download(ticker, interval="1d", period="2y", progress=False)
-        elif tf_code == "1wk": df = yf.download(ticker, interval="1wk", period="5y", progress=False)
-        elif tf_code == "1mo": df = yf.download(ticker, interval="1mo", period="max", progress=False)
+    for i in range(1, len(df_ha)):
+        c = df_ha['Color'].iloc[i]
+        a = df['ADX'].iloc[i]
+        d = df_ha.index[i]
+        p = df_ha['Close'].iloc[i]
         
-        if df.empty: return None
-        # Limpieza MultiIndex si existe
-        if isinstance(df.columns, pd.MultiIndex): 
-            df.columns = df.columns.get_level_values(0)
+        if not in_pos and c == 1 and a > adx_th:
+            in_pos = True
+            last_sig = {"T": "🟢 LONG", "F": d, "P": p, "A": a, "C": 1}
+        elif in_pos and c == -1:
+            in_pos = False
+            last_sig = {"T": "🔴 SHORT", "F": d, "P": p, "A": a, "C": -1}
             
-        return df
-    except: return None
-
-# --- UI ---
-st.title("📊 Stock Matrix: HA + MACD Momentum")
-
-with st.sidebar:
-    st.header("Selector")
-    selected_ticker = st.selectbox("Elige Acción:", TICKERS)
-    st.markdown("---")
-    if st.button("ANALIZAR MATRIZ"):
-        st.session_state['run_stock'] = True
-
-if st.session_state.get('run_stock', False):
-    tfs = [("15 Min", "15m"), ("1 Hora", "1h"), ("2 Horas", "2h"), ("4 Horas", "4h"), 
-           ("12 Horas", "12h"), ("Diario", "1d"), ("Semanal", "1wk"), ("Mensual", "1mo")]
-    
-    results = []
-    prog = st.progress(0)
-    
-    for i, (label, code) in enumerate(tfs):
-        data = get_data(selected_ticker, code)
+    if not last_sig:
+        curr = df_ha.iloc[-1]
+        last_sig = {"T": "🟢 LONG" if curr['Color']==1 else "🔴 SHORT", "F": curr.name, "P": curr['Close'], "A": df['ADX'].iloc[-1], "C": int(curr['Color'])}
         
-        # --- CORRECCIÓN AQUÍ ---
-        # Verificamos correctamente si el dataframe es válido y no está vacío
-        if data is not None and not data.empty:
-            res = analyze_timeframe(data)
-            results.append({
-                "Temporalidad": label,
-                "Diagnóstico": res['Señal'],
-                "Vela HA": "🟢" if res['HA'] == "Verde" else "🔴",
-                "MACD Hist": f"{res['Hist']:.4f} {res['Hist_Dir']}",
-                "Precio": res['Precio']
-            })
-        else:
-            results.append({"Temporalidad": label, "Diagnóstico": "Sin Datos"})
-            
-        prog.progress((i+1)/len(tfs))
-    
-    prog.empty()
-    df_res = pd.DataFrame(results)
-    
-    def color_row(val):
-        if "ENTRADA LONG" in str(val): return "background-color: #0f3d0f; color: #4caf50; font-weight: bold"
-        if "ENTRADA SHORT" in str(val): return "background-color: #3d0f0f; color: #f44336; font-weight: bold"
-        if "SALIDA" in str(val): return "color: orange; font-weight: bold"
-        return ""
+    return last_sig
 
-    st.subheader(f"Análisis Matricial: {selected_ticker}")
-    st.dataframe(
-        df_res.style.applymap(color_row, subset=['Diagnóstico']),
-        column_config={"Precio": st.column_config.NumberColumn(format="$%.2f")},
-        use_container_width=True, hide_index=True, height=400
-    )
+# --- MOTOR PRINCIPAL ---
+def run_bot():
+    print(f"--- START SCAN: {datetime.now()} ---")
+    send_message("⚡ **INICIANDO ESCANEO DE ACTIVOS (+100)...**")
     
-    st.info("Estrategia: Entrar en giro de vela HA + Momentum MACD a favor. Salir si el MACD pierde fuerza.")
+    master_data = {}
+    ahora = datetime.now()
+
+    # 1. Descarga y Análisis por Timeframe
+    for interval, label, period in TIMEFRAMES:
+        print(f"Descargando {label}...")
+        try:
+            data = yf.download(TICKERS, interval=interval, period=period, group_by='ticker', progress=False, auto_adjust=True)
+            for ticker in TICKERS:
+                if ticker not in master_data:
+                    master_data[ticker] = {'DIARIO': None, 'SEMANAL': None, 'MENSUAL': None, 'Price': 0, 'LastDate': datetime(2000,1,1)}
+                
+                try:
+                    df = data[ticker].dropna() if len(TICKERS) > 1 else data.dropna()
+                    if df.empty: continue
+                    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+                    
+                    sig = get_last_signal(df, ADX_TH)
+                    
+                    if sig:
+                        master_data[ticker][label] = sig
+                        # Guardamos precio actual si es diario
+                        if label == 'DIARIO': master_data[ticker]['Price'] = df['Close'].iloc[-1]
+                        
+                        # Actualizamos la fecha más reciente detectada en este activo
+                        # (Para ordenar el reporte después)
+                        # Nota: yfinance usa timezone-aware, necesitamos normalizar para comparar
+                        sig_dt = sig['F'].replace(tzinfo=None)
+                        if sig_dt > master_data[ticker]['LastDate']:
+                            master_data[ticker]['LastDate'] = sig_dt
+                except: pass
+        except Exception as e:
+            print(f"Error general en {label}: {e}")
+
+    # 2. Filtrar y Ordenar (Los más recientes primero)
+    active_tickers = [i for i in master_data.items() if i[1]['LastDate'] > datetime(2000,1,1)]
+    sorted_tickers = sorted(active_tickers, key=lambda x: x[1]['LastDate'], reverse=True)
+    
+    # 3. Generar Reporte
+    report_msg = f"📋 **REPORTE TÉCNICO ({len(sorted_tickers)} Activos)**\n_Ordenado por actividad reciente_\n\n"
+    
+    for ticker, info in sorted_tickers:
+        # Título de Ficha
+        p_now = info['Price'] if info['Price'] > 0 else (info['DIARIO']['P'] if info['DIARIO'] else 0)
+        ficha = f"**{ticker}** | ${p_now:,.2f}\n"
+        ficha += "━━━━━━━━━━━━━━━━━━\n"
+        
+        has_data = False
+        # Recorremos D -> S -> M
+        for tf_key, tf_label in [('DIARIO','D'), ('SEMANAL','S'), ('MENSUAL','M')]:
+            s = info[tf_key]
+            if s:
+                has_data = True
+                ball = "🟢" if s['C'] == 1 else "🔴"
+                # Si la señal es de hace menos de 3 días, es NUEVA
+                sig_date = s['F'].replace(tzinfo=None)
+                is_fresh = (ahora - sig_date).days <= 3
+                
+                linea = f"{ball} **{tf_label}** {s['T']} | ${s['P']:,.2f} | ADX:{s['A']:.0f} | {s['F'].strftime('%d/%m/%y')}"
+                
+                if is_fresh: ficha += f"🆕 **{linea}**\n"
+                else: ficha += f"{linea}\n"
+            else:
+                ficha += f"⚪ **{tf_label}** | Sin Datos\n"
+        
+        ficha += "━━━━━━━━━━━━━━━━━━\n\n"
+        
+        if has_data:
+            report_msg += ficha
+        
+        # Enviar por partes si es muy largo
+        if len(report_msg) > 3500:
+            send_message(report_msg)
+            report_msg = ""
+            time.sleep(1) # Pausa técnica
+
+    # Enviar remanente
+    if report_msg:
+        send_message(report_msg)
+
+    send_message("✅ **Escaneo completado.**")
+
+if __name__ == "__main__":
+    run_bot()
