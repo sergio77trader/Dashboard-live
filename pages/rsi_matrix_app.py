@@ -6,7 +6,7 @@ import time
 import plotly.graph_objects as go
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="RSI Matrix Pro + HA Gatillo")
+st.set_page_config(layout="wide", page_title="RSI Matrix Pro")
 
 # --- ESTILOS VISUALES ---
 st.markdown("""
@@ -21,30 +21,17 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- LISTA DE MONEDAS BASE ---
-# Lista amplia para filtrar contra Binance
-RAW_COINS = [
+# --- LISTA DE MONEDAS A ANALIZAR ---
+RAW_COINS = sorted([
     'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOGE', 'SHIB', 'DOT',
     'LINK', 'TRX', 'MATIC', 'LTC', 'BCH', 'NEAR', 'UNI', 'ICP', 'FIL', 'APT',
     'INJ', 'LDO', 'OP', 'ARB', 'TIA', 'SEI', 'SUI', 'RNDR', 'FET', 'WLD',
     'PEPE', 'BONK', 'WIF', 'FLOKI', 'ORDI', 'SATS', 'GALA', 'SAND', 'MANA',
     'AXS', 'AAVE', 'SNX', 'MKR', 'CRV', 'DYDX', 'JUP', 'PYTH', 'ENA', 'RUNE',
     'FTM', 'ATOM', 'ALGO', 'VET', 'EGLD', 'STX', 'IMX', 'KAS', 'TAO', 'OM', 'JASMY'
-]
+])
 
-# --- FUNCIONES DE CONEXIÓN ---
-
-@st.cache_data(ttl=3600)
-def get_binance_futures_symbols():
-    """Obtiene la lista de pares operables en Binance Futures para filtrar"""
-    url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
-    try:
-        r = requests.get(url, timeout=10).json()
-        # Creamos un set de simbolos (ej: 'BTCUSDT')
-        valid_symbols = set([x['symbol'] for x in r['symbols'] if x['status'] == 'TRADING'])
-        return valid_symbols
-    except:
-        return set()
+# --- FUNCIONES DE DATOS (SOLO KUCOIN) ---
 
 def get_kucoin_data(symbol, k_interval, limit=100):
     """
@@ -58,9 +45,11 @@ def get_kucoin_data(symbol, k_interval, limit=100):
         r = requests.get(url, params=params, timeout=5).json()
         if r['code'] == '200000':
             data = r['data']
+            # Kucoin devuelve [time, open, close, high, low, vol, turn]
             df = pd.DataFrame(data, columns=['Time','Open','Close','High','Low','Vol','Turn'])
             df = df.astype(float)
             df['Time'] = pd.to_datetime(df['Time'], unit='s')
+            # Ordenar por fecha ascendente para cálculos
             df = df.sort_values('Time', ascending=True).reset_index(drop=True)
             return df
     except: pass
@@ -79,24 +68,28 @@ def calculate_rsi(df, period=14):
 
 def calculate_heikin_ashi_daily(df):
     """Calcula el color de la vela HA Diaria actual"""
+    if df.empty: return 0, 0
+    
+    # Cálculo iterativo básico para la última vela
+    # Aproximación rápida para escáner
+    ha_close = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
+    
+    # HA Open es el promedio del Open y Close de la vela ANTERIOR (real)
+    # Como no tenemos HA anterior calculado, usamos una aproximación con precios normales anteriores
+    # Para mayor precisión en HA, se requiere un loop completo desde el inicio del DF
+    
     df_ha = df.copy()
-    
-    # Necesitamos iterar para calcular HA Open correctamente
-    ha_close = []
-    ha_open = []
-    
-    # Inicialización
-    ha_open.append(df['Open'].iloc[0])
-    ha_close.append((df['Open'].iloc[0] + df['High'].iloc[0] + df['Low'].iloc[0] + df['Close'].iloc[0])/4)
+    ha_open_list = [df['Open'].iloc[0]]
+    ha_close_list = [ha_close.iloc[0]]
     
     for i in range(1, len(df)):
+        ho = (ha_open_list[-1] + ha_close_list[-1]) / 2
         hc = (df['Open'].iloc[i] + df['High'].iloc[i] + df['Low'].iloc[i] + df['Close'].iloc[i]) / 4
-        ho = (ha_open[i-1] + ha_close[i-1]) / 2
-        ha_close.append(hc)
-        ha_open.append(ho)
+        ha_open_list.append(ho)
+        ha_close_list.append(hc)
         
-    last_c = ha_close[-1]
-    last_o = ha_open[-1]
+    last_c = ha_close_list[-1]
+    last_o = ha_open_list[-1]
     
     # Color: 1 Verde, -1 Rojo
     color = 1 if last_c > last_o else -1
@@ -107,7 +100,7 @@ def calculate_heikin_ashi_daily(df):
 def analyze_asset(coin):
     # 1. Obtener Diario (Base para HA y RSI D)
     df_d = get_kucoin_data(coin, "1day", 100)
-    if df_d.empty: return None
+    if df_d.empty: return None # Si Kucoin no tiene el dato, saltamos
     
     ha_color, ha_price = calculate_heikin_ashi_daily(df_d)
     rsi_d = calculate_rsi(df_d)
@@ -116,35 +109,32 @@ def analyze_asset(coin):
     df_w = get_kucoin_data(coin, "1week", 50)
     rsi_w = calculate_rsi(df_w)
     
-    # 3. Obtener Intradía (12h, 8h, 4h, 2h)
-    # Nota: Kucoin soporta nativamente estos tiempos, no hay que resamplear manual
+    # 3. Obtener Intradía (Nativos de Kucoin)
     rsi_12h = calculate_rsi(get_kucoin_data(coin, "12hour", 50))
-    rsi_8h = calculate_rsi(get_kucoin_data(coin, "8hour", 50))
-    rsi_4h = calculate_rsi(get_kucoin_data(coin, "4hour", 50))
-    rsi_2h = calculate_rsi(get_kucoin_data(coin, "2hour", 50))
+    rsi_8h  = calculate_rsi(get_kucoin_data(coin, "8hour", 50))
+    rsi_4h  = calculate_rsi(get_kucoin_data(coin, "4hour", 50))
+    rsi_2h  = calculate_rsi(get_kucoin_data(coin, "2hour", 50))
     
     # --- LÓGICA DE ESTRATEGIA ---
-    # Recopilar todos los RSI en una lista
     all_rsis = [rsi_w, rsi_d, rsi_12h, rsi_8h, rsi_4h, rsi_2h]
     
-    # ¿Hay alguno saturado?
     is_overbought = any(r > 70 for r in all_rsis)
     is_oversold = any(r < 30 for r in all_rsis)
     
     signal = "NEUTRO"
     score = 0
     
-    # VENTA: Algún RSI saturado arriba (>70) + Vela Diaria Roja
+    # VENTA: Algún RSI > 70 + Vela Diaria ROJA (-1)
     if is_overbought and ha_color == -1:
         signal = "🔴 SHORT"
         score = -1
         
-    # COMPRA: Algún RSI saturado abajo (<30) + Vela Diaria Verde
+    # COMPRA: Algún RSI < 30 + Vela Diaria VERDE (1)
     elif is_oversold and ha_color == 1:
         signal = "🟢 LONG"
         score = 1
         
-    # ALERTA TEMPRANA: RSI Extremo pero HA no confirmó aún
+    # ALERTAS (Divergencia entre RSI Extremo y Vela)
     elif is_overbought and ha_color == 1:
         signal = "⚠️ Techo (Esperar HA Rojo)"
     elif is_oversold and ha_color == -1:
@@ -154,7 +144,7 @@ def analyze_asset(coin):
         "Ticker": coin,
         "Precio": df_d['Close'].iloc[-1],
         "Señal": signal,
-        "Score": score, # Para ordenar
+        "Score": score,
         "HA_D": ha_color,
         "RSI_W": rsi_w,
         "RSI_D": rsi_d,
@@ -165,47 +155,44 @@ def analyze_asset(coin):
     }
 
 # --- INTERFAZ ---
-st.title("⚡ RSI Matrix + Heikin Ashi Trigger")
+st.title("⚡ RSI Matrix + Heikin Ashi (KuCoin Direct)")
 st.markdown("**Estrategia:** Detectar agotamiento en RSI (Múltiples TF) y disparar cuando la vela diaria Heikin Ashi confirme el giro.")
 
 # Sidebar
 with st.sidebar:
     st.header("Configuración")
-    st.info("Fuente de datos: KuCoin\nValidación: Binance Futures")
+    st.info(f"Lista de Monedas: {len(RAW_COINS)}")
     
     if st.button("🔄 ESCANEAR MERCADO", type="primary"):
-        binance_pairs = get_binance_futures_symbols()
+        # Usamos la lista directa sin preguntar a Binance
+        valid_coins = RAW_COINS 
         
-        if not binance_pairs:
-            st.error("No se pudo conectar con Binance para validar pares.")
-        else:
-            # Filtrar monedas que existen en Binance Futures
-            valid_coins = [c for c in RAW_COINS if f"{c}USDT" in binance_pairs]
-            st.write(f"Analizando {len(valid_coins)} pares válidos en Binance...")
+        st.toast(f"Analizando {len(valid_coins)} pares en KuCoin...", icon="🔎")
+        
+        results = []
+        prog = st.progress(0)
+        
+        for i, coin in enumerate(valid_coins):
+            res = analyze_asset(coin)
+            if res: results.append(res)
+            prog.progress((i+1)/len(valid_coins))
+            # Pequeña pausa para no saturar Kucoin (es generosa, pero por seguridad)
+            time.sleep(0.05) 
             
-            results = []
-            prog = st.progress(0)
-            
-            for i, coin in enumerate(valid_coins):
-                res = analyze_asset(coin)
-                if res: results.append(res)
-                prog.progress((i+1)/len(valid_coins))
-                time.sleep(0.1) # Respetar API
-                
-            st.session_state['rsi_results'] = results
-            prog.empty()
+        st.session_state['rsi_results_v2'] = results
+        prog.empty()
+        st.success("Escaneo Finalizado")
 
 # --- RESULTADOS ---
-if 'rsi_results' in st.session_state and st.session_state['rsi_results']:
-    df = pd.DataFrame(st.session_state['rsi_results'])
+if 'rsi_results_v2' in st.session_state and st.session_state['rsi_results_v2']:
+    df = pd.DataFrame(st.session_state['rsi_results_v2'])
     
-    # Ordenar: Primero las señales confirmadas (LONG/SHORT), luego alertas, luego neutros
-    # Mapeo de prioridad
+    # Ordenar por prioridad
     priority = {"🟢 LONG": 3, "🔴 SHORT": 3, "⚠️ Techo (Esperar HA Rojo)": 2, "⚠️ Piso (Esperar HA Verde)": 2, "NEUTRO": 1}
-    df['Prioridad'] = df['Señal'].map(priority)
+    df['Prioridad'] = df['Señal'].map(priority).fillna(1)
     df = df.sort_values(by='Prioridad', ascending=False)
     
-    # Función de estilo para colorear RSIs
+    # Estilos
     def style_rsi(val):
         if val >= 70: return 'color: #ff4b4b; font-weight: bold;' # Rojo
         if val <= 30: return 'color: #00c853; font-weight: bold;' # Verde
@@ -217,28 +204,28 @@ if 'rsi_results' in st.session_state and st.session_state['rsi_results']:
         if "⚠️" in val: return 'color: orange; font-weight: bold;'
         return ''
 
-    # Mostrar KPIs
+    # KPIs
     c1, c2, c3 = st.columns(3)
-    longs = len(df[df['Señal'].str.contains("LONG")])
-    shorts = len(df[df['Señal'].str.contains("SHORT")])
-    alerts = len(df[df['Señal'].str.contains("⚠️")])
+    longs = len(df[df['Señal'].str.contains("LONG", na=False)])
+    shorts = len(df[df['Señal'].str.contains("SHORT", na=False)])
+    alerts = len(df[df['Señal'].str.contains("⚠️", na=False)])
     
     c1.metric("Oportunidades LONG", longs)
     c2.metric("Oportunidades SHORT", shorts)
-    c3.metric("En Observación (Alertas)", alerts)
+    c3.metric("En Observación", alerts)
     
     st.divider()
 
-    # Tabla Principal con Estilos
+    # Tabla
     st.dataframe(
         df.style.map(style_rsi, subset=['RSI_W', 'RSI_D', 'RSI_12H', 'RSI_8H', 'RSI_4H', 'RSI_2H'])
                 .map(style_signal, subset=['Señal']),
         column_config={
             "Ticker": "Activo",
             "Precio": st.column_config.NumberColumn(format="$%.4f"),
-            "HA_D": st.column_config.TextColumn("Vela Diaria", help="1=Verde, -1=Roja"),
-            "RSI_W": st.column_config.NumberColumn("RSI Sem", format="%.0f"),
-            "RSI_D": st.column_config.NumberColumn("RSI Día", format="%.0f"),
+            "HA_D": st.column_config.TextColumn("Vela D", help="1=Verde, -1=Roja"),
+            "RSI_W": st.column_config.NumberColumn("Sem", format="%.0f"),
+            "RSI_D": st.column_config.NumberColumn("Día", format="%.0f"),
             "RSI_12H": st.column_config.NumberColumn("12h", format="%.0f"),
             "RSI_8H": st.column_config.NumberColumn("8h", format="%.0f"),
             "RSI_4H": st.column_config.NumberColumn("4h", format="%.0f"),
@@ -246,11 +233,9 @@ if 'rsi_results' in st.session_state and st.session_state['rsi_results']:
         },
         use_container_width=True,
         hide_index=True,
-        height=600
+        height=700
     )
     
-    # Detalle HA
-    st.caption("Nota: La columna 'Vela Diaria' muestra 1 si es Heikin Ashi Verde (Alcista) y -1 si es Roja (Bajista).")
-
 else:
-    st.info("👈 Pulsa el botón para escanear el mercado.")
+    st.info("👈 Pulsa el botón para escanear (Sin verificación de Binance).")
+    
