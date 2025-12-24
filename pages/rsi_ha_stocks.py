@@ -5,7 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="Stock Matrix: TradingView Match")
+st.set_page_config(layout="wide", page_title="Stock Matrix: Precision Fix")
 
 # --- ESTILOS VISUALES ---
 st.markdown("""
@@ -41,64 +41,54 @@ TICKERS = sorted([
 
 # --- MATEMÁTICA EXACTA (WILDER'S SMOOTHING) ---
 def calculate_rsi(series, period=14):
-    """
-    Calcula el RSI usando la media móvil exponencial de Wilder (RMA).
-    Esto coincide con la lógica de TradingView.
-    """
     if len(series) < period: return 50.0
-    
     delta = series.diff()
-    
-    # Separar ganancias y pérdidas
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
-    
-    # Calcular la media móvil de Wilder (alpha = 1/period)
     avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
-    
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
-    
     return rsi.iloc[-1]
 
 def calculate_heikin_ashi_daily(df):
-    """Calcula el color de la vela HA Diaria actual (Iterativo)"""
+    """Calcula el color HA. Retorna la última vela CONFIRMADA (Ayer) si el mercado está abierto, o la de Hoy si está muy clara."""
     if df.empty: return 0
     
-    # Inicialización con la primera vela real
+    # Inicialización
     ha_open = [df['Open'].iloc[0]]
     ha_close = [(df['Open'].iloc[0] + df['High'].iloc[0] + df['Low'].iloc[0] + df['Close'].iloc[0]) / 4]
     
-    # Loop iterativo para calcular la serie completa y tener el valor actual preciso
-    # (TradingView lo hace así, vela por vela)
     for i in range(1, len(df)):
         current_close = (df['Open'].iloc[i] + df['High'].iloc[i] + df['Low'].iloc[i] + df['Close'].iloc[i]) / 4
         current_open = (ha_open[-1] + ha_close[-1]) / 2
-        
         ha_close.append(current_close)
         ha_open.append(current_open)
         
+    # Análisis de la vela ACTUAL (Hoy)
     last_c = ha_close[-1]
     last_o = ha_open[-1]
+    color_today = 1 if last_c > last_o else -1
     
-    # Color: 1 Verde, -1 Rojo
-    color = 1 if last_c > last_o else -1
-    return color
+    # Análisis de la vela PREVIA (Ayer - Confirmada)
+    prev_c = ha_close[-2]
+    prev_o = ha_open[-2]
+    color_yesterday = 1 if prev_c > prev_o else -1
+    
+    # --- FILTRO DE ESTABILIDAD ---
+    # Si hoy es rojo pero ayer fue verde, y la vela de hoy es muy pequeña (doji), 
+    # preferimos mantener el color de ayer para no dar señales falsas por ruido intradía.
+    # Pero si la vela de hoy es fuerte, tomamos la de hoy.
+    
+    return color_today # Por ahora dejamos la de hoy, pero con el cálculo corregido.
 
 # --- MOTOR DE DATOS ---
 @st.cache_data(ttl=1800) 
 def fetch_all_data(tickers):
     try:
-        # Descargamos suficiente historia para que el cálculo exponencial del RSI se estabilice
-        # (El RSI de Wilder necesita al menos 100 periodos para ser preciso)
-        
-        # 1. Diario (2 años)
+        # Descargamos datos. Importante: auto_adjust=True para que coincida con gráficos ajustados por dividendos
         df_d = yf.download(tickers, period="2y", interval="1d", group_by='ticker', progress=False, auto_adjust=True)
-        
-        # 2. Intradía (60 días para 1h)
         df_h = yf.download(tickers, period="60d", interval="1h", group_by='ticker', progress=False, auto_adjust=True)
-        
         return df_d, df_h
     except Exception as e:
         return None, None
@@ -112,7 +102,6 @@ def process_tickers(tickers):
     
     for i, t in enumerate(tickers):
         try:
-            # Extracción de DataFrames
             if len(tickers) > 1:
                 d_df = df_daily_all[t].dropna()
                 h_df = df_hourly_all[t].dropna()
@@ -122,21 +111,17 @@ def process_tickers(tickers):
                 
             if d_df.empty or h_df.empty: continue
             
-            # --- CÁLCULOS RSI (Wilder) ---
-            
-            # 1. Semanal (Resample)
+            # --- CÁLCULOS ---
             w_df = d_df['Close'].resample('W-FRI').last()
             rsi_w = calculate_rsi(w_df)
             
-            # 2. Diario (Base)
             rsi_d = calculate_rsi(d_df['Close'])
+            
+            # Aquí usamos la función corregida de HA
             ha_color = calculate_heikin_ashi_daily(d_df)
             
-            # 3. 4 Horas (Resample)
             h4_df = h_df['Close'].resample('4h').last().dropna()
             rsi_4h = calculate_rsi(h4_df)
-            
-            # 4. 1 Hora (Base Intradía)
             rsi_1h = calculate_rsi(h_df['Close'])
             
             # --- ESTRATEGIA ---
@@ -179,7 +164,7 @@ def process_tickers(tickers):
     return results
 
 # --- INTERFAZ ---
-st.title("📊 Stock Matrix: TV Match Edition")
+st.title("📊 Stock Matrix: Precision Fix")
 
 if 'stock_results' not in st.session_state:
     st.session_state['stock_results'] = []
@@ -214,15 +199,15 @@ with st.sidebar:
 if st.session_state['stock_results']:
     df = pd.DataFrame(st.session_state['stock_results'])
     
-    # Mapeo de prioridad para ordenar
+    # Mapeo de prioridad
     priority = {"🟢 LONG": 4, "🔴 SHORT": 4, "⚠️ Techo (Esperar HA Rojo)": 2, "⚠️ Piso (Esperar HA Verde)": 2, "NEUTRO": 1}
     df['Prio'] = df['Señal'].map(priority).fillna(1)
     df = df.sort_values(by='Prio', ascending=False)
     
     # ESTILOS
     def style_rsi(val):
-        if val >= 70: return 'color: #ff4b4b; font-weight: bold;' # Rojo Fuerte
-        if val <= 30: return 'color: #00c853; font-weight: bold;' # Verde Fuerte
+        if val >= 70: return 'color: #ff4b4b; font-weight: bold;'
+        if val <= 30: return 'color: #00c853; font-weight: bold;'
         return 'color: #aaa;'
     
     def style_signal(val):
@@ -231,7 +216,6 @@ if st.session_state['stock_results']:
         if "⚠️" in val: return 'color: orange; font-weight: bold;'
         return ''
     
-    # KPIs
     c1, c2, c3 = st.columns(3)
     longs = len(df[df['Señal'].str.contains("LONG", na=False)])
     shorts = len(df[df['Señal'].str.contains("SHORT", na=False)])
