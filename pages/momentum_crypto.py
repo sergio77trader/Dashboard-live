@@ -141,8 +141,7 @@ if st.session_state.get('run_crypto', False):
     for i, (label, code) in enumerate(tfs):
         data = get_data(ticker, code)
         
-        # --- CORRECCIÓN DEL ERROR AQUÍ ---
-        # Verificamos explícitamente si no es None y si no está vacío
+        # --- CORRECCIÓN ---
         if data is not None and not data.empty:
             res = analyze_timeframe(data)
             results.append({
