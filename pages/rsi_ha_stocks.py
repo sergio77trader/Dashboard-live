@@ -5,7 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="Stock Matrix: High Precision")
+st.set_page_config(layout="wide", page_title="Stock Matrix: Multi-TF Extended")
 
 # --- ESTILOS VISUALES ---
 st.markdown("""
@@ -39,32 +39,21 @@ TICKERS = sorted([
     'SPY', 'QQQ', 'IWM', 'DIA', 'EEM', 'EWZ', 'FXI', 'XLE', 'XLF', 'XLK', 'XLV', 'XLI', 'XLP', 'XLU', 'XLY', 'ARKK', 'SMH', 'TAN', 'GLD', 'SLV', 'GDX'
 ])
 
-# --- MATEMÁTICA EXACTA (TRADINGVIEW STYLE) ---
+# --- MATEMÁTICA EXACTA (RSI Wilder) ---
 def calculate_rsi(series, period=14):
-    """
-    Calcula el RSI usando Wilder's Smoothing (RMA) con suficiente historial.
-    """
     if len(series) < period: return 50.0
-    
     delta = series.diff()
-    
     gain = delta.where(delta > 0, 0)
     loss = -delta.where(delta < 0, 0)
-    
-    # Media Móvil de Wilder (alpha = 1/n)
-    # adjust=False es CLAVE para que coincida con la recursividad de TradingView
     avg_gain = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     avg_loss = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
-    
     rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
-    
     return rsi.iloc[-1]
 
 def calculate_heikin_ashi_daily(df):
+    """Calcula el color de la vela HA Diaria actual"""
     if df.empty: return 0
-    
-    # HA Open y Close Iterativo (Precisión máxima)
     ha_open = [df['Open'].iloc[0]]
     ha_close = [(df['Open'].iloc[0] + df['High'].iloc[0] + df['Low'].iloc[0] + df['Close'].iloc[0]) / 4]
     
@@ -76,20 +65,39 @@ def calculate_heikin_ashi_daily(df):
         
     last_c = ha_close[-1]
     last_o = ha_open[-1]
-    
     return 1 if last_c > last_o else -1
+
+# --- CONSTRUCTOR DE VELAS (Resampling) ---
+def resample_candles(df_hourly, hours):
+    """
+    Toma datos de 1 Hora y construye velas de X horas.
+    """
+    if df_hourly.empty: return pd.DataFrame()
+    
+    # Regla de pandas para resampling (ej: '2h', '4h')
+    rule = f"{hours}h"
+    
+    # Lógica de agregación
+    agg_dict = {
+        'Open': 'first',
+        'High': 'max',
+        'Low': 'min',
+        'Close': 'last'
+    }
+    
+    # Resamplear y eliminar filas incompletas (NaN)
+    df_resampled = df_hourly.resample(rule).agg(agg_dict).dropna()
+    return df_resampled
 
 # --- MOTOR DE DATOS ---
 @st.cache_data(ttl=1800) 
 def fetch_all_data(tickers):
     try:
-        # AUMENTO DE HISTORIAL PARA PRECISIÓN MATEMÁTICA
-        
-        # 1. Diario: Bajamos 5 años (antes 2). Más historia = RSI más preciso.
+        # 1. Diario (5 años para precisión)
         df_d = yf.download(tickers, period="5y", interval="1d", group_by='ticker', progress=False, auto_adjust=True)
         
-        # 2. Intradía: Bajamos 730 días (El máximo absoluto de Yahoo para 1h).
-        # Esto estabiliza el RSI de 4h y 1h.
+        # 2. Intradía (1 Hora - 730 días máximo permitido)
+        # Esto es la materia prima para construir 2h, 4h y 8h
         df_h = yf.download(tickers, period="730d", interval="1h", group_by='ticker', progress=False, auto_adjust=True)
         
         return df_d, df_h
@@ -105,6 +113,7 @@ def process_tickers(tickers):
     
     for i, t in enumerate(tickers):
         try:
+            # Extracción de DataFrames
             if len(tickers) > 1:
                 d_df = df_daily_all[t].dropna()
                 h_df = df_hourly_all[t].dropna()
@@ -114,26 +123,32 @@ def process_tickers(tickers):
                 
             if d_df.empty or h_df.empty: continue
             
-            # --- CÁLCULOS ---
+            # --- CÁLCULOS MULTI-TF ---
             
-            # 1. RSI Semanal (Data diaria resampleada a Viernes)
+            # 1. Semanal (Resampleado de diario)
             w_df = d_df['Close'].resample('W-FRI').last().dropna()
             rsi_w = calculate_rsi(w_df)
             
-            # 2. RSI Diario
+            # 2. Diario (Nativo)
             rsi_d = calculate_rsi(d_df['Close'])
             ha_color = calculate_heikin_ashi_daily(d_df)
             
-            # 3. RSI 4 Horas (Data horaria resampleada)
-            h4_df = h_df['Close'].resample('4h').last().dropna()
-            rsi_4h = calculate_rsi(h4_df)
+            # 3. CONSTRUCCIÓN DE VELAS INTRADÍA
+            # Construimos 8h, 4h y 2h desde la data de 1h
+            h8_df = resample_candles(h_df['Close'], 8)
+            h4_df = resample_candles(h_df['Close'], 4)
+            h2_df = resample_candles(h_df['Close'], 2)
             
-            # 4. RSI 1 Hora
+            rsi_8h = calculate_rsi(h8_df)
+            rsi_4h = calculate_rsi(h4_df)
+            rsi_2h = calculate_rsi(h2_df)
+            
+            # 1 Hora (Nativo)
             rsi_1h = calculate_rsi(h_df['Close'])
             
-            # --- ESTRATEGIA ---
-            all_rsis = [rsi_w, rsi_d, rsi_4h, rsi_1h]
-            # Validamos que los RSI no sean NaN (por falta de datos en activos nuevos)
+            # --- ESTRATEGIA (Con todos los nuevos TF) ---
+            all_rsis = [rsi_w, rsi_d, rsi_8h, rsi_4h, rsi_2h, rsi_1h]
+            # Filtramos posibles NaNs si falta historia en algún TF
             all_rsis = [x for x in all_rsis if not np.isnan(x)]
             
             if not all_rsis: continue
@@ -164,7 +179,9 @@ def process_tickers(tickers):
                 "HA_D": ha_color,
                 "RSI_W": rsi_w,
                 "RSI_D": rsi_d,
+                "RSI_8H": rsi_8h,
                 "RSI_4H": rsi_4h,
+                "RSI_2H": rsi_2h,
                 "RSI_1H": rsi_1h,
                 "Score": score
             })
@@ -176,10 +193,11 @@ def process_tickers(tickers):
     return results
 
 # --- INTERFAZ ---
-st.title("📊 Stock Matrix: High Precision")
+st.title("📊 Stock Matrix: Extended Timeframes")
+st.markdown("Monitor de RSI en: **Semanal, Diario, 8H, 4H, 2H, 1H**")
 
-if 'stock_results' not in st.session_state:
-    st.session_state['stock_results'] = []
+if 'stock_results_v2' not in st.session_state:
+    st.session_state['stock_results_v2'] = []
 
 with st.sidebar:
     st.header("Configuración")
@@ -195,21 +213,21 @@ with st.sidebar:
         new_results = process_tickers(targets)
         
         if new_results:
-            current_data = st.session_state['stock_results']
+            current_data = st.session_state['stock_results_v2']
             tickers_to_update = [x['Ticker'] for x in new_results]
             data_kept = [row for row in current_data if row['Ticker'] not in tickers_to_update]
-            st.session_state['stock_results'] = data_kept + new_results
+            st.session_state['stock_results_v2'] = data_kept + new_results
             st.success(f"Se actualizaron {len(new_results)} activos.")
         else:
             st.warning("No se encontraron datos.")
 
     if st.button("🗑️ Limpiar Todo"):
-        st.session_state['stock_results'] = []
+        st.session_state['stock_results_v2'] = []
         st.rerun()
 
 # --- RESULTADOS ---
-if st.session_state['stock_results']:
-    df = pd.DataFrame(st.session_state['stock_results'])
+if st.session_state['stock_results_v2']:
+    df = pd.DataFrame(st.session_state['stock_results_v2'])
     
     priority = {"🟢 LONG": 4, "🔴 SHORT": 4, "⚠️ Techo (Esperar HA Rojo)": 2, "⚠️ Piso (Esperar HA Verde)": 2, "NEUTRO": 1}
     df['Prio'] = df['Señal'].map(priority).fillna(1)
@@ -239,16 +257,18 @@ if st.session_state['stock_results']:
     st.divider()
 
     st.dataframe(
-        df.style.map(style_rsi, subset=['RSI_W', 'RSI_D', 'RSI_4H', 'RSI_1H'])
+        df.style.map(style_rsi, subset=['RSI_W', 'RSI_D', 'RSI_8H', 'RSI_4H', 'RSI_2H', 'RSI_1H'])
                 .map(style_signal, subset=['Señal']),
         column_config={
             "Ticker": "Activo",
             "Precio": st.column_config.NumberColumn(format="$%.2f"),
             "HA_D": st.column_config.TextColumn("Vela D", help="1=Verde, -1=Rojo"),
-            "RSI_W": st.column_config.NumberColumn("Semanal", format="%.0f"),
+            "RSI_W": st.column_config.NumberColumn("Semana", format="%.0f"),
             "RSI_D": st.column_config.NumberColumn("Diario", format="%.0f"),
-            "RSI_4H": st.column_config.NumberColumn("4 Horas", format="%.0f"),
-            "RSI_1H": st.column_config.NumberColumn("1 Hora", format="%.0f"),
+            "RSI_8H": st.column_config.NumberColumn("8H", format="%.0f"),
+            "RSI_4H": st.column_config.NumberColumn("4H", format="%.0f"),
+            "RSI_2H": st.column_config.NumberColumn("2H", format="%.0f"),
+            "RSI_1H": st.column_config.NumberColumn("1H", format="%.0f"),
         },
         use_container_width=True,
         hide_index=True,
