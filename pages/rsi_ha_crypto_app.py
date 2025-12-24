@@ -6,7 +6,7 @@ import time
 import plotly.graph_objects as go
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="RSI Matrix Pro: Ranked")
+st.set_page_config(layout="wide", page_title="RSI Matrix: Binance Filtered")
 
 # --- ESTILOS VISUALES ---
 st.markdown("""
@@ -21,11 +21,29 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- FUNCIÓN DE RANKING (VOLUMEN 24H) ---
+# --- LISTA BLANCA: SOLO FUTUROS DE BINANCE (ACTUALIZADA) ---
+# Esta lista actúa como filtro. Si no está acá, el script la ignora.
+BINANCE_WHITELIST = set([
+    'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOGE', 'SHIB', 'DOT', 'LINK', 'TRX', 'MATIC', 
+    'LTC', 'BCH', 'NEAR', 'UNI', 'ICP', 'FIL', 'APT', 'INJ', 'LDO', 'OP', 'ARB', 'TIA', 'SEI', 'SUI', 
+    'RNDR', 'FET', 'WLD', 'PEPE', 'BONK', 'WIF', 'FLOKI', 'ORDI', 'SATS', 'GALA', 'SAND', 'MANA', 
+    'AXS', 'AAVE', 'SNX', 'MKR', 'CRV', 'DYDX', 'JUP', 'PYTH', 'ENA', 'RUNE', 'FTM', 'ATOM', 'ALGO', 
+    'VET', 'EGLD', 'STX', 'IMX', 'KAS', 'TAO', 'OM', 'JASMY', 'AGIX', 'GRT', 'THETA', 'EOS', 'XTZ', 
+    'KLAY', 'MINA', 'FLOW', 'QNT', 'CFX', 'CHZ', 'ZEC', 'IOTA', 'NEO', 'KAVA', 'GMX', 'LUNC', 'ACH', 
+    'MASK', 'COMP', 'QTUM', 'YFI', 'ONE', 'GMT', 'ZIL', 'ANKR', 'GAS', 'GLM', 'BAT', 'MAGIC', 'ICX', 
+    'ONT', 'ZRX', 'IOST', 'OMG', 'RVN', 'KNC', 'WAXP', 'LSK', 'HBAR', 'DASH', 'ZRO', 'ZK', 'NOT', 
+    'IO', 'LISTA', 'BB', 'REZ', 'SAGA', 'TNSR', 'W', 'ETHFI', 'BOME', 'AEVO', 'PORTAL', 'PIXEL', 
+    'ALT', 'MANTA', 'XAI', 'AI', 'NFP', 'JTO', 'MEME', 'TOKEN', 'NTRN', 'TRB', 'LOOM', 'BIGTIME', 
+    'BOND', 'STPT', 'WAXP', 'BSV', 'RIF', 'POLYX', 'GAS', 'POWR', 'SLP', 'ANT', 'GLM', 'MTL', 'XVG'
+])
+
+# --- FUNCIÓN DE RANKING Y FILTRADO ---
 @st.cache_data(ttl=3600)
-def get_ranked_symbols():
+def get_filtered_ranked_symbols():
     """
-    Descarga todos los pares de KuCoin y los ordena por Volumen en USDT (Importancia).
+    1. Descarga volumen de KuCoin.
+    2. Filtra contra la lista de Binance.
+    3. Ordena por volumen.
     """
     url = "https://api.kucoin.com/api/v1/market/allTickers"
     try:
@@ -34,33 +52,29 @@ def get_ranked_symbols():
             data = r['data']['ticker']
             df = pd.DataFrame(data)
             
-            # 1. Filtrar solo pares USDT
+            # Filtros básicos
             df = df[df['symbol'].str.endswith('-USDT')]
-            
-            # 2. Convertir volumen a float (volValue es el volumen en dinero)
             df['volValue'] = df['volValue'].astype(float)
-            
-            # 3. Ordenar de Mayor a Menor Volumen
-            df = df.sort_values(by='volValue', ascending=False)
-            
-            # 4. Limpiar nombres (BTC-USDT -> BTC)
             df['clean_symbol'] = df['symbol'].str.replace('-USDT', '')
             
-            # Retornar lista ordenada y diccionario de volumen para mostrar
+            # --- EL FILTRO MAGICO ---
+            # Solo dejamos pasar las que están en nuestra Whitelist de Binance
+            df = df[df['clean_symbol'].isin(BINANCE_WHITELIST)]
+            
+            # Ordenar por Volumen
+            df = df.sort_values(by='volValue', ascending=False)
+            
             sorted_list = df['clean_symbol'].tolist()
             vol_map = df.set_index('clean_symbol')['volValue'].to_dict()
             
             return sorted_list, vol_map
-            
     except: 
-        # Fallback manual si falla la API
-        return ['BTC','ETH','SOL','BNB','XRP','ADA','DOGE','SHIB'], {}
+        return list(BINANCE_WHITELIST), {}
 
-# --- CARGAR MERCADO AL INICIO ---
-ALL_COINS, VOL_MAP = get_ranked_symbols()
+# --- CARGAR MERCADO FILTRADO ---
+ALL_COINS, VOL_MAP = get_filtered_ranked_symbols()
 
 # --- FUNCIONES DE DATOS (KUCOIN) ---
-
 def get_kucoin_data(symbol, k_interval, limit=100):
     url = "https://api.kucoin.com/api/v1/market/candles"
     target = f"{symbol}-USDT"
@@ -79,7 +93,6 @@ def get_kucoin_data(symbol, k_interval, limit=100):
     return pd.DataFrame()
 
 # --- CÁLCULOS MATEMÁTICOS ---
-
 def calculate_rsi(df, period=14):
     if len(df) < period: return 50.0
     delta = df['Close'].diff()
@@ -91,37 +104,29 @@ def calculate_rsi(df, period=14):
 
 def calculate_heikin_ashi_daily(df):
     if df.empty: return 0, 0
-    
     ha_close = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
-    
     ha_open_list = [df['Open'].iloc[0]]
     ha_close_list = [ha_close.iloc[0]]
-    
     for i in range(1, len(df)):
         ho = (ha_open_list[-1] + ha_close_list[-1]) / 2
         hc = (df['Open'].iloc[i] + df['High'].iloc[i] + df['Low'].iloc[i] + df['Close'].iloc[i]) / 4
         ha_open_list.append(ho)
         ha_close_list.append(hc)
-        
     last_c = ha_close_list[-1]
     last_o = ha_open_list[-1]
-    
     color = 1 if last_c > last_o else -1
     return color, last_c
 
 # --- MOTOR DE ANÁLISIS ---
-
 def analyze_asset(coin):
     # 1. Diario
     df_d = get_kucoin_data(coin, "1day", 100)
     if df_d.empty: return None
-    
-    ha_color, ha_price = calculate_heikin_ashi_daily(df_d)
+    ha_color, _ = calculate_heikin_ashi_daily(df_d)
     rsi_d = calculate_rsi(df_d)
     
     # 2. Semanal
-    df_w = get_kucoin_data(coin, "1week", 50)
-    rsi_w = calculate_rsi(df_w)
+    rsi_w = calculate_rsi(get_kucoin_data(coin, "1week", 50))
     
     # 3. Intradía
     rsi_12h = calculate_rsi(get_kucoin_data(coin, "12hour", 50))
@@ -132,7 +137,6 @@ def analyze_asset(coin):
     # Lógica
     all_rsis = [rsi_w, rsi_d, rsi_12h, rsi_8h, rsi_4h, rsi_2h]
     all_rsis = [r for r in all_rsis if not np.isnan(r)]
-    
     if not all_rsis: return None
 
     is_overbought = any(r > 70 for r in all_rsis)
@@ -154,13 +158,11 @@ def analyze_asset(coin):
         signal = "⚠️ Piso (Esperar HA Verde)"
         score = 0.5
         
-    # Obtener volumen del mapa global
     vol_24h = VOL_MAP.get(coin, 0)
 
     return {
         "Ticker": coin,
-        "Ranking": 0, # Se asignará después
-        "Volumen 24h": vol_24h,
+        "Volumen": vol_24h,
         "Precio": df_d['Close'].iloc[-1],
         "Señal": signal,
         "Score": score,
@@ -174,32 +176,23 @@ def analyze_asset(coin):
     }
 
 # --- INTERFAZ ---
-st.title("⚡ RSI Matrix Pro: Ranked by Volume")
-st.markdown("**Orden:** Las criptomonedas se presentan por **Volumen de Negociación ($)**. Lote 1 = Las más importantes.")
+st.title("⚡ RSI Matrix: Binance Futures (vía KuCoin Data)")
 
-# Inicializar memoria
-if 'rsi_full_results' not in st.session_state:
-    st.session_state['rsi_full_results'] = []
+if 'rsi_binance_results' not in st.session_state:
+    st.session_state['rsi_binance_results'] = []
 
-# Sidebar
 with st.sidebar:
     st.header("Configuración")
-    st.success(f"Mercado KuCoin: {len(ALL_COINS)} Activos Clasificados")
+    # Mostrar filtro aplicado
+    st.success(f"Filtrado: {len(ALL_COINS)} Activos Operables en Binance")
     
-    batch_size = st.slider("Tamaño de Lote", 20, 100, 50)
-    
-    # Crear lotes basados en la lista YA ORDENADA
+    batch_size = st.slider("Tamaño de Lote", 20, 50, 30)
     batches = [ALL_COINS[i:i + batch_size] for i in range(0, len(ALL_COINS), batch_size)]
-    
-    # Etiquetas inteligentes para los lotes
     batch_labels = []
     for i, b in enumerate(batches):
-        first = b[0]
-        last = b[-1]
-        label = f"Lote {i+1} (Ranks: {i*batch_size + 1}-{(i+1)*batch_size})"
-        batch_labels.append(label)
+        batch_labels.append(f"Lote {i+1} ({b[0]} - {b[-1]})")
     
-    sel_batch_idx = st.selectbox("Seleccionar Lote (Por Ranking):", range(len(batches)), format_func=lambda x: batch_labels[x])
+    sel_batch_idx = st.selectbox("Seleccionar Lote:", range(len(batches)), format_func=lambda x: batch_labels[x])
     
     col1, col2 = st.columns(2)
     scan_btn = col1.button("🔄 ESCANEAR", type="primary")
@@ -207,10 +200,9 @@ with st.sidebar:
 
 if scan_btn:
     targets = batches[sel_batch_idx]
-    st.toast(f"Analizando {len(targets)} criptos del Top Ranking...", icon="🚀")
+    st.toast(f"Analizando {len(targets)} criptos...", icon="🚀")
     
-    # Filtrar duplicados
-    existing = [x['Ticker'] for x in st.session_state['rsi_full_results']]
+    existing = [x['Ticker'] for x in st.session_state['rsi_binance_results']]
     to_run = [t for t in targets if t not in existing]
     
     new_results = []
@@ -219,32 +211,25 @@ if scan_btn:
     for i, coin in enumerate(to_run):
         try:
             res = analyze_asset(coin)
-            if res: 
-                # Asignar ranking absoluto
-                res['Ranking'] = ALL_COINS.index(coin) + 1
-                new_results.append(res)
+            if res: new_results.append(res)
         except: pass
-        
         prog.progress((i+1)/len(to_run))
-        time.sleep(0.05) 
+        time.sleep(0.05)
         
-    st.session_state['rsi_full_results'].extend(new_results)
+    st.session_state['rsi_binance_results'].extend(new_results)
     prog.empty()
     st.success(f"Agregados {len(new_results)} activos.")
 
 if clear_btn:
-    st.session_state['rsi_full_results'] = []
+    st.session_state['rsi_binance_results'] = []
     st.rerun()
 
-# --- TABLA DE RESULTADOS ---
-if st.session_state['rsi_full_results']:
-    df = pd.DataFrame(st.session_state['rsi_full_results'])
+# --- TABLA ---
+if st.session_state['rsi_binance_results']:
+    df = pd.DataFrame(st.session_state['rsi_binance_results'])
     
-    # Ordenar por Ranking de Volumen (Default) o por Prioridad de Señal
-    sort_mode = st.radio("Ordenar por:", ["🏆 Importancia (Volumen)", "🔥 Oportunidad (Señal)"], horizontal=True)
-    
-    if sort_mode == "🏆 Importancia (Volumen)":
-        df = df.sort_values(by='Ranking', ascending=True)
+    sort_mode = st.radio("Ordenar por:", ["🏆 Volumen (Importancia)", "🔥 Señal (Oportunidad)"], horizontal=True)
+    if sort_mode == "🏆 Volumen (Importancia)": df = df.sort_values(by='Volumen', ascending=False)
     else:
         priority = {"🟢 LONG": 4, "🔴 SHORT": 4, "⚠️ Techo (Esperar HA Rojo)": 2, "⚠️ Piso (Esperar HA Verde)": 2, "NEUTRO": 1}
         df['Prio'] = df['Señal'].map(priority).fillna(1)
@@ -263,25 +248,12 @@ if st.session_state['rsi_full_results']:
         if "⚠️" in val: return 'color: orange; font-weight: bold;'
         return ''
 
-    # KPIs
-    c1, c2, c3 = st.columns(3)
-    longs = len(df[df['Señal'].str.contains("LONG", na=False)])
-    shorts = len(df[df['Señal'].str.contains("SHORT", na=False)])
-    alerts = len(df[df['Señal'].str.contains("⚠️", na=False)])
-    
-    c1.metric("Oportunidades LONG", longs)
-    c2.metric("Oportunidades SHORT", shorts)
-    c3.metric("En Observación", alerts)
-    
-    st.divider()
-
     st.dataframe(
         df.style.map(style_rsi, subset=['RSI_W', 'RSI_D', 'RSI_12H', 'RSI_8H', 'RSI_4H', 'RSI_2H'])
                 .map(style_signal, subset=['Señal']),
         column_config={
-            "Ranking": st.column_config.NumberColumn("#", width="small"),
             "Ticker": "Activo",
-            "Volumen 24h": st.column_config.NumberColumn("Volumen ($)", format="$%.0f"),
+            "Volumen": st.column_config.NumberColumn("Volumen 24h", format="$%.0f"),
             "Precio": st.column_config.NumberColumn(format="$%.4f"),
             "HA_D": st.column_config.TextColumn("Vela D", help="1=Verde, -1=Roja"),
             "RSI_W": st.column_config.NumberColumn("Sem", format="%.0f"),
@@ -291,10 +263,7 @@ if st.session_state['rsi_full_results']:
             "RSI_4H": st.column_config.NumberColumn("4h", format="%.0f"),
             "RSI_2H": st.column_config.NumberColumn("2h", format="%.0f"),
         },
-        use_container_width=True,
-        hide_index=True,
-        height=700
+        use_container_width=True, hide_index=True, height=700
     )
     
-else:
-    st.info("👈 Selecciona el Lote 1 (Top Coins) para empezar.")
+else: st.info("👈 Selecciona el Lote 1 para empezar.")
