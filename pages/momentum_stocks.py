@@ -5,7 +5,7 @@ import numpy as np
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="SystemaTrader: Tablero Maestro")
+st.set_page_config(layout="wide", page_title="SystemaTrader: Tablero Maestro v2")
 
 # --- BASE DE DATOS ---
 TICKERS = sorted([
@@ -26,7 +26,7 @@ TICKERS = sorted([
     'SPY', 'QQQ', 'IWM', 'DIA', 'EEM', 'EWZ', 'FXI', 'XLE', 'XLF', 'XLK', 'XLV', 'XLI', 'XLP', 'XLU', 'XLY', 'ARKK', 'SMH', 'TAN', 'GLD', 'SLV', 'GDX'
 ])
 
-# --- 1. MATEMÁTICA EXACTA (Igual a TV) ---
+# --- 1. MATEMÁTICA EXACTA ---
 
 def calculate_indicators(df, fast=12, slow=26, sig=9):
     # MACD
@@ -51,10 +51,9 @@ def calculate_indicators(df, fast=12, slow=26, sig=9):
     
     return df
 
-# --- 2. MOTOR DE SIMULACIÓN (CEREBRO) ---
+# --- 2. MOTOR DE SIMULACIÓN ---
 def run_simulation_for_ticker(ticker, interval, period):
     try:
-        # Descargamos MAX para asegurar cálculos correctos desde el pasado
         df = yf.download(ticker, interval=interval, period=period, progress=False, auto_adjust=True)
         if df.empty: return "N/A", "Sin Datos", 0
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
@@ -75,21 +74,21 @@ def run_simulation_for_ticker(ticker, interval, period):
             p_hist = df['Hist'].iloc[i-1]
             p_ha = df['HA_Color'].iloc[i-1]
             
-            # --- SALIDAS (STOP MOMENTUM) ---
+            # --- SALIDAS ---
             if position == "LONG" and c_hist < p_hist:
                 position = "FLAT"
             elif position == "SHORT" and c_hist > p_hist:
                 position = "FLAT"
 
-            # --- ENTRADAS (RE-ENTRY SMART) ---
+            # --- ENTRADAS ---
             if position == "FLAT":
-                # LONG: Vela Verde + Hist < 0 + Hist Subiendo
+                # LONG: HA cambia a Verde + Hist < 0 + Hist Subiendo
                 if c_ha == 1 and (c_hist < 0) and (c_hist > p_hist):
                     position = "LONG"
                     entry_date = date
                     entry_price = price
                     
-                # SHORT: Vela Roja + Hist > 0 + Hist Bajando
+                # SHORT: HA cambia a Rojo + Hist > 0 + Hist Bajando
                 elif c_ha == -1 and (c_hist > 0) and (c_hist < p_hist):
                     position = "SHORT"
                     entry_date = date
@@ -98,8 +97,21 @@ def run_simulation_for_ticker(ticker, interval, period):
         # Formatear Salida
         current_price = df['Close'].iloc[-1]
         
+        # --- MODIFICACIÓN AQUÍ: INFO PARA NEUTRO ---
         if position == "FLAT":
-            return "⚪ NEUTRO", "-", current_price
+            last_row = df.iloc[-1]
+            prev_row = df.iloc[-2]
+            
+            # Estado HA
+            ha_status = "🟢" if last_row['HA_Color'] == 1 else "🔴"
+            
+            # Estado MACD (Momentum)
+            # Si Histograma Actual > Anterior = Subiendo (Verde)
+            # Si Histograma Actual < Anterior = Bajando (Rojo)
+            macd_status = "🟢" if last_row['Hist'] > prev_row['Hist'] else "🔴"
+            
+            info_neutro = f"HA {ha_status} | MACD {macd_status}"
+            return "⚪ NEUTRO", info_neutro, current_price
         
         # Calcular PnL Latente
         if position == "LONG":
@@ -122,7 +134,6 @@ def process_batch(tickers):
     results = []
     prog = st.progress(0)
     
-    # Configuraciones de tiempo (Intervalo Yahoo, Periodo Historia)
     configs = [
         ("M", "1mo", "max"), 
         ("S", "1wk", "10y"), 
@@ -132,14 +143,11 @@ def process_batch(tickers):
     for i, t in enumerate(tickers):
         row = {"Ticker": t, "Precio": 0}
         
-        # Iterar las 3 temporalidades
         for col_prefix, interval, period in configs:
             try:
                 sig, info, price = run_simulation_for_ticker(t, interval, period)
                 row[f"{col_prefix}_Signal"] = sig
                 row[f"{col_prefix}_Info"] = info
-                
-                # Guardamos el precio diario como referencia (el último procesado sirve)
                 if price > 0: row["Precio"] = price
             except:
                 row[f"{col_prefix}_Signal"] = "Error"
@@ -152,9 +160,8 @@ def process_batch(tickers):
     return results
 
 # --- INTERFAZ ---
-st.title("📊 Tablero Maestro: HA + MACD (Matrioska)")
+st.title("📊 Tablero Maestro: HA + MACD")
 
-# Inicializar memoria
 if 'master_results' not in st.session_state:
     st.session_state['master_results'] = []
 
@@ -170,8 +177,6 @@ with st.sidebar:
     c1, c2 = st.columns(2)
     if c1.button("🚀 ESCANEAR", type="primary"):
         targets = batches[sel_batch]
-        
-        # Filtro duplicados
         existing = [x['Ticker'] for x in st.session_state['master_results']]
         to_run = [t for t in targets if t not in existing]
         
@@ -189,7 +194,6 @@ with st.sidebar:
 if st.session_state['master_results']:
     df = pd.DataFrame(st.session_state['master_results'])
     
-    # Estilos de color
     def style_signal(val):
         if "LONG" in str(val): return "color: #00ff00; font-weight: bold; background-color: rgba(0,255,0,0.1)"
         if "SHORT" in str(val): return "color: #ff3333; font-weight: bold; background-color: rgba(255,0,0,0.1)"
@@ -216,7 +220,12 @@ if st.session_state['master_results']:
     )
     
     st.divider()
-    st.info("💡 **Leyenda:** Las fechas indican cuándo se disparó la señal. El PnL es la ganancia/pérdida teórica desde esa señal hasta hoy.")
+    st.info("""
+    **Leyenda para NEUTRO:**
+    *   **HA 🟢:** Vela Heikin Ashi Verde (Tendencia alcista).
+    *   **MACD 🟢:** Histograma subiendo (Momentum ganando fuerza al alza).
+    *   *Si ves HA 🟢 | MACD 🟢 en NEUTRO, podría estar cerca de dar entrada LONG.*
+    """)
 
 else:
     st.info("👈 Selecciona un lote para comenzar.")
