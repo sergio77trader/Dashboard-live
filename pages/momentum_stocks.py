@@ -1,190 +1,114 @@
-import os
+import streamlit as st
 import yfinance as yf
 import pandas as pd
+import plotly.graph_objects as go
 import numpy as np
-import requests
 import time
-from datetime import datetime, timedelta
-
-# --- CREDENCIALES ---
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # --- CONFIGURACIÓN ---
-TIMEFRAMES = [
-    ("1d", "DIARIO", "2y"),
-    ("1wk", "SEMANAL", "10y"),
-    ("1mo", "MENSUAL", "max")
-]
-ADX_TH = 20
-ADX_LEN = 14
+st.set_page_config(layout="wide", page_title="SystemaTrader: Modo Rápido")
 
-# --- BASE DE DATOS COMPLETA ---
-TICKERS = sorted([
-    'GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'CEPU', 'EDN', 'BFR', 'SUPV', 'CRESY', 'IRS', 'TEO', 'LOMA', 'DESP', 'VIST', 'GLOB', 'MELI', 'BIOX', 'TX',
-    'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NFLX',
-    'CRM', 'ORCL', 'ADBE', 'IBM', 'CSCO', 'PLTR', 'SNOW', 'SHOP', 'SPOT', 'UBER', 'ABNB', 'SAP', 'INTU', 'NOW',
-    'AMD', 'INTC', 'QCOM', 'AVGO', 'TXN', 'MU', 'ADI', 'AMAT', 'ARM', 'SMCI', 'TSM', 'ASML', 'LRCX', 'HPQ', 'DELL',
-    'JPM', 'BAC', 'C', 'WFC', 'GS', 'MS', 'V', 'MA', 'AXP', 'BRK-B', 'PYPL', 'SQ', 'COIN', 'BLK', 'USB', 'NU',
-    'KO', 'PEP', 'MCD', 'SBUX', 'DIS', 'NKE', 'WMT', 'COST', 'TGT', 'HD', 'LOW', 'PG', 'CL', 'MO', 'PM', 'KMB', 'EL',
-    'JNJ', 'PFE', 'MRK', 'LLY', 'ABBV', 'UNH', 'BMY', 'AMGN', 'GILD', 'AZN', 'NVO', 'NVS', 'CVS',
-    'BA', 'CAT', 'DE', 'GE', 'MMM', 'LMT', 'RTX', 'HON', 'UNP', 'UPS', 'FDX', 'LUV', 'DAL',
-    'F', 'GM', 'TM', 'HMC', 'STLA', 'RACE',
-    'XOM', 'CVX', 'SLB', 'OXY', 'HAL', 'BP', 'SHEL', 'TTE', 'PBR', 'VLO',
-    'VZ', 'T', 'TMUS', 'VOD',
-    'BABA', 'JD', 'BIDU', 'NIO', 'PDD', 'TCEHY', 'TCOM', 'BEKE', 'XPEV', 'LI', 'SONY',
-    'VALE', 'ITUB', 'BBD', 'ERJ', 'ABEV', 'GGB', 'SID', 'NBR',
-    'GOLD', 'NEM', 'PAAS', 'FCX', 'SCCO', 'RIO', 'BHP', 'ALB', 'SQM',
-    'SPY', 'QQQ', 'IWM', 'DIA', 'EEM', 'EWZ', 'FXI', 'XLE', 'XLF', 'XLK', 'XLV', 'XLI', 'XLP', 'XLU', 'XLY', 'ARKK', 'SMH', 'TAN', 'GLD', 'SLV', 'GDX'
+# --- BASE DE DATOS ---
+CEDEAR_DATABASE = sorted([
+    'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'TSLA', 'META', 'AMD', 'NFLX', 
+    'GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'CEPU', 'EDN', 'BFR', 'SUPV', 'MELI',
+    'KO', 'PEP', 'MCD', 'SBUX', 'DIS', 'XOM', 'CVX', 'JPM', 'BAC', 'C', 'WFC',
+    'SPY', 'QQQ', 'IWM', 'EEM', 'XLE', 'XLF', 'GLD', 'SLV', 'ARKK'
 ])
 
-def send_message(msg):
-    if not TELEGRAM_TOKEN or not CHAT_ID: return
+# --- FUNCIONES TÉCNICAS (Optimizadas) ---
+def calculate_rsi(series, period=14):
+    if len(series) < period: return 50
+    delta = series.diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+    rs = gain / loss
+    return 100 - (100 / (1 + rs)).iloc[-1]
+
+def analyze_ticker_fast(ticker):
     try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
-    except: pass
-
-# --- CÁLCULOS MATEMÁTICOS ---
-def calculate_heikin_ashi(df):
-    df_ha = df.copy()
-    df_ha['HA_Close'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
-    ha_open = [df['Open'].iloc[0]]
-    for i in range(1, len(df)):
-        ha_open.append((ha_open[-1] + df_ha['HA_Close'].iloc[i-1]) / 2)
-    df_ha['HA_Open'] = ha_open
-    df_ha['Color'] = np.where(df_ha['HA_Close'] > df_ha['HA_Open'], 1, -1)
-    return df_ha
-
-def calculate_adx(df, period=14):
-    df = df.copy()
-    df['H-L'] = df['High'] - df['Low']
-    df['H-C'] = abs(df['High'] - df['Close'].shift(1))
-    df['L-C'] = abs(df['Low'] - df['Close'].shift(1))
-    df['TR'] = df[['H-L', 'H-C', 'L-C']].max(axis=1)
-    df['UpMove'] = df['High'] - df['High'].shift(1)
-    df['DownMove'] = df['Low'].shift(1) - df['Low']
-    df['+DM'] = np.where((df['UpMove'] > df['DownMove']) & (df['UpMove'] > 0), df['UpMove'], 0)
-    df['-DM'] = np.where((df['DownMove'] > df['UpMove']) & (df['DownMove'] > 0), df['DownMove'], 0)
-    def wilder(x, p): return x.ewm(alpha=1/p, adjust=False).mean()
-    tr_s = wilder(df['TR'], period).replace(0, 1)
-    p_di = 100 * (wilder(df['+DM'], period) / tr_s)
-    n_di = 100 * (wilder(df['-DM'], period) / tr_s)
-    return wilder(100 * abs(p_di - n_di) / (p_di + n_di), period)
-
-def get_last_signal(df, adx_th):
-    if len(df) < 20: return None
-    df['ADX'] = calculate_adx(df)
-    df_ha = calculate_heikin_ashi(df)
-    
-    last_sig = None
-    in_pos = False
-    
-    for i in range(1, len(df_ha)):
-        c = df_ha['Color'].iloc[i]
-        a = df['ADX'].iloc[i]
-        d = df_ha.index[i]
-        p = df_ha['Close'].iloc[i]
+        # Descarga rápida solo de precio (sin fundamentales pesados)
+        df = yf.download(ticker, period="1y", interval="1d", progress=False, auto_adjust=True)
         
-        if not in_pos and c == 1 and a > adx_th:
-            in_pos = True
-            last_sig = {"T": "🟢 LONG", "F": d, "P": p, "A": a, "C": 1}
-        elif in_pos and c == -1:
-            in_pos = False
-            last_sig = {"T": "🔴 SHORT", "F": d, "P": p, "A": a, "C": -1}
+        if df.empty: return None
+        
+        # Limpieza MultiIndex
+        if isinstance(df.columns, pd.MultiIndex): 
+            df.columns = df.columns.get_level_values(0)
             
-    if not last_sig:
-        curr = df_ha.iloc[-1]
-        last_sig = {"T": "🟢 LONG" if curr['Color']==1 else "🔴 SHORT", "F": curr.name, "P": curr['Close'], "A": df['ADX'].iloc[-1], "C": int(curr['Color'])}
+        price = df['Close'].iloc[-1]
+        rsi = calculate_rsi(df['Close'])
         
-    return last_sig
+        # Heikin Ashi Simple
+        ha_close = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
+        ha_open = (df['Open'].shift(1) + df['Close'].shift(1)) / 2
+        color = "Verde" if ha_close.iloc[-1] > ha_open.iloc[-1] else "Rojo"
+        
+        # Estrategia Simple
+        signal = "NEUTRO"
+        if rsi < 30 and color == "Verde": signal = "🟢 COMPRA"
+        elif rsi > 70 and color == "Rojo": signal = "🔴 VENTA"
+        elif rsi > 70: signal = "⚠️ SOBRECOMPRA"
+        
+        return {
+            "Ticker": ticker,
+            "Precio": price,
+            "RSI": rsi,
+            "Vela": color,
+            "Señal": signal
+        }
+    except: return None
 
-# --- MOTOR PRINCIPAL ---
-def run_bot():
-    print(f"--- START SCAN: {datetime.now()} ---")
-    send_message("⚡ **INICIANDO ESCANEO DE ACTIVOS (+100)...**")
+# --- INTERFAZ ---
+st.title("⚡ SystemaTrader: Escáner Rápido (Diagnóstico)")
+st.caption("Si este script funciona, el anterior fallaba por bloqueo de Yahoo Finance.")
+
+if "fast_results" not in st.session_state:
+    st.session_state["fast_results"] = []
+
+with st.sidebar:
+    st.header("Control")
+    # Lotes pequeños para probar
+    batch_size = 5 
+    batches = [CEDEAR_DATABASE[i:i + batch_size] for i in range(0, len(CEDEAR_DATABASE), batch_size)]
+    batch_labels = [f"Lote {i+1}: {b[0]} - {b[-1]}" for i, b in enumerate(batches)]
     
-    master_data = {}
-    ahora = datetime.now()
-
-    # 1. Descarga y Análisis por Timeframe
-    for interval, label, period in TIMEFRAMES:
-        print(f"Descargando {label}...")
-        try:
-            data = yf.download(TICKERS, interval=interval, period=period, group_by='ticker', progress=False, auto_adjust=True)
-            for ticker in TICKERS:
-                if ticker not in master_data:
-                    master_data[ticker] = {'DIARIO': None, 'SEMANAL': None, 'MENSUAL': None, 'Price': 0, 'LastDate': datetime(2000,1,1)}
-                
-                try:
-                    df = data[ticker].dropna() if len(TICKERS) > 1 else data.dropna()
-                    if df.empty: continue
-                    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-                    
-                    sig = get_last_signal(df, ADX_TH)
-                    
-                    if sig:
-                        master_data[ticker][label] = sig
-                        # Guardamos precio actual si es diario
-                        if label == 'DIARIO': master_data[ticker]['Price'] = df['Close'].iloc[-1]
-                        
-                        # Actualizamos la fecha más reciente detectada en este activo
-                        # (Para ordenar el reporte después)
-                        # Nota: yfinance usa timezone-aware, necesitamos normalizar para comparar
-                        sig_dt = sig['F'].replace(tzinfo=None)
-                        if sig_dt > master_data[ticker]['LastDate']:
-                            master_data[ticker]['LastDate'] = sig_dt
-                except: pass
-        except Exception as e:
-            print(f"Error general en {label}: {e}")
-
-    # 2. Filtrar y Ordenar (Los más recientes primero)
-    active_tickers = [i for i in master_data.items() if i[1]['LastDate'] > datetime(2000,1,1)]
-    sorted_tickers = sorted(active_tickers, key=lambda x: x[1]['LastDate'], reverse=True)
+    sel_batch = st.selectbox("Elige Lote:", range(len(batches)), format_func=lambda x: batch_labels[x])
     
-    # 3. Generar Reporte
-    report_msg = f"📋 **REPORTE TÉCNICO ({len(sorted_tickers)} Activos)**\n_Ordenado por actividad reciente_\n\n"
+    if st.button("▶️ ESCANEAR LOTE"):
+        targets = batches[sel_batch]
+        placeholder = st.empty()
+        
+        for t in targets:
+            placeholder.info(f"⏳ Analizando {t}...")
+            res = analyze_ticker_fast(t)
+            if res:
+                st.session_state["fast_results"].append(res)
+            time.sleep(0.5) # Pausa para evitar bloqueo
+            
+        placeholder.success("✅ ¡Escaneo terminado!")
+
+    if st.button("🗑️ Limpiar"):
+        st.session_state["fast_results"] = []
+        st.rerun()
+
+# --- TABLA ---
+if st.session_state["fast_results"]:
+    df = pd.DataFrame(st.session_state["fast_results"])
     
-    for ticker, info in sorted_tickers:
-        # Título de Ficha
-        p_now = info['Price'] if info['Price'] > 0 else (info['DIARIO']['P'] if info['DIARIO'] else 0)
-        ficha = f"**{ticker}** | ${p_now:,.2f}\n"
-        ficha += "━━━━━━━━━━━━━━━━━━\n"
+    # Colores
+    def color_rsi(val):
+        if val > 70: return 'color: red; font-weight: bold'
+        if val < 30: return 'color: green; font-weight: bold'
+        return ''
         
-        has_data = False
-        # Recorremos D -> S -> M
-        for tf_key, tf_label in [('DIARIO','D'), ('SEMANAL','S'), ('MENSUAL','M')]:
-            s = info[tf_key]
-            if s:
-                has_data = True
-                ball = "🟢" if s['C'] == 1 else "🔴"
-                # Si la señal es de hace menos de 3 días, es NUEVA
-                sig_date = s['F'].replace(tzinfo=None)
-                is_fresh = (ahora - sig_date).days <= 3
-                
-                linea = f"{ball} **{tf_label}** {s['T']} | ${s['P']:,.2f} | ADX:{s['A']:.0f} | {s['F'].strftime('%d/%m/%y')}"
-                
-                if is_fresh: ficha += f"🆕 **{linea}**\n"
-                else: ficha += f"{linea}\n"
-            else:
-                ficha += f"⚪ **{tf_label}** | Sin Datos\n"
-        
-        ficha += "━━━━━━━━━━━━━━━━━━\n\n"
-        
-        if has_data:
-            report_msg += ficha
-        
-        # Enviar por partes si es muy largo
-        if len(report_msg) > 3500:
-            send_message(report_msg)
-            report_msg = ""
-            time.sleep(1) # Pausa técnica
-
-    # Enviar remanente
-    if report_msg:
-        send_message(report_msg)
-
-    send_message("✅ **Escaneo completado.**")
-
-if __name__ == "__main__":
-    run_bot()
+    st.dataframe(
+        df.style.map(color_rsi, subset=['RSI']),
+        use_container_width=True,
+        column_config={
+            "Precio": st.column_config.NumberColumn(format="$%.2f"),
+            "RSI": st.column_config.NumberColumn(format="%.1f")
+        }
+    )
+else:
+    st.info("Selecciona un lote y pulsa Escanear. Deberías ver resultados en segundos.")
