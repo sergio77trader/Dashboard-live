@@ -2,11 +2,10 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import time
 import plotly.graph_objects as go
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="Stock Matrix: RSI + HA (Acumulativo)")
+st.set_page_config(layout="wide", page_title="Stock Matrix: TradingView Match")
 
 # --- ESTILOS VISUALES ---
 st.markdown("""
@@ -21,7 +20,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- BASE DE DATOS (Tus Tickers) ---
+# --- BASE DE DATOS ---
 TICKERS = sorted([
     'GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'CEPU', 'EDN', 'BFR', 'SUPV', 'CRESY', 'IRS', 'TEO', 'LOMA', 'DESP', 'VIST', 'GLOB', 'MELI', 'BIOX', 'TX',
     'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NFLX',
@@ -40,45 +39,65 @@ TICKERS = sorted([
     'SPY', 'QQQ', 'IWM', 'DIA', 'EEM', 'EWZ', 'FXI', 'XLE', 'XLF', 'XLK', 'XLV', 'XLI', 'XLP', 'XLU', 'XLY', 'ARKK', 'SMH', 'TAN', 'GLD', 'SLV', 'GDX'
 ])
 
-# --- FUNCIONES DE CÁLCULO ---
-
+# --- MATEMÁTICA EXACTA (WILDER'S SMOOTHING) ---
 def calculate_rsi(series, period=14):
+    """
+    Calcula el RSI usando la media móvil exponencial de Wilder (RMA).
+    Esto coincide con la lógica de TradingView.
+    """
     if len(series) < period: return 50.0
+    
     delta = series.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
-    rs = gain / loss
+    
+    # Separar ganancias y pérdidas
+    gain = delta.where(delta > 0, 0)
+    loss = -delta.where(delta < 0, 0)
+    
+    # Calcular la media móvil de Wilder (alpha = 1/period)
+    avg_gain = gain.ewm(alpha=1/period, adjust=False).mean()
+    avg_loss = loss.ewm(alpha=1/period, adjust=False).mean()
+    
+    rs = avg_gain / avg_loss
     rsi = 100 - (100 / (1 + rs))
+    
     return rsi.iloc[-1]
 
 def calculate_heikin_ashi_daily(df):
-    """Calcula el color de la vela HA Diaria actual"""
+    """Calcula el color de la vela HA Diaria actual (Iterativo)"""
     if df.empty: return 0
     
-    # Cierre HA actual
-    ha_close = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
+    # Inicialización con la primera vela real
+    ha_open = [df['Open'].iloc[0]]
+    ha_close = [(df['Open'].iloc[0] + df['High'].iloc[0] + df['Low'].iloc[0] + df['Close'].iloc[0]) / 4]
     
-    # Apertura HA actual (Aprox para escáner rápido)
-    ha_open = (df['Open'].shift(1) + df['Close'].shift(1)) / 2
-    
-    last_c = ha_close.iloc[-1]
-    last_o = ha_open.iloc[-1]
+    # Loop iterativo para calcular la serie completa y tener el valor actual preciso
+    # (TradingView lo hace así, vela por vela)
+    for i in range(1, len(df)):
+        current_close = (df['Open'].iloc[i] + df['High'].iloc[i] + df['Low'].iloc[i] + df['Close'].iloc[i]) / 4
+        current_open = (ha_open[-1] + ha_close[-1]) / 2
+        
+        ha_close.append(current_close)
+        ha_open.append(current_open)
+        
+    last_c = ha_close[-1]
+    last_o = ha_open[-1]
     
     # Color: 1 Verde, -1 Rojo
     color = 1 if last_c > last_o else -1
     return color
 
 # --- MOTOR DE DATOS ---
-
 @st.cache_data(ttl=1800) 
 def fetch_all_data(tickers):
-    # Descarga optimizada
     try:
-        # 1. Datos Diarios (2 años para cálculos robustos)
+        # Descargamos suficiente historia para que el cálculo exponencial del RSI se estabilice
+        # (El RSI de Wilder necesita al menos 100 periodos para ser preciso)
+        
+        # 1. Diario (2 años)
         df_d = yf.download(tickers, period="2y", interval="1d", group_by='ticker', progress=False, auto_adjust=True)
         
-        # 2. Datos Intradía (1 Hora - 3 meses)
-        df_h = yf.download(tickers, period="3mo", interval="1h", group_by='ticker', progress=False, auto_adjust=True)
+        # 2. Intradía (60 días para 1h)
+        df_h = yf.download(tickers, period="60d", interval="1h", group_by='ticker', progress=False, auto_adjust=True)
         
         return df_d, df_h
     except Exception as e:
@@ -86,7 +105,6 @@ def fetch_all_data(tickers):
 
 def process_tickers(tickers):
     df_daily_all, df_hourly_all = fetch_all_data(tickers)
-    
     if df_daily_all is None: return []
     
     results = []
@@ -94,7 +112,7 @@ def process_tickers(tickers):
     
     for i, t in enumerate(tickers):
         try:
-            # Extraer DF individual
+            # Extracción de DataFrames
             if len(tickers) > 1:
                 d_df = df_daily_all[t].dropna()
                 h_df = df_hourly_all[t].dropna()
@@ -104,19 +122,21 @@ def process_tickers(tickers):
                 
             if d_df.empty or h_df.empty: continue
             
-            # --- 1. RSI SEMANAL ---
+            # --- CÁLCULOS RSI (Wilder) ---
+            
+            # 1. Semanal (Resample)
             w_df = d_df['Close'].resample('W-FRI').last()
             rsi_w = calculate_rsi(w_df)
             
-            # --- 2. RSI DIARIO & HEIKIN ASHI ---
+            # 2. Diario (Base)
             rsi_d = calculate_rsi(d_df['Close'])
             ha_color = calculate_heikin_ashi_daily(d_df)
             
-            # --- 3. RSI 4 HORAS (Sintético) ---
+            # 3. 4 Horas (Resample)
             h4_df = h_df['Close'].resample('4h').last().dropna()
             rsi_4h = calculate_rsi(h4_df)
             
-            # --- 4. RSI 1 HORA ---
+            # 4. 1 Hora (Base Intradía)
             rsi_1h = calculate_rsi(h_df['Close'])
             
             # --- ESTRATEGIA ---
@@ -127,15 +147,12 @@ def process_tickers(tickers):
             signal = "NEUTRO"
             score = 0 
             
-            # VENTA
             if is_overbought and ha_color == -1:
                 signal = "🔴 SHORT"
                 score = -1
-            # COMPRA
             elif is_oversold and ha_color == 1:
                 signal = "🟢 LONG"
                 score = 1
-            # ALERTAS
             elif is_overbought and ha_color == 1:
                 signal = "⚠️ Techo (Esperar HA Rojo)"
                 score = 0.5
@@ -162,9 +179,8 @@ def process_tickers(tickers):
     return results
 
 # --- INTERFAZ ---
-st.title("📊 Stock Matrix: RSI Multi-TF + HA (Acumulativo)")
+st.title("📊 Stock Matrix: TV Match Edition")
 
-# Inicializar Estado si no existe
 if 'stock_results' not in st.session_state:
     st.session_state['stock_results'] = []
 
@@ -179,23 +195,16 @@ with st.sidebar:
     
     if st.button("🔄 ESCANEAR LOTE (ACUMULAR)", type="primary"):
         targets = batches[sel_batch]
-        
-        # 1. Escanear nuevos datos
         new_results = process_tickers(targets)
         
         if new_results:
-            # 2. Obtener lista actual y eliminar los que se van a actualizar (para no duplicar)
             current_data = st.session_state['stock_results']
             tickers_to_update = [x['Ticker'] for x in new_results]
-            
-            # Filtramos los viejos que coincidan con los nuevos
             data_kept = [row for row in current_data if row['Ticker'] not in tickers_to_update]
-            
-            # 3. Sumar los nuevos
             st.session_state['stock_results'] = data_kept + new_results
             st.success(f"Se actualizaron {len(new_results)} activos.")
         else:
-            st.warning("No se encontraron datos para este lote.")
+            st.warning("No se encontraron datos.")
 
     if st.button("🗑️ Limpiar Todo"):
         st.session_state['stock_results'] = []
@@ -205,15 +214,15 @@ with st.sidebar:
 if st.session_state['stock_results']:
     df = pd.DataFrame(st.session_state['stock_results'])
     
-    # Ordenar por prioridad de señal
+    # Mapeo de prioridad para ordenar
     priority = {"🟢 LONG": 4, "🔴 SHORT": 4, "⚠️ Techo (Esperar HA Rojo)": 2, "⚠️ Piso (Esperar HA Verde)": 2, "NEUTRO": 1}
     df['Prio'] = df['Señal'].map(priority).fillna(1)
     df = df.sort_values(by='Prio', ascending=False)
     
     # ESTILOS
     def style_rsi(val):
-        if val >= 70: return 'color: #ff4b4b; font-weight: bold;'
-        if val <= 30: return 'color: #00c853; font-weight: bold;'
+        if val >= 70: return 'color: #ff4b4b; font-weight: bold;' # Rojo Fuerte
+        if val <= 30: return 'color: #00c853; font-weight: bold;' # Verde Fuerte
         return 'color: #aaa;'
     
     def style_signal(val):
@@ -252,4 +261,4 @@ if st.session_state['stock_results']:
     )
 
 else:
-    st.info("👈 Selecciona un lote y pulsa ESCANEAR para comenzar a acumular datos.")
+    st.info("👈 Selecciona un lote y pulsa ESCANEAR.")
