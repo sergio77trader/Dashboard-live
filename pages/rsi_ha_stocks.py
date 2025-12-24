@@ -3,9 +3,10 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+import time
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="Stock Matrix: Multi-TF Extended")
+st.set_page_config(layout="wide", page_title="Stock Matrix: Robusto")
 
 # --- ESTILOS VISUALES ---
 st.markdown("""
@@ -20,7 +21,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- BASE DE DATOS ---
+# --- BASE DE DATOS (Tus Tickers) ---
 TICKERS = sorted([
     'GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'CEPU', 'EDN', 'BFR', 'SUPV', 'CRESY', 'IRS', 'TEO', 'LOMA', 'DESP', 'VIST', 'GLOB', 'MELI', 'BIOX', 'TX',
     'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NFLX',
@@ -53,9 +54,7 @@ def calculate_rsi(series, period=14):
 
 def calculate_heikin_ashi_daily(df):
     """Calcula el color de la vela HA Diaria actual"""
-    if df.empty or len(df) < 2: return 0 # Necesitamos al menos 2 velas
-    
-    # Inicialización con la primera vela
+    if df.empty: return 0
     ha_open = [df['Open'].iloc[0]]
     ha_close = [(df['Open'].iloc[0] + df['High'].iloc[0] + df['Low'].iloc[0] + df['Close'].iloc[0]) / 4]
     
@@ -63,7 +62,7 @@ def calculate_heikin_ashi_daily(df):
         current_close = (df['Open'].iloc[i] + df['High'].iloc[i] + df['Low'].iloc[i] + df['Close'].iloc[i]) / 4
         current_open = (ha_open[-1] + ha_close[-1]) / 2
         ha_close.append(current_close)
-        ha_open.append(ho) # Error aquí, debe ser current_open
+        ha_open.append(current_open)
         
     last_c = ha_close[-1]
     last_o = ha_open[-1]
@@ -72,94 +71,87 @@ def calculate_heikin_ashi_daily(df):
 # --- CONSTRUCTOR DE VELAS (Resampling) ---
 def resample_candles(df_base, hours):
     """
-    Toma un DataFrame (OHLCV) y lo resamplea a velas de X horas.
+    Toma datos de 1 Hora y construye velas de X horas.
+    df_base debe tener 'Open', 'High', 'Low', 'Close'
     """
     if df_base.empty: return pd.DataFrame()
     
-    # Asegurarse de que el índice es datetime
-    if not isinstance(df_base.index, pd.DatetimeIndex):
-        df_base = df_base.set_index('Time') # Asumiendo columna 'Time' si no es index
-    
     rule = f"{hours}h"
+    agg_dict = {'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last'}
     
-    agg_dict = {
-        'Open': 'first',
-        'High': 'max',
-        'Low': 'min',
-        'Close': 'last',
-        'Volume': 'sum' # Agregamos volumen por si acaso
-    }
-    
-    # Resamplear y eliminar filas con NaN (por ejemplo, horas sin trading)
     df_resampled = df_base.resample(rule).agg(agg_dict).dropna()
     return df_resampled
 
-# --- MOTOR DE DATOS ---
-@st.cache_data(ttl=1800) 
+# --- MOTOR DE DATOS (Más Robusto) ---
+@st.cache_data(ttl=1800) # Cache de 30 min
 def fetch_all_data(tickers):
-    """Descarga datos diarios y horarios de todos los tickers."""
-    try:
-        # 1. Diario (5 años)
-        df_d = yf.download(tickers, period="5y", interval="1d", group_by='ticker', progress=False, auto_adjust=True)
-        
-        # 2. Intradía (1 Hora - 730 días máximo)
-        df_h = yf.download(tickers, period="730d", interval="1h", group_by='ticker', progress=False, auto_adjust=True)
-        
-        return df_d, df_h
-    except Exception as e:
-        # st.error(f"Error general descargando datos: {e}") # Descomentar para debug
-        return None, None
+    data_d = {}
+    data_h = {}
+    
+    # 1. Descarga Diaria (5 años) - Una por una para manejar errores
+    for t in tickers:
+        try:
+            df = yf.download(t, period="5y", interval="1d", progress=False, auto_adjust=True, timeout=10)
+            if not df.empty: data_d[t] = df
+        except: pass
+    
+    # 2. Descarga Horaria (730 días) - Una por una
+    for t in tickers:
+        try:
+            df = yf.download(t, period="730d", interval="1h", group_by='ticker', progress=False, auto_adjust=True, timeout=10)
+            if not df.empty:
+                # Si descarga un solo ticker, yfinance no crea MultiIndex
+                if len(tickers) == 1: data_h[t] = df
+                else:
+                    if t in df.columns.levels[0]: data_h[t] = df[t]
+                    else: data_h[t] = df # Fallback
+        except: pass
+            
+    return data_d, data_h
 
 def process_tickers(tickers):
-    df_daily_all, df_hourly_all = fetch_all_data(tickers)
+    df_daily_dict, df_hourly_dict = fetch_all_data(tickers)
     
-    if df_daily_all is None: # Si falló la descarga general
-        st.error("Error al descargar datos principales. Intenta de nuevo.")
-        return []
-        
     results = []
     prog = st.progress(0)
     
+    # Manejamos los tickers que no se pudieron descargar
+    download_failures = []
+    
     for i, t in enumerate(tickers):
         try:
-            # Extraer DF individual
-            # Manejar caso de 1 solo ticker que yfinance devuelve sin MultiIndex
-            if len(tickers) > 1:
-                d_df_raw = df_daily_all[t]
-                h_df_raw = df_hourly_all[t]
-            else:
-                d_df_raw = df_daily_all
-                h_df_raw = df_hourly_all
+            d_df = df_daily_dict.get(t) # Usamos .get() para no fallar si falta el ticker
+            h_df = df_hourly_dict.get(t)
             
-            # Limpiar NaNs
-            d_df = d_df_raw.dropna()
-            h_df = h_df_raw.dropna()
-            
-            if d_df.empty or h_df.empty: 
-                st.warning(f"⚠️ Datos insuficientes para {t}. Saltando.")
-                continue # Saltar si no hay data
-            
+            if d_df is None or d_df.empty or h_df is None or h_df.empty:
+                download_failures.append(t)
+                continue # Saltar este ticker y seguir
+
             # --- CÁLCULOS MULTI-TF ---
             
-            # 1. Semanal (Resampleado de diario)
+            # 1. Semanal
             w_df = d_df['Close'].resample('W-FRI').last().dropna()
             rsi_w = calculate_rsi(w_df)
             
-            # 2. Diario (Nativo)
+            # 2. Diario
             rsi_d = calculate_rsi(d_df['Close'])
-            ha_color = calculate_heikin_ashi_daily(d_df) # Calculado sobre diario
+            ha_color = calculate_heikin_ashi_daily(d_df)
             
-            # 3. CONSTRUCCIÓN DE VELAS INTRADÍA (Necesitamos el DF completo de 1h)
-            rsi_8h = calculate_rsi(resample_candles(h_df, 8)['Close']) if not resample_candles(h_df, 8).empty else 50.0
-            rsi_4h = calculate_rsi(resample_candles(h_df, 4)['Close']) if not resample_candles(h_df, 4).empty else 50.0
-            rsi_2h = calculate_rsi(resample_candles(h_df, 2)['Close']) if not resample_candles(h_df, 2).empty else 50.0
+            # 3. Intradía (Resampleo)
+            h8_df = resample_candles(h_df, 8)
+            h4_df = resample_candles(h_df, 4)
+            h2_df = resample_candles(h_df, 2)
             
-            # 4. 1 Hora (Nativo)
+            rsi_8h = calculate_rsi(h8_df['Close']) if not h8_df.empty else 50.0
+            rsi_4h = calculate_rsi(h4_df['Close']) if not h4_df.empty else 50.0
+            rsi_2h = calculate_rsi(h2_df['Close']) if not h2_df.empty else 50.0
+            
+            # 4. 1 Hora
             rsi_1h = calculate_rsi(h_df['Close'])
             
-            # --- ESTRATEGIA (Con todos los nuevos TF) ---
+            # --- ESTRATEGIA ---
             all_rsis = [rsi_w, rsi_d, rsi_8h, rsi_4h, rsi_2h, rsi_1h]
-            all_rsis = [x for x in all_rsis if not np.isnan(x)] # Filtrar posibles NaNs
+            all_rsis = [x for x in all_rsis if not np.isnan(x)]
             
             if not all_rsis: continue
 
@@ -196,20 +188,22 @@ def process_tickers(tickers):
                 "Score": score
             })
             
-        except Exception as e: 
-            st.warning(f"❌ Error procesando {t}: {e}") # Aviso de error en ticker individual
-            pass
+        except Exception: pass
         prog.progress((i+1)/len(tickers))
         
     prog.empty()
+    
+    if download_failures:
+        st.error(f"⚠️ No se pudieron descargar datos para: {', '.join(download_failures)}. Intentando de nuevo en el próximo lote.")
+        
     return results
 
 # --- INTERFAZ ---
-st.title("📊 Stock Matrix: Timeframe Master")
+st.title("📊 Stock Matrix: Multi-TF Robusto")
 st.markdown("Monitor de RSI en: **Semanal, Diario, 8H, 4H, 2H, 1H**")
 
-if 'stock_results_v2' not in st.session_state:
-    st.session_state['stock_results_v2'] = []
+if 'stock_results_v3' not in st.session_state:
+    st.session_state['stock_results_v3'] = []
 
 with st.sidebar:
     st.header("Configuración")
@@ -225,21 +219,21 @@ with st.sidebar:
         new_results = process_tickers(targets)
         
         if new_results:
-            current_data = st.session_state['stock_results_v2']
+            current_data = st.session_state['stock_results_v3']
             tickers_to_update = [x['Ticker'] for x in new_results]
             data_kept = [row for row in current_data if row['Ticker'] not in tickers_to_update]
-            st.session_state['stock_results_v2'] = data_kept + new_results
+            st.session_state['stock_results_v3'] = data_kept + new_results
             st.success(f"Se actualizaron {len(new_results)} activos.")
         else:
-            st.warning("No se encontraron datos en este lote. Posiblemente por errores de descarga.")
+            st.warning("No se encontraron datos válidos en este lote.")
 
     if st.button("🗑️ Limpiar Todo"):
-        st.session_state['stock_results_v2'] = []
+        st.session_state['stock_results_v3'] = []
         st.rerun()
 
 # --- RESULTADOS ---
-if st.session_state['stock_results_v2']:
-    df = pd.DataFrame(st.session_state['stock_results_v2'])
+if st.session_state['stock_results_v3']:
+    df = pd.DataFrame(st.session_state['stock_results_v3'])
     
     priority = {"🟢 LONG": 4, "🔴 SHORT": 4, "⚠️ Techo (Esperar HA Rojo)": 2, "⚠️ Piso (Esperar HA Verde)": 2, "NEUTRO": 1}
     df['Prio'] = df['Señal'].map(priority).fillna(1)
@@ -266,15 +260,13 @@ if st.session_state['stock_results_v2']:
     c2.metric("Oportunidades SHORT", shorts)
     c3.metric("En Observación", alerts)
     
-    st.divider()
-
     st.dataframe(
         df.style.map(style_rsi, subset=['RSI_W', 'RSI_D', 'RSI_8H', 'RSI_4H', 'RSI_2H', 'RSI_1H'])
                 .map(style_signal, subset=['Señal']),
         column_config={
             "Ticker": "Activo",
             "Precio": st.column_config.NumberColumn(format="$%.2f"),
-            "HA_D": st.column_config.TextColumn("Vela D", help="1=Verde, -1=Rojo"),
+            "HA_D": st.column_config.TextColumn("Vela D", help="1=Verde, -1=Roja"),
             "RSI_W": st.column_config.NumberColumn("Semanal", format="%.0f"),
             "RSI_D": st.column_config.NumberColumn("Diario", format="%.0f"),
             "RSI_8H": st.column_config.NumberColumn("8H", format="%.0f"),
@@ -288,4 +280,4 @@ if st.session_state['stock_results_v2']:
     )
 
 else:
-    st.info("👈 Selecciona un lote y pulsa ESCANEAR.")```
+    st.info("👈 Selecciona un lote y pulsa ESCANEAR.")
