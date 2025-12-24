@@ -5,9 +5,9 @@ import numpy as np
 import plotly.graph_objects as go
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="Scanner Exacto TV (Trend Logic)")
+st.set_page_config(layout="wide", page_title="TV Strategy Clone: Strict Mode")
 
-# --- ESTILOS ---
+# --- ESTILOS VISUALES ---
 st.markdown("""
 <style>
     .metric-box {
@@ -18,17 +18,21 @@ st.markdown("""
         text-align: center;
         margin-bottom: 10px;
     }
-    .signal-long { color: #00ff00; font-weight: bold; font-size: 1.5rem; }
-    .signal-short { color: #ff3333; font-weight: bold; font-size: 1.5rem; }
-    .signal-closed { color: #888; font-weight: bold; font-size: 1.2rem; }
+    .signal-long { color: #00ff00; font-weight: bold; font-size: 1.4rem; }
+    .signal-short { color: #ff3333; font-weight: bold; font-size: 1.4rem; }
+    .signal-flat { color: #888; font-weight: bold; font-size: 1.2rem; }
     .price-tag { font-size: 1.1rem; color: white; margin-top: 5px; }
-    .date-tag { font-size: 0.9rem; color: #888; }
+    .date-tag { font-size: 0.9rem; color: #ccc; }
+    .profit-tag { font-size: 0.9rem; font-weight: bold; margin-top: 5px; }
+    .p-green { color: #00ff00; }
+    .p-red { color: #ff0000; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 1. CÁLCULOS MATEMÁTICOS ---
+# --- 1. MATEMÁTICA EXACTA ---
+
 def calculate_indicators(df, fast=12, slow=26, sig=9):
-    # MACD
+    # MACD (EMA Standard igual que TV)
     exp1 = df['Close'].ewm(span=fast, adjust=False).mean()
     exp2 = df['Close'].ewm(span=slow, adjust=False).mean()
     macd = exp1 - exp2
@@ -46,131 +50,157 @@ def calculate_indicators(df, fast=12, slow=26, sig=9):
         
     df['HA_Close'] = ha_close
     df['HA_Open'] = ha_open
-    df['HA_Color'] = np.where(df['HA_Close'] > df['HA_Open'], 1, -1) # 1 Verde, -1 Rojo
+    
+    # Color: 1=Verde, -1=Rojo
+    df['HA_Color'] = np.where(df['HA_Close'] > df['HA_Open'], 1, -1)
     
     return df
 
-# --- 2. MOTOR DE ESTRATEGIA (LÓGICA AJUSTADA) ---
-def get_strategy_signal(ticker, interval):
+# --- 2. MOTOR DE SIMULACIÓN DE ESTRATEGIA (EL CEREBRO) ---
+def run_simulation(ticker, interval, period):
     try:
-        # Descarga máxima historia
+        # Descargamos MAX historia (Fundamental para Mensual)
         df = yf.download(ticker, interval=interval, period="max", progress=False, auto_adjust=True)
-        if df.empty: return None, 0
+        if df.empty: return None, 0, []
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
         df = calculate_indicators(df)
         
-        # ESTADO DEL ROBOT
-        current_state = "NEUTRO" 
-        last_entry = None 
+        # Variables de Simulación
+        position = "FLAT" # FLAT, LONG, SHORT
+        entry_price = 0.0
+        entry_date = None
+        trades = [] # Historial de trades para depurar
         
-        # Recorrido Histórico
+        # Bucle Vela por Vela (Simulando el mercado real)
         for i in range(1, len(df)):
             date = df.index[i]
             price = df['Close'].iloc[i]
             
-            # Variables Actuales
-            curr_ha = df['HA_Color'].iloc[i]
-            curr_hist = df['Hist'].iloc[i]
+            # Variables actuales
+            c_ha = df['HA_Color'].iloc[i]
+            c_hist = df['Hist'].iloc[i]
             
-            # Variables Previas
-            prev_ha = df['HA_Color'].iloc[i-1]
-            prev_hist = df['Hist'].iloc[i-1]
+            # Variables previas
+            p_ha = df['HA_Color'].iloc[i-1]
+            p_hist = df['Hist'].iloc[i-1]
             
-            # --- LÓGICA DE SALIDA (STOP) ---
-            # CORRECCIÓN: Para gráfico MENSUAL, ser más tolerante.
-            # Solo salimos si la vela cambia de color O si el histograma cruza 0 en contra.
-            # NO salimos solo porque el histograma baje un poquito (eso es ruido en mensual).
+            # --- LÓGICA DE SALIDAS (STOP MOMENTUM) ---
+            # En tu script: exit_long_condition = hist_bajando (c_hist < p_hist)
             
-            if current_state == "LONG":
-                # Salida Long: Solo si HA se pone Rojo (Cambio de tendencia real)
-                # O si el MACD cruza a negativo (Confirmación bajista)
-                if curr_ha == -1: 
-                    current_state = "NEUTRO"
+            if position == "LONG":
+                # Si el histograma baja, SALIMOS
+                if c_hist < p_hist:
+                    position = "FLAT"
+                    # Registrar Trade Cerrado
+                    pnl = ((price - entry_price)/entry_price)*100
+                    trades.append({"Tipo": "CIERRE LONG", "Fecha": date, "Precio": price, "PnL": pnl})
             
-            elif current_state == "SHORT":
-                # Salida Short: Solo si HA se pone Verde
-                if curr_ha == 1:
-                    current_state = "NEUTRO"
+            elif position == "SHORT":
+                # Si el histograma sube, SALIMOS
+                if c_hist > p_hist:
+                    position = "FLAT"
+                    pnl = ((entry_price - price)/entry_price)*100
+                    trades.append({"Tipo": "CIERRE SHORT", "Fecha": date, "Precio": price, "PnL": pnl})
 
-            # --- LÓGICA DE ENTRADA (RE-ENTRY) ---
-            if current_state == "NEUTRO":
+            # --- LÓGICA DE ENTRADAS (GATILLOS) ---
+            # Solo entramos si estamos FLAT (TradingView por defecto no piramida)
+            
+            if position == "FLAT":
                 
-                # CONDICIÓN LONG:
-                # 1. HA cambia a Verde (Giro)
-                # 2. Histograma es Negativo (< 0) pero subiendo
+                # LONG: HA cambia a Verde + Hist Negativo + Hist Subiendo
+                ha_flip_green = (p_ha == -1 and c_ha == 1)
+                hist_setup_long = (c_hist < 0) and (c_hist > p_hist)
                 
-                ha_flip_green = (prev_ha == -1 and curr_ha == 1)
-                hist_ok_long = (curr_hist < 0) and (curr_hist > prev_hist)
+                if ha_flip_green and hist_setup_long:
+                    position = "LONG"
+                    entry_date = date
+                    entry_price = price
+                    trades.append({"Tipo": "ENTRADA LONG", "Fecha": date, "Precio": price, "PnL": 0})
+                    
+                # SHORT: HA cambia a Rojo + Hist Positivo + Hist Bajando
+                ha_flip_red = (p_ha == 1 and c_ha == -1)
+                hist_setup_short = (c_hist > 0) and (c_hist < p_hist)
                 
-                if ha_flip_green and hist_ok_long:
-                    current_state = "LONG"
-                    last_entry = {"Tipo": "LONG", "Fecha": date, "Precio": price, "Color": "signal-long", "Icono": "🟢"}
-
-                # CONDICIÓN SHORT:
-                ha_flip_red = (prev_ha == 1 and curr_ha == -1)
-                hist_ok_short = (curr_hist > 0) and (curr_hist < prev_hist)
-                
-                if ha_flip_red and hist_ok_short:
-                    current_state = "SHORT"
-                    last_entry = {"Tipo": "SHORT", "Fecha": date, "Precio": price, "Color": "signal-short", "Icono": "🔴"}
-
-        # --- RESULTADO FINAL ---
+                if ha_flip_red and hist_setup_short:
+                    position = "SHORT"
+                    entry_date = date
+                    entry_price = price
+                    trades.append({"Tipo": "ENTRADA SHORT", "Fecha": date, "Precio": price, "PnL": 0})
         
-        # Si terminamos "LONG", significa que la compra de 2021/2022 nunca se cerró
-        if current_state == "LONG":
-            return last_entry, df['Close'].iloc[-1]
-            
-        if current_state == "SHORT":
-            return last_entry, df['Close'].iloc[-1]
-            
-        # Si terminó Neutro
-        elif last_entry:
-             last_entry['Tipo'] += " (CERRADA)"
-             last_entry['Color'] = "signal-closed"
-             last_entry['Icono'] = "⚪"
-             return last_entry, df['Close'].iloc[-1]
+        # --- ESTADO FINAL ---
+        last_status = {
+            "Estado": position,
+            "Fecha": entry_date,
+            "PrecioEntrada": entry_price
+        }
+        
+        return last_status, df['Close'].iloc[-1], trades
 
-        return None, df['Close'].iloc[-1]
-
-    except: return None, 0
+    except Exception as e:
+        return None, 0, []
 
 # --- 3. INTERFAZ ---
-st.title("🛡️ Scanner Exacto TV (Trend Fix)")
+st.title("🛡️ TV Strategy Clone: Strict Momentum")
+st.markdown("Replica la estrategia con **Salidas por Pérdida de Momentum** (Histograma).")
 
-col1, col2 = st.columns([1, 3])
-with col1:
+col_in, col_btn = st.columns([3, 1])
+with col_in:
     ticker = st.text_input("Ticker:", value="AAPL").upper().strip()
-    btn = st.button("ANALIZAR")
+with col_btn:
+    st.write("") # Espacio
+    st.write("")
+    btn = st.button("ANALIZAR", type="primary")
 
 if btn and ticker:
-    tasks = [
-        ("DIARIO", "D", "1d"),
-        ("SEMANAL", "S", "1wk"),
-        ("MENSUAL", "M", "1mo")
-    ]
     
-    cols = st.columns(3)
-    curr_p = 0
+    tabs = st.tabs(["DIARIO (1D)", "SEMANAL (1W)", "MENSUAL (1M)"])
+    configs = [("1d", "5y", 0), ("1wk", "10y", 1), ("1mo", "max", 2)]
     
-    for idx, (label, prefix, interval) in enumerate(tasks):
-        with cols[idx]:
-            with st.spinner(f"{label}..."):
-                signal, price = get_strategy_signal(ticker, interval)
-                if interval == "1d": curr_p = price
+    for interval, period, tab_idx in configs:
+        with tabs[tab_idx]:
+            with st.spinner(f"Simulando estrategia en {interval}..."):
+                status, curr_price, history = run_simulation(ticker, interval, period)
                 
-                if signal:
-                    f_date = signal['Fecha'].strftime('%d-%m-%Y')
+                if status:
+                    # RENDERIZAR TARJETA
+                    pos = status['Estado']
+                    f_date = status['Fecha'].strftime('%d-%m-%Y') if status['Fecha'] else "-"
+                    
+                    if pos == "LONG":
+                        color_cls = "signal-long"
+                        icon = "🟢"
+                        pnl = ((curr_price - status['PrecioEntrada']) / status['PrecioEntrada']) * 100
+                        pnl_html = f"<div class='profit-tag p-green'>Ganancia: +{pnl:.2f}%</div>"
+                    elif pos == "SHORT":
+                        color_cls = "signal-short"
+                        icon = "🔴"
+                        pnl = ((status['PrecioEntrada'] - curr_price) / status['PrecioEntrada']) * 100
+                        pnl_html = f"<div class='profit-tag p-green'>Ganancia: +{pnl:.2f}%</div>"
+                    else:
+                        color_cls = "signal-flat"
+                        icon = "⚪"
+                        pnl_html = "<div class='profit-tag'>Esperando nueva señal...</div>"
+                        f_date = "Sin posición activa"
+
                     st.markdown(f"""
                     <div class="metric-box">
-                        <div style="color: #aaa;">{label} ({prefix})</div>
-                        <div class="{signal['Color']}">{signal['Icono']} {signal['Tipo']}</div>
-                        <div class="price-tag">${signal['Precio']:.2f}</div>
-                        <div class="date-tag">📅 {f_date}</div>
+                        <div style="color:#888;">ESTADO ACTUAL ({interval})</div>
+                        <div class="{color_cls}">{icon} {pos}</div>
+                        <div class="price-tag">Precio Actual: ${curr_price:.2f}</div>
+                        <div class="date-tag">Desde: {f_date}</div>
+                        {pnl_html}
                     </div>
                     """, unsafe_allow_html=True)
+                    
+                    # MOSTRAR HISTORIAL DE TRADES (Para verificar tu fecha)
+                    st.write("📜 **Últimos 5 movimientos de la estrategia:**")
+                    if history:
+                        df_hist = pd.DataFrame(history)
+                        df_hist['Fecha'] = df_hist['Fecha'].dt.strftime('%Y-%m-%d')
+                        st.table(df_hist.tail(5).sort_index(ascending=False))
+                    else:
+                        st.info("No hubo operaciones en este periodo.")
+                        
                 else:
-                    st.warning("Sin señales")
-
-    if curr_p > 0:
-        st.markdown(f"<h3 style='text-align: center;'>Precio Actual: ${curr_p:.2f}</h3>", unsafe_allow_html=True)
+                    st.error("Error al obtener datos.")
