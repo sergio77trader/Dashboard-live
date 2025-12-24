@@ -6,7 +6,7 @@ import time
 import plotly.graph_objects as go
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="RSI Matrix Pro")
+st.set_page_config(layout="wide", page_title="RSI Matrix Pro: Ranked")
 
 # --- ESTILOS VISUALES ---
 st.markdown("""
@@ -21,22 +21,47 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- LISTA DE MONEDAS A ANALIZAR ---
-RAW_COINS = sorted([
-    'BTC', 'ETH', 'SOL', 'BNB', 'XRP', 'ADA', 'AVAX', 'DOGE', 'SHIB', 'DOT',
-    'LINK', 'TRX', 'MATIC', 'LTC', 'BCH', 'NEAR', 'UNI', 'ICP', 'FIL', 'APT',
-    'INJ', 'LDO', 'OP', 'ARB', 'TIA', 'SEI', 'SUI', 'RNDR', 'FET', 'WLD',
-    'PEPE', 'BONK', 'WIF', 'FLOKI', 'ORDI', 'SATS', 'GALA', 'SAND', 'MANA',
-    'AXS', 'AAVE', 'SNX', 'MKR', 'CRV', 'DYDX', 'JUP', 'PYTH', 'ENA', 'RUNE',
-    'FTM', 'ATOM', 'ALGO', 'VET', 'EGLD', 'STX', 'IMX', 'KAS', 'TAO', 'OM', 'JASMY'
-])
+# --- FUNCIÓN DE RANKING (VOLUMEN 24H) ---
+@st.cache_data(ttl=3600)
+def get_ranked_symbols():
+    """
+    Descarga todos los pares de KuCoin y los ordena por Volumen en USDT (Importancia).
+    """
+    url = "https://api.kucoin.com/api/v1/market/allTickers"
+    try:
+        r = requests.get(url, timeout=10).json()
+        if r['code'] == '200000':
+            data = r['data']['ticker']
+            df = pd.DataFrame(data)
+            
+            # 1. Filtrar solo pares USDT
+            df = df[df['symbol'].str.endswith('-USDT')]
+            
+            # 2. Convertir volumen a float (volValue es el volumen en dinero)
+            df['volValue'] = df['volValue'].astype(float)
+            
+            # 3. Ordenar de Mayor a Menor Volumen
+            df = df.sort_values(by='volValue', ascending=False)
+            
+            # 4. Limpiar nombres (BTC-USDT -> BTC)
+            df['clean_symbol'] = df['symbol'].str.replace('-USDT', '')
+            
+            # Retornar lista ordenada y diccionario de volumen para mostrar
+            sorted_list = df['clean_symbol'].tolist()
+            vol_map = df.set_index('clean_symbol')['volValue'].to_dict()
+            
+            return sorted_list, vol_map
+            
+    except: 
+        # Fallback manual si falla la API
+        return ['BTC','ETH','SOL','BNB','XRP','ADA','DOGE','SHIB'], {}
 
-# --- FUNCIONES DE DATOS (SOLO KUCOIN) ---
+# --- CARGAR MERCADO AL INICIO ---
+ALL_COINS, VOL_MAP = get_ranked_symbols()
+
+# --- FUNCIONES DE DATOS (KUCOIN) ---
 
 def get_kucoin_data(symbol, k_interval, limit=100):
-    """
-    Intervalos Kucoin: 1min, 3min, 15min, 30min, 1hour, 2hour, 4hour, 6hour, 8hour, 12hour, 1day, 1week
-    """
     url = "https://api.kucoin.com/api/v1/market/candles"
     target = f"{symbol}-USDT"
     
@@ -45,11 +70,9 @@ def get_kucoin_data(symbol, k_interval, limit=100):
         r = requests.get(url, params=params, timeout=5).json()
         if r['code'] == '200000':
             data = r['data']
-            # Kucoin devuelve [time, open, close, high, low, vol, turn]
             df = pd.DataFrame(data, columns=['Time','Open','Close','High','Low','Vol','Turn'])
             df = df.astype(float)
             df['Time'] = pd.to_datetime(df['Time'], unit='s')
-            # Ordenar por fecha ascendente para cálculos
             df = df.sort_values('Time', ascending=True).reset_index(drop=True)
             return df
     except: pass
@@ -67,18 +90,10 @@ def calculate_rsi(df, period=14):
     return rsi.iloc[-1]
 
 def calculate_heikin_ashi_daily(df):
-    """Calcula el color de la vela HA Diaria actual"""
     if df.empty: return 0, 0
     
-    # Cálculo iterativo básico para la última vela
-    # Aproximación rápida para escáner
     ha_close = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
     
-    # HA Open es el promedio del Open y Close de la vela ANTERIOR (real)
-    # Como no tenemos HA anterior calculado, usamos una aproximación con precios normales anteriores
-    # Para mayor precisión en HA, se requiere un loop completo desde el inicio del DF
-    
-    df_ha = df.copy()
     ha_open_list = [df['Open'].iloc[0]]
     ha_close_list = [ha_close.iloc[0]]
     
@@ -91,57 +106,61 @@ def calculate_heikin_ashi_daily(df):
     last_c = ha_close_list[-1]
     last_o = ha_open_list[-1]
     
-    # Color: 1 Verde, -1 Rojo
     color = 1 if last_c > last_o else -1
     return color, last_c
 
 # --- MOTOR DE ANÁLISIS ---
 
 def analyze_asset(coin):
-    # 1. Obtener Diario (Base para HA y RSI D)
+    # 1. Diario
     df_d = get_kucoin_data(coin, "1day", 100)
-    if df_d.empty: return None # Si Kucoin no tiene el dato, saltamos
+    if df_d.empty: return None
     
     ha_color, ha_price = calculate_heikin_ashi_daily(df_d)
     rsi_d = calculate_rsi(df_d)
     
-    # 2. Obtener Semanal
+    # 2. Semanal
     df_w = get_kucoin_data(coin, "1week", 50)
     rsi_w = calculate_rsi(df_w)
     
-    # 3. Obtener Intradía (Nativos de Kucoin)
+    # 3. Intradía
     rsi_12h = calculate_rsi(get_kucoin_data(coin, "12hour", 50))
     rsi_8h  = calculate_rsi(get_kucoin_data(coin, "8hour", 50))
     rsi_4h  = calculate_rsi(get_kucoin_data(coin, "4hour", 50))
     rsi_2h  = calculate_rsi(get_kucoin_data(coin, "2hour", 50))
     
-    # --- LÓGICA DE ESTRATEGIA ---
+    # Lógica
     all_rsis = [rsi_w, rsi_d, rsi_12h, rsi_8h, rsi_4h, rsi_2h]
+    all_rsis = [r for r in all_rsis if not np.isnan(r)]
     
+    if not all_rsis: return None
+
     is_overbought = any(r > 70 for r in all_rsis)
     is_oversold = any(r < 30 for r in all_rsis)
     
     signal = "NEUTRO"
     score = 0
     
-    # VENTA: Algún RSI > 70 + Vela Diaria ROJA (-1)
     if is_overbought and ha_color == -1:
         signal = "🔴 SHORT"
         score = -1
-        
-    # COMPRA: Algún RSI < 30 + Vela Diaria VERDE (1)
     elif is_oversold and ha_color == 1:
         signal = "🟢 LONG"
         score = 1
-        
-    # ALERTAS (Divergencia entre RSI Extremo y Vela)
     elif is_overbought and ha_color == 1:
         signal = "⚠️ Techo (Esperar HA Rojo)"
+        score = 0.5
     elif is_oversold and ha_color == -1:
         signal = "⚠️ Piso (Esperar HA Verde)"
+        score = 0.5
+        
+    # Obtener volumen del mapa global
+    vol_24h = VOL_MAP.get(coin, 0)
 
     return {
         "Ticker": coin,
+        "Ranking": 0, # Se asignará después
+        "Volumen 24h": vol_24h,
         "Precio": df_d['Close'].iloc[-1],
         "Señal": signal,
         "Score": score,
@@ -155,47 +174,87 @@ def analyze_asset(coin):
     }
 
 # --- INTERFAZ ---
-st.title("⚡ RSI Matrix + Heikin Ashi (KuCoin Direct)")
-st.markdown("**Estrategia:** Detectar agotamiento en RSI (Múltiples TF) y disparar cuando la vela diaria Heikin Ashi confirme el giro.")
+st.title("⚡ RSI Matrix Pro: Ranked by Volume")
+st.markdown("**Orden:** Las criptomonedas se presentan por **Volumen de Negociación ($)**. Lote 1 = Las más importantes.")
+
+# Inicializar memoria
+if 'rsi_full_results' not in st.session_state:
+    st.session_state['rsi_full_results'] = []
 
 # Sidebar
 with st.sidebar:
     st.header("Configuración")
-    st.info(f"Lista de Monedas: {len(RAW_COINS)}")
+    st.success(f"Mercado KuCoin: {len(ALL_COINS)} Activos Clasificados")
     
-    if st.button("🔄 ESCANEAR MERCADO", type="primary"):
-        # Usamos la lista directa sin preguntar a Binance
-        valid_coins = RAW_COINS 
-        
-        st.toast(f"Analizando {len(valid_coins)} pares en KuCoin...", icon="🔎")
-        
-        results = []
-        prog = st.progress(0)
-        
-        for i, coin in enumerate(valid_coins):
-            res = analyze_asset(coin)
-            if res: results.append(res)
-            prog.progress((i+1)/len(valid_coins))
-            # Pequeña pausa para no saturar Kucoin (es generosa, pero por seguridad)
-            time.sleep(0.05) 
-            
-        st.session_state['rsi_results_v2'] = results
-        prog.empty()
-        st.success("Escaneo Finalizado")
+    batch_size = st.slider("Tamaño de Lote", 20, 100, 50)
+    
+    # Crear lotes basados en la lista YA ORDENADA
+    batches = [ALL_COINS[i:i + batch_size] for i in range(0, len(ALL_COINS), batch_size)]
+    
+    # Etiquetas inteligentes para los lotes
+    batch_labels = []
+    for i, b in enumerate(batches):
+        first = b[0]
+        last = b[-1]
+        label = f"Lote {i+1} (Ranks: {i*batch_size + 1}-{(i+1)*batch_size})"
+        batch_labels.append(label)
+    
+    sel_batch_idx = st.selectbox("Seleccionar Lote (Por Ranking):", range(len(batches)), format_func=lambda x: batch_labels[x])
+    
+    col1, col2 = st.columns(2)
+    scan_btn = col1.button("🔄 ESCANEAR", type="primary")
+    clear_btn = col2.button("🗑️ Limpiar")
 
-# --- RESULTADOS ---
-if 'rsi_results_v2' in st.session_state and st.session_state['rsi_results_v2']:
-    df = pd.DataFrame(st.session_state['rsi_results_v2'])
+if scan_btn:
+    targets = batches[sel_batch_idx]
+    st.toast(f"Analizando {len(targets)} criptos del Top Ranking...", icon="🚀")
     
-    # Ordenar por prioridad
-    priority = {"🟢 LONG": 3, "🔴 SHORT": 3, "⚠️ Techo (Esperar HA Rojo)": 2, "⚠️ Piso (Esperar HA Verde)": 2, "NEUTRO": 1}
-    df['Prioridad'] = df['Señal'].map(priority).fillna(1)
-    df = df.sort_values(by='Prioridad', ascending=False)
+    # Filtrar duplicados
+    existing = [x['Ticker'] for x in st.session_state['rsi_full_results']]
+    to_run = [t for t in targets if t not in existing]
+    
+    new_results = []
+    prog = st.progress(0)
+    
+    for i, coin in enumerate(to_run):
+        try:
+            res = analyze_asset(coin)
+            if res: 
+                # Asignar ranking absoluto
+                res['Ranking'] = ALL_COINS.index(coin) + 1
+                new_results.append(res)
+        except: pass
+        
+        prog.progress((i+1)/len(to_run))
+        time.sleep(0.05) 
+        
+    st.session_state['rsi_full_results'].extend(new_results)
+    prog.empty()
+    st.success(f"Agregados {len(new_results)} activos.")
+
+if clear_btn:
+    st.session_state['rsi_full_results'] = []
+    st.rerun()
+
+# --- TABLA DE RESULTADOS ---
+if st.session_state['rsi_full_results']:
+    df = pd.DataFrame(st.session_state['rsi_full_results'])
+    
+    # Ordenar por Ranking de Volumen (Default) o por Prioridad de Señal
+    sort_mode = st.radio("Ordenar por:", ["🏆 Importancia (Volumen)", "🔥 Oportunidad (Señal)"], horizontal=True)
+    
+    if sort_mode == "🏆 Importancia (Volumen)":
+        df = df.sort_values(by='Ranking', ascending=True)
+    else:
+        priority = {"🟢 LONG": 4, "🔴 SHORT": 4, "⚠️ Techo (Esperar HA Rojo)": 2, "⚠️ Piso (Esperar HA Verde)": 2, "NEUTRO": 1}
+        df['Prio'] = df['Señal'].map(priority).fillna(1)
+        df = df.sort_values(by='Prio', ascending=False)
     
     # Estilos
     def style_rsi(val):
-        if val >= 70: return 'color: #ff4b4b; font-weight: bold;' # Rojo
-        if val <= 30: return 'color: #00c853; font-weight: bold;' # Verde
+        if pd.isna(val): return ''
+        if val >= 70: return 'color: #ff4b4b; font-weight: bold;'
+        if val <= 30: return 'color: #00c853; font-weight: bold;'
         return 'color: #aaa;'
     
     def style_signal(val):
@@ -216,12 +275,13 @@ if 'rsi_results_v2' in st.session_state and st.session_state['rsi_results_v2']:
     
     st.divider()
 
-    # Tabla
     st.dataframe(
         df.style.map(style_rsi, subset=['RSI_W', 'RSI_D', 'RSI_12H', 'RSI_8H', 'RSI_4H', 'RSI_2H'])
                 .map(style_signal, subset=['Señal']),
         column_config={
+            "Ranking": st.column_config.NumberColumn("#", width="small"),
             "Ticker": "Activo",
+            "Volumen 24h": st.column_config.NumberColumn("Volumen ($)", format="$%.0f"),
             "Precio": st.column_config.NumberColumn(format="$%.4f"),
             "HA_D": st.column_config.TextColumn("Vela D", help="1=Verde, -1=Roja"),
             "RSI_W": st.column_config.NumberColumn("Sem", format="%.0f"),
@@ -237,5 +297,4 @@ if 'rsi_results_v2' in st.session_state and st.session_state['rsi_results_v2']:
     )
     
 else:
-    st.info("👈 Pulsa el botón para escanear (Sin verificación de Binance).")
-    
+    st.info("👈 Selecciona el Lote 1 (Top Coins) para empezar.")
