@@ -2,34 +2,32 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
+from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="TV Strategy Clone: Smart Entry")
+st.set_page_config(layout="wide", page_title="SystemaTrader: Tablero Maestro")
 
-# --- ESTILOS ---
-st.markdown("""
-<style>
-    .metric-box {
-        background-color: #1e1e1e;
-        border: 1px solid #444;
-        border-radius: 8px;
-        padding: 15px;
-        text-align: center;
-        margin-bottom: 10px;
-    }
-    .signal-long { color: #00ff00; font-weight: bold; font-size: 1.4rem; }
-    .signal-short { color: #ff3333; font-weight: bold; font-size: 1.4rem; }
-    .signal-flat { color: #888; font-weight: bold; font-size: 1.2rem; }
-    .price-tag { font-size: 1.1rem; color: white; margin-top: 5px; }
-    .date-tag { font-size: 0.9rem; color: #ccc; }
-    .profit-tag { font-size: 0.9rem; font-weight: bold; margin-top: 5px; }
-    .p-green { color: #00ff00; }
-    .p-red { color: #ff0000; }
-</style>
-""", unsafe_allow_html=True)
+# --- BASE DE DATOS ---
+TICKERS = sorted([
+    'GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'CEPU', 'EDN', 'BFR', 'SUPV', 'CRESY', 'IRS', 'TEO', 'LOMA', 'DESP', 'VIST', 'GLOB', 'MELI', 'BIOX', 'TX',
+    'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NFLX',
+    'CRM', 'ORCL', 'ADBE', 'IBM', 'CSCO', 'PLTR', 'SNOW', 'SHOP', 'SPOT', 'UBER', 'ABNB', 'SAP', 'INTU', 'NOW',
+    'AMD', 'INTC', 'QCOM', 'AVGO', 'TXN', 'MU', 'ADI', 'AMAT', 'ARM', 'SMCI', 'TSM', 'ASML', 'LRCX', 'HPQ', 'DELL',
+    'JPM', 'BAC', 'C', 'WFC', 'GS', 'MS', 'V', 'MA', 'AXP', 'BRK-B', 'PYPL', 'SQ', 'COIN', 'BLK', 'USB', 'NU',
+    'KO', 'PEP', 'MCD', 'SBUX', 'DIS', 'NKE', 'WMT', 'COST', 'TGT', 'HD', 'LOW', 'PG', 'CL', 'MO', 'PM', 'KMB', 'EL',
+    'JNJ', 'PFE', 'MRK', 'LLY', 'ABBV', 'UNH', 'BMY', 'AMGN', 'GILD', 'AZN', 'NVO', 'NVS', 'CVS',
+    'BA', 'CAT', 'DE', 'GE', 'MMM', 'LMT', 'RTX', 'HON', 'UNP', 'UPS', 'FDX', 'LUV', 'DAL',
+    'F', 'GM', 'TM', 'HMC', 'STLA', 'RACE',
+    'XOM', 'CVX', 'SLB', 'OXY', 'HAL', 'BP', 'SHEL', 'TTE', 'PBR', 'VLO',
+    'VZ', 'T', 'TMUS', 'VOD',
+    'BABA', 'JD', 'BIDU', 'NIO', 'PDD', 'TCEHY', 'TCOM', 'BEKE', 'XPEV', 'LI', 'SONY',
+    'VALE', 'ITUB', 'BBD', 'ERJ', 'ABEV', 'GGB', 'SID', 'NBR',
+    'GOLD', 'NEM', 'PAAS', 'FCX', 'SCCO', 'RIO', 'BHP', 'ALB', 'SQM',
+    'SPY', 'QQQ', 'IWM', 'DIA', 'EEM', 'EWZ', 'FXI', 'XLE', 'XLF', 'XLK', 'XLV', 'XLI', 'XLP', 'XLU', 'XLY', 'ARKK', 'SMH', 'TAN', 'GLD', 'SLV', 'GDX'
+])
 
-# --- 1. MATEMÁTICA EXACTA ---
+# --- 1. MATEMÁTICA EXACTA (Igual a TV) ---
+
 def calculate_indicators(df, fast=12, slow=26, sig=9):
     # MACD
     exp1 = df['Close'].ewm(span=fast, adjust=False).mean()
@@ -49,140 +47,176 @@ def calculate_indicators(df, fast=12, slow=26, sig=9):
         
     df['HA_Close'] = ha_close
     df['HA_Open'] = ha_open
-    
-    # Color: 1=Verde, -1=Rojo
-    df['HA_Color'] = np.where(df['HA_Close'] > df['HA_Open'], 1, -1)
+    df['HA_Color'] = np.where(df['HA_Close'] > df['HA_Open'], 1, -1) # 1 Verde, -1 Rojo
     
     return df
 
-# --- 2. MOTOR DE SIMULACIÓN (CEREBRO AJUSTADO) ---
-def run_simulation(ticker, interval, period):
+# --- 2. MOTOR DE SIMULACIÓN (CEREBRO) ---
+def run_simulation_for_ticker(ticker, interval, period):
     try:
+        # Descargamos MAX para asegurar cálculos correctos desde el pasado
         df = yf.download(ticker, interval=interval, period=period, progress=False, auto_adjust=True)
-        if df.empty: return None, 0, []
+        if df.empty: return "N/A", "Sin Datos", 0
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
         df = calculate_indicators(df)
         
-        position = "FLAT"
+        position = "FLAT" 
         entry_price = 0.0
         entry_date = None
-        trades = [] 
         
+        # Bucle Vela por Vela
         for i in range(1, len(df)):
             date = df.index[i]
             price = df['Close'].iloc[i]
             
-            c_ha = df['HA_Color'].iloc[i]  # Color Actual
-            c_hist = df['Hist'].iloc[i]    # Histograma Actual
-            p_hist = df['Hist'].iloc[i-1]  # Histograma Ayer
+            c_ha = df['HA_Color'].iloc[i]
+            c_hist = df['Hist'].iloc[i]
+            p_hist = df['Hist'].iloc[i-1]
+            p_ha = df['HA_Color'].iloc[i-1]
             
             # --- SALIDAS (STOP MOMENTUM) ---
-            if position == "LONG":
-                # Salir si el histograma pierde fuerza (baja)
-                if c_hist < p_hist:
-                    position = "FLAT"
-                    pnl = ((price - entry_price)/entry_price)*100
-                    trades.append({"Tipo": "CIERRE LONG", "Fecha": date, "Precio": price, "PnL": pnl})
-            
-            elif position == "SHORT":
-                # Salir si el histograma gana fuerza (sube)
-                if c_hist > p_hist:
-                    position = "FLAT"
-                    pnl = ((entry_price - price)/entry_price)*100
-                    trades.append({"Tipo": "CIERRE SHORT", "Fecha": date, "Precio": price, "PnL": pnl})
+            if position == "LONG" and c_hist < p_hist:
+                position = "FLAT"
+            elif position == "SHORT" and c_hist > p_hist:
+                position = "FLAT"
 
-            # --- ENTRADAS (LOGICA SMART) ---
-            # Si estamos fuera del mercado, buscamos oportunidad
+            # --- ENTRADAS (RE-ENTRY SMART) ---
             if position == "FLAT":
-                
-                # LONG: Vela Verde + Histograma Negativo + Histograma Subiendo
-                # (Quitamos el requisito de que la vela ANTERIOR sea roja, 
-                # para atrapar re-entradas rápidas)
+                # LONG: Vela Verde + Hist < 0 + Hist Subiendo
                 if c_ha == 1 and (c_hist < 0) and (c_hist > p_hist):
                     position = "LONG"
                     entry_date = date
                     entry_price = price
-                    trades.append({"Tipo": "ENTRADA LONG", "Fecha": date, "Precio": price, "PnL": 0})
                     
-                # SHORT: Vela Roja + Histograma Positivo + Histograma Bajando
+                # SHORT: Vela Roja + Hist > 0 + Hist Bajando
                 elif c_ha == -1 and (c_hist > 0) and (c_hist < p_hist):
                     position = "SHORT"
                     entry_date = date
                     entry_price = price
-                    trades.append({"Tipo": "ENTRADA SHORT", "Fecha": date, "Precio": price, "PnL": 0})
         
-        last_status = {
-            "Estado": position,
-            "Fecha": entry_date,
-            "PrecioEntrada": entry_price
-        }
+        # Formatear Salida
+        current_price = df['Close'].iloc[-1]
         
-        return last_status, df['Close'].iloc[-1], trades
+        if position == "FLAT":
+            return "⚪ NEUTRO", "-", current_price
+        
+        # Calcular PnL Latente
+        if position == "LONG":
+            pnl = ((current_price - entry_price) / entry_price) * 100
+            tipo = "🟢 LONG"
+        else:
+            pnl = ((entry_price - current_price) / entry_price) * 100
+            tipo = "🔴 SHORT"
+            
+        f_date = entry_date.strftime('%d/%m/%y')
+        info = f"Desde: {f_date} (${entry_price:.2f}) | PnL: {pnl:+.1f}%"
+        
+        return tipo, info, current_price
 
-    except Exception as e:
-        return None, 0, []
+    except:
+        return "ERROR", "Fallo cálculo", 0
 
-# --- 3. INTERFAZ ---
-st.title("🛡️ TV Strategy: Smart Entry")
-
-col_in, col_btn = st.columns([3, 1])
-with col_in:
-    ticker = st.text_input("Ticker:", value="AAPL").upper().strip()
-with col_btn:
-    st.write("") 
-    st.write("")
-    btn = st.button("ANALIZAR", type="primary")
-
-if btn and ticker:
+# --- 3. PROCESAMIENTO POR LOTE ---
+def process_batch(tickers):
+    results = []
+    prog = st.progress(0)
     
-    tabs = st.tabs(["DIARIO (1D)", "SEMANAL (1W)", "MENSUAL (1M)"])
-    configs = [("1d", "5y", 0), ("1wk", "10y", 1), ("1mo", "max", 2)]
+    # Configuraciones de tiempo (Intervalo Yahoo, Periodo Historia)
+    configs = [
+        ("M", "1mo", "max"), 
+        ("S", "1wk", "10y"), 
+        ("D", "1d", "5y")
+    ]
     
-    for interval, period, tab_idx in configs:
-        with tabs[tab_idx]:
-            with st.spinner(f"Calculando {interval}..."):
-                status, curr_price, history = run_simulation(ticker, interval, period)
+    for i, t in enumerate(tickers):
+        row = {"Ticker": t, "Precio": 0}
+        
+        # Iterar las 3 temporalidades
+        for col_prefix, interval, period in configs:
+            try:
+                sig, info, price = run_simulation_for_ticker(t, interval, period)
+                row[f"{col_prefix}_Signal"] = sig
+                row[f"{col_prefix}_Info"] = info
                 
-                if status:
-                    pos = status['Estado']
-                    f_date = status['Fecha'].strftime('%d-%m-%Y') if status['Fecha'] else "-"
-                    
-                    if pos == "LONG":
-                        color_cls = "signal-long"; icon = "🟢"
-                        pnl = ((curr_price - status['PrecioEntrada']) / status['PrecioEntrada']) * 100
-                        pnl_html = f"<div class='profit-tag p-green'>PnL Latente: +{pnl:.2f}%</div>"
-                    elif pos == "SHORT":
-                        color_cls = "signal-short"; icon = "🔴"
-                        pnl = ((status['PrecioEntrada'] - curr_price) / status['PrecioEntrada']) * 100
-                        pnl_html = f"<div class='profit-tag p-green'>PnL Latente: +{pnl:.2f}%</div>"
-                    else:
-                        color_cls = "signal-flat"; icon = "⚪"
-                        pnl_html = "<div class='profit-tag'>Esperando señal...</div>"
-                        f_date = "Sin posición"
+                # Guardamos el precio diario como referencia (el último procesado sirve)
+                if price > 0: row["Precio"] = price
+            except:
+                row[f"{col_prefix}_Signal"] = "Error"
+                row[f"{col_prefix}_Info"] = "-"
+        
+        results.append(row)
+        prog.progress((i + 1) / len(tickers))
+        
+    prog.empty()
+    return results
 
-                    st.markdown(f"""
-                    <div class="metric-box">
-                        <div style="color:#888;">ESTADO {interval.upper()}</div>
-                        <div class="{color_cls}">{icon} {pos}</div>
-                        <div class="price-tag">Precio: ${curr_price:.2f}</div>
-                        <div class="date-tag">Entrada: {f_date}</div>
-                        {pnl_html}
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # HISTORIAL
-                    st.write("📜 **Bitácora de Operaciones:**")
-                    if history:
-                        df_hist = pd.DataFrame(history)
-                        df_hist['Fecha'] = df_hist['Fecha'].dt.strftime('%Y-%m-%d')
-                        # Mostrar últimos 10 movimientos
-                        st.dataframe(
-                            df_hist.tail(10).sort_index(ascending=False), 
-                            use_container_width=True
-                        )
-                    else:
-                        st.info("Sin operaciones recientes.")
-                        
-                else:
-                    st.error("Error de datos.")
+# --- INTERFAZ ---
+st.title("📊 Tablero Maestro: HA + MACD (Matrioska)")
+
+# Inicializar memoria
+if 'master_results' not in st.session_state:
+    st.session_state['master_results'] = []
+
+with st.sidebar:
+    st.header("Control de Lotes")
+    st.info(f"Total Activos: {len(TICKERS)}")
+    
+    batch_size = st.slider("Tamaño del Lote", 5, 50, 10)
+    batches = [TICKERS[i:i + batch_size] for i in range(0, len(TICKERS), batch_size)]
+    batch_labels = [f"Lote {i+1}: {b[0]} ... {b[-1]}" for i, b in enumerate(batches)]
+    sel_batch = st.selectbox("Seleccionar:", range(len(batches)), format_func=lambda x: batch_labels[x])
+    
+    c1, c2 = st.columns(2)
+    if c1.button("🚀 ESCANEAR", type="primary"):
+        targets = batches[sel_batch]
+        
+        # Filtro duplicados
+        existing = [x['Ticker'] for x in st.session_state['master_results']]
+        to_run = [t for t in targets if t not in existing]
+        
+        if to_run:
+            new_data = process_batch(to_run)
+            st.session_state['master_results'].extend(new_data)
+        else:
+            st.toast("Lote ya escaneado.")
+
+    if c2.button("🗑️ Limpiar"):
+        st.session_state['master_results'] = []
+        st.rerun()
+
+# --- MOSTRAR TABLA ---
+if st.session_state['master_results']:
+    df = pd.DataFrame(st.session_state['master_results'])
+    
+    # Estilos de color
+    def style_signal(val):
+        if "LONG" in str(val): return "color: #00ff00; font-weight: bold; background-color: rgba(0,255,0,0.1)"
+        if "SHORT" in str(val): return "color: #ff3333; font-weight: bold; background-color: rgba(255,0,0,0.1)"
+        return "color: #888"
+
+    st.dataframe(
+        df.style.applymap(style_signal, subset=['M_Signal', 'S_Signal', 'D_Signal']),
+        column_config={
+            "Ticker": st.column_config.TextColumn("Activo", width="small", pinned=True),
+            "Precio": st.column_config.NumberColumn(format="$%.2f"),
+            
+            "M_Signal": st.column_config.TextColumn("Mensual"),
+            "M_Info": st.column_config.TextColumn("Detalle Mensual", width="medium"),
+            
+            "S_Signal": st.column_config.TextColumn("Semanal"),
+            "S_Info": st.column_config.TextColumn("Detalle Semanal", width="medium"),
+            
+            "D_Signal": st.column_config.TextColumn("Diario"),
+            "D_Info": st.column_config.TextColumn("Detalle Diario", width="medium"),
+        },
+        use_container_width=True,
+        hide_index=True,
+        height=600
+    )
+    
+    st.divider()
+    st.info("💡 **Leyenda:** Las fechas indican cuándo se disparó la señal. El PnL es la ganancia/pérdida teórica desde esa señal hasta hoy.")
+
+else:
+    st.info("👈 Selecciona un lote para comenzar.")
