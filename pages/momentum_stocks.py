@@ -5,7 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="Scanner HA + MACD (Logic Fix)")
+st.set_page_config(layout="wide", page_title="Scanner Exacto TV")
 
 # --- ESTILOS ---
 st.markdown("""
@@ -20,12 +20,13 @@ st.markdown("""
     }
     .signal-long { color: #00ff00; font-weight: bold; font-size: 1.5rem; }
     .signal-short { color: #ff3333; font-weight: bold; font-size: 1.5rem; }
+    .signal-closed { color: #888; font-weight: bold; font-size: 1.2rem; }
     .price-tag { font-size: 1.1rem; color: white; margin-top: 5px; }
     .date-tag { font-size: 0.9rem; color: #888; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- 1. INDICADORES ---
+# --- 1. CÁLCULOS TÉCNICOS ---
 def calculate_indicators(df, fast=12, slow=26, sig=9):
     # MACD
     exp1 = df['Close'].ewm(span=fast, adjust=False).mean()
@@ -49,97 +50,98 @@ def calculate_indicators(df, fast=12, slow=26, sig=9):
     
     return df
 
-# --- 2. MOTOR DE ESTRATEGIA (STATEFUL) ---
-def get_strategy_state(ticker, interval, period):
+# --- 2. MOTOR DE ESTRATEGIA (LOOP ESTRICTO) ---
+def get_strategy_signal(ticker, interval):
     try:
-        df = yf.download(ticker, interval=interval, period=period, progress=False, auto_adjust=True)
-        if df.empty: return None
+        # Descarga máxima historia
+        df = yf.download(ticker, interval=interval, period="max", progress=False, auto_adjust=True)
+        if df.empty: return None, 0
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         
         df = calculate_indicators(df)
         
-        # VARIABLES DE ESTADO (MEMORIA DEL ROBOT)
-        current_state = "NEUTRO" # LONG, SHORT, NEUTRO
-        entry_date = None
-        entry_price = 0.0
+        # ESTADO DEL ROBOT
+        current_state = "NEUTRO" 
+        last_entry = None # Guardará la última señal de entrada detectada
         
-        # Simulación Vela por Vela (Backtest Rápido)
+        # Recorrido Histórico
         for i in range(1, len(df)):
-            # Datos actuales
             date = df.index[i]
             price = df['Close'].iloc[i]
             
-            # HA y MACD
+            # Variables Actuales
             curr_ha = df['HA_Color'].iloc[i]
-            prev_ha = df['HA_Color'].iloc[i-1]
-            
             curr_hist = df['Hist'].iloc[i]
+            
+            # Variables Previas
+            prev_ha = df['HA_Color'].iloc[i-1]
             prev_hist = df['Hist'].iloc[i-1]
             
-            # --- LÓGICA DE ENTRADA ---
+            # --- LÓGICA DE SALIDA (STOP MOMENTUM) ---
+            # Se ejecuta PRIMERO: Si el histograma se da vuelta, cerramos.
             
-            # LONG: HA cambia a Verde + Hist < 0 + Hist Subiendo
-            ha_green_flip = (prev_ha == -1) and (curr_ha == 1)
-            hist_up = (curr_hist > prev_hist)
+            if current_state == "LONG":
+                # Salida Long: El histograma baja (es menor que el anterior)
+                if curr_hist < prev_hist:
+                    current_state = "NEUTRO"
             
-            if ha_green_flip and (curr_hist < 0) and hist_up:
-                current_state = "LONG"
-                entry_date = date
-                entry_price = price
+            elif current_state == "SHORT":
+                # Salida Short: El histograma sube (es mayor que el anterior)
+                if curr_hist > prev_hist:
+                    current_state = "NEUTRO"
+
+            # --- LÓGICA DE ENTRADA (RE-ENTRY) ---
+            # Solo buscamos entrar si estamos NEUTROS (o acabamos de salir)
+            
+            if current_state == "NEUTRO":
                 
-            # SHORT: HA cambia a Rojo + Hist > 0 + Hist Bajando
-            ha_red_flip = (prev_ha == 1) and (curr_ha == -1)
-            hist_down = (curr_hist < prev_hist)
-            
-            if ha_red_flip and (curr_hist > 0) and hist_down:
-                current_state = "SHORT"
-                entry_date = date
-                entry_price = price
+                # CONDICIÓN LONG:
+                # 1. HA cambia a Verde (Giro)
+                # 2. Histograma es Negativo (< 0)
+                # 3. Histograma está subiendo (Recuperando)
                 
-            # --- LÓGICA DE SALIDA (STOP MACD) ---
-            # Si estamos en Long y el Histograma baja -> Salimos
-            if current_state == "LONG" and hist_down:
-                current_state = "NEUTRO" # Salimos del mercado
+                # Nota: En TV la condición `ha_cambio_verde` es estricta. 
+                # Pero si salimos por Stop de Histograma, y la vela SIGUE verde, y el Histograma vuelve a subir...
+                # ¿Debe volver a entrar? Tu script de TV dice:
+                # long_condition = ha_cambio_verde and (hist < 0) and hist_subiendo
+                # Eso exige que HA cambie de color. Si HA sigue verde, no hay re-entrada salvo que haya oscilado a rojo.
                 
-            # Si estamos en Short y el Histograma sube -> Salimos
-            if current_state == "SHORT" and hist_up:
-                current_state = "NEUTRO"
+                ha_flip_green = (prev_ha == -1 and curr_ha == 1)
+                hist_ok_long = (curr_hist < 0) and (curr_hist > prev_hist)
+                
+                if ha_flip_green and hist_ok_long:
+                    current_state = "LONG"
+                    last_entry = {"Tipo": "LONG", "Fecha": date, "Precio": price, "Color": "signal-long", "Icono": "🟢"}
+
+                # CONDICIÓN SHORT:
+                ha_flip_red = (prev_ha == 1 and curr_ha == -1)
+                hist_ok_short = (curr_hist > 0) and (curr_hist < prev_hist)
+                
+                if ha_flip_red and hist_ok_short:
+                    current_state = "SHORT"
+                    last_entry = {"Tipo": "SHORT", "Fecha": date, "Precio": price, "Color": "signal-short", "Icono": "🔴"}
+
+        # --- RESULTADO AL DÍA DE HOY ---
         
-        # --- RESULTADO FINAL ---
-        # Si terminamos "NEUTRO", buscamos la última señal válida para mostrar "Última conocida"
-        # O mostramos "SIN POSICIÓN ACTIVA".
-        # Para coincidir con tu gráfico que MANTIENE la flecha, vamos a mostrar la última ENTRADA que hubo,
-        # aunque el MACD la haya sacado después (para que veas cuándo fue el gatillo).
-        
-        # Sin embargo, tu gráfico de TV parece NO tener "Stop MACD" activado visualmente en las flechas,
-        # sino que las flechas son SOLO entradas.
-        
-        # Vamos a devolver la ÚLTIMA ENTRADA que ocurrió, ignorando las salidas intermedias,
-        # para ver si coincide con la flecha azul.
-        
-        if current_state == "NEUTRO" and entry_date is not None:
-             # Si salió, mostramos la última entrada pero avisamos que salió
-             return {
-                 "Tipo": "CERRADA (" + ("LONG" if df['Hist'].iloc[-1] > 0 else "SHORT") + ")", 
-                 "Fecha": entry_date, 
-                 "Precio": entry_price, 
-                 "Color": "signal-none", 
-                 "Icono": "⚪"
-             }, df['Close'].iloc[-1]
-             
-        # Si sigue abierta
-        if current_state == "LONG":
-            return {"Tipo": "LONG", "Fecha": entry_date, "Precio": entry_price, "Color": "signal-long", "Icono": "🟢"}, df['Close'].iloc[-1]
+        # Caso 1: Hay una posición abierta AHORA
+        if current_state != "NEUTRO" and last_entry:
+            return last_entry, df['Close'].iloc[-1]
             
-        if current_state == "SHORT":
-            return {"Tipo": "SHORT", "Fecha": entry_date, "Precio": entry_price, "Color": "signal-short", "Icono": "🔴"}, df['Close'].iloc[-1]
-            
+        # Caso 2: Estamos fuera (CERRADA). Mostramos la última entrada que hubo aunque ya se cerró.
+        # Esto sirve para saber "cuándo fue la última acción".
+        elif last_entry:
+            # Marcamos visualmente que está cerrada
+            last_entry['Tipo'] += " (CERRADA)"
+            last_entry['Color'] = "signal-closed"
+            last_entry['Icono'] = "⚪"
+            return last_entry, df['Close'].iloc[-1]
+
         return None, df['Close'].iloc[-1]
 
     except: return None, 0
 
 # --- 3. INTERFAZ ---
-st.title("🛡️ Scanner HA + MACD (Estado Real)")
+st.title("🛡️ Scanner Exacto TV (Re-Entry Logic)")
 
 col1, col2 = st.columns([1, 3])
 with col1:
@@ -148,18 +150,18 @@ with col1:
 
 if btn and ticker:
     tasks = [
-        ("DIARIO", "D", "1d", "5y"),
-        ("SEMANAL", "S", "1wk", "10y"),
-        ("MENSUAL", "M", "1mo", "max")
+        ("DIARIO", "D", "1d"),
+        ("SEMANAL", "S", "1wk"),
+        ("MENSUAL", "M", "1mo")
     ]
     
-    results_cols = st.columns(3)
+    cols = st.columns(3)
     curr_p = 0
     
-    for idx, (label, prefix, interval, period) in enumerate(tasks):
-        with results_cols[idx]:
+    for idx, (label, prefix, interval) in enumerate(tasks):
+        with cols[idx]:
             with st.spinner(f"{label}..."):
-                signal, price = get_strategy_state(ticker, interval, period)
+                signal, price = get_strategy_signal(ticker, interval)
                 if interval == "1d": curr_p = price
                 
                 if signal:
@@ -173,7 +175,7 @@ if btn and ticker:
                     </div>
                     """, unsafe_allow_html=True)
                 else:
-                    st.error("Sin datos")
+                    st.warning("Sin señales")
 
     if curr_p > 0:
         st.markdown(f"<h3 style='text-align: center;'>Precio Actual: ${curr_p:.2f}</h3>", unsafe_allow_html=True)
