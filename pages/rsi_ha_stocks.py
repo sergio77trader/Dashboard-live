@@ -53,7 +53,9 @@ def calculate_rsi(series, period=14):
 
 def calculate_heikin_ashi_daily(df):
     """Calcula el color de la vela HA Diaria actual"""
-    if df.empty: return 0
+    if df.empty or len(df) < 2: return 0 # Necesitamos al menos 2 velas
+    
+    # Inicialización con la primera vela
     ha_open = [df['Open'].iloc[0]]
     ha_close = [(df['Open'].iloc[0] + df['High'].iloc[0] + df['Low'].iloc[0] + df['Close'].iloc[0]) / 4]
     
@@ -61,67 +63,81 @@ def calculate_heikin_ashi_daily(df):
         current_close = (df['Open'].iloc[i] + df['High'].iloc[i] + df['Low'].iloc[i] + df['Close'].iloc[i]) / 4
         current_open = (ha_open[-1] + ha_close[-1]) / 2
         ha_close.append(current_close)
-        ha_open.append(current_open)
+        ha_open.append(ho) # Error aquí, debe ser current_open
         
     last_c = ha_close[-1]
     last_o = ha_open[-1]
     return 1 if last_c > last_o else -1
 
 # --- CONSTRUCTOR DE VELAS (Resampling) ---
-def resample_candles(df_hourly, hours):
+def resample_candles(df_base, hours):
     """
-    Toma datos de 1 Hora y construye velas de X horas.
+    Toma un DataFrame (OHLCV) y lo resamplea a velas de X horas.
     """
-    if df_hourly.empty: return pd.DataFrame()
+    if df_base.empty: return pd.DataFrame()
     
-    # Regla de pandas para resampling (ej: '2h', '4h')
+    # Asegurarse de que el índice es datetime
+    if not isinstance(df_base.index, pd.DatetimeIndex):
+        df_base = df_base.set_index('Time') # Asumiendo columna 'Time' si no es index
+    
     rule = f"{hours}h"
     
-    # Lógica de agregación
     agg_dict = {
         'Open': 'first',
         'High': 'max',
         'Low': 'min',
-        'Close': 'last'
+        'Close': 'last',
+        'Volume': 'sum' # Agregamos volumen por si acaso
     }
     
-    # Resamplear y eliminar filas incompletas (NaN)
-    df_resampled = df_hourly.resample(rule).agg(agg_dict).dropna()
+    # Resamplear y eliminar filas con NaN (por ejemplo, horas sin trading)
+    df_resampled = df_base.resample(rule).agg(agg_dict).dropna()
     return df_resampled
 
 # --- MOTOR DE DATOS ---
 @st.cache_data(ttl=1800) 
 def fetch_all_data(tickers):
+    """Descarga datos diarios y horarios de todos los tickers."""
     try:
-        # 1. Diario (5 años para precisión)
+        # 1. Diario (5 años)
         df_d = yf.download(tickers, period="5y", interval="1d", group_by='ticker', progress=False, auto_adjust=True)
         
-        # 2. Intradía (1 Hora - 730 días máximo permitido)
-        # Esto es la materia prima para construir 2h, 4h y 8h
+        # 2. Intradía (1 Hora - 730 días máximo)
         df_h = yf.download(tickers, period="730d", interval="1h", group_by='ticker', progress=False, auto_adjust=True)
         
         return df_d, df_h
     except Exception as e:
+        # st.error(f"Error general descargando datos: {e}") # Descomentar para debug
         return None, None
 
 def process_tickers(tickers):
     df_daily_all, df_hourly_all = fetch_all_data(tickers)
-    if df_daily_all is None: return []
     
+    if df_daily_all is None: # Si falló la descarga general
+        st.error("Error al descargar datos principales. Intenta de nuevo.")
+        return []
+        
     results = []
     prog = st.progress(0)
     
     for i, t in enumerate(tickers):
         try:
-            # Extracción de DataFrames
+            # Extraer DF individual
+            # Manejar caso de 1 solo ticker que yfinance devuelve sin MultiIndex
             if len(tickers) > 1:
-                d_df = df_daily_all[t].dropna()
-                h_df = df_hourly_all[t].dropna()
+                d_df_raw = df_daily_all[t]
+                h_df_raw = df_hourly_all[t]
             else:
-                d_df = df_daily_all.dropna()
-                h_df = df_hourly_all.dropna()
-                
-            if d_df.empty or h_df.empty: continue
+                d_df_raw = df_daily_all
+                h_df_raw = df_hourly_all
+            
+            # Limpiar NaNs
+            d_df = d_df_raw.dropna()
+            h_df = h_df_raw.dropna()
+            
+            if d_df.empty or h_df.empty: 
+                st.warning(f"⚠️ Datos insuficientes para {t}. Saltando.")
+                continue # Saltar si no hay data
             
             # --- CÁLCULOS MULTI-TF ---
             
@@ -131,25 +147,19 @@ def process_tickers(tickers):
             
             # 2. Diario (Nativo)
             rsi_d = calculate_rsi(d_df['Close'])
-            ha_color = calculate_heikin_ashi_daily(d_df)
+            ha_color = calculate_heikin_ashi_daily(d_df) # Calculado sobre diario
             
-            # 3. CONSTRUCCIÓN DE VELAS INTRADÍA
-            # Construimos 8h, 4h y 2h desde la data de 1h
-            h8_df = resample_candles(h_df['Close'], 8)
-            h4_df = resample_candles(h_df['Close'], 4)
-            h2_df = resample_candles(h_df['Close'], 2)
+            # 3. CONSTRUCCIÓN DE VELAS INTRADÍA (Necesitamos el DF completo de 1h)
+            rsi_8h = calculate_rsi(resample_candles(h_df, 8)['Close']) if not resample_candles(h_df, 8).empty else 50.0
+            rsi_4h = calculate_rsi(resample_candles(h_df, 4)['Close']) if not resample_candles(h_df, 4).empty else 50.0
+            rsi_2h = calculate_rsi(resample_candles(h_df, 2)['Close']) if not resample_candles(h_df, 2).empty else 50.0
             
-            rsi_8h = calculate_rsi(h8_df)
-            rsi_4h = calculate_rsi(h4_df)
-            rsi_2h = calculate_rsi(h2_df)
-            
-            # 1 Hora (Nativo)
+            # 4. 1 Hora (Nativo)
             rsi_1h = calculate_rsi(h_df['Close'])
             
             # --- ESTRATEGIA (Con todos los nuevos TF) ---
             all_rsis = [rsi_w, rsi_d, rsi_8h, rsi_4h, rsi_2h, rsi_1h]
-            # Filtramos posibles NaNs si falta historia en algún TF
-            all_rsis = [x for x in all_rsis if not np.isnan(x)]
+            all_rsis = [x for x in all_rsis if not np.isnan(x)] # Filtrar posibles NaNs
             
             if not all_rsis: continue
 
@@ -186,14 +196,16 @@ def process_tickers(tickers):
                 "Score": score
             })
             
-        except Exception: pass
+        except Exception as e: 
+            st.warning(f"❌ Error procesando {t}: {e}") # Aviso de error en ticker individual
+            pass
         prog.progress((i+1)/len(tickers))
         
     prog.empty()
     return results
 
 # --- INTERFAZ ---
-st.title("📊 Stock Matrix: Extended Timeframes")
+st.title("📊 Stock Matrix: Timeframe Master")
 st.markdown("Monitor de RSI en: **Semanal, Diario, 8H, 4H, 2H, 1H**")
 
 if 'stock_results_v2' not in st.session_state:
@@ -219,7 +231,7 @@ with st.sidebar:
             st.session_state['stock_results_v2'] = data_kept + new_results
             st.success(f"Se actualizaron {len(new_results)} activos.")
         else:
-            st.warning("No se encontraron datos.")
+            st.warning("No se encontraron datos en este lote. Posiblemente por errores de descarga.")
 
     if st.button("🗑️ Limpiar Todo"):
         st.session_state['stock_results_v2'] = []
@@ -263,7 +275,7 @@ if st.session_state['stock_results_v2']:
             "Ticker": "Activo",
             "Precio": st.column_config.NumberColumn(format="$%.2f"),
             "HA_D": st.column_config.TextColumn("Vela D", help="1=Verde, -1=Rojo"),
-            "RSI_W": st.column_config.NumberColumn("Semana", format="%.0f"),
+            "RSI_W": st.column_config.NumberColumn("Semanal", format="%.0f"),
             "RSI_D": st.column_config.NumberColumn("Diario", format="%.0f"),
             "RSI_8H": st.column_config.NumberColumn("8H", format="%.0f"),
             "RSI_4H": st.column_config.NumberColumn("4H", format="%.0f"),
@@ -276,4 +288,4 @@ if st.session_state['stock_results_v2']:
     )
 
 else:
-    st.info("👈 Selecciona un lote y pulsa ESCANEAR.")
+    st.info("👈 Selecciona un lote y pulsa ESCANEAR.")```
