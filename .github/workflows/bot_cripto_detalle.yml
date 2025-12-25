@@ -1,0 +1,30 @@
+name: Bot Cripto Detalle (24/7)
+
+on:
+  schedule:
+    # Correr cada 4 horas (0, 4, 8, 12, 16, 20 UTC)
+    - cron: '0 */4 * * *'
+  workflow_dispatch:
+
+jobs:
+  run_cripto_detail:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Python Setup
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Instalar Dependencias
+        run: |
+          pip install "numpy<2.0.0"
+          pip install pandas ccxt requests
+
+      - name: Ejecutar Bot
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          # Mapeamos el secreto nuevo a la variable que espera el script
+          TELEGRAM_CHAT_ID_CRIPTO_DETALLE: ${{ secrets.TELEGRAM_CHAT_ID_CRIPTO_DETALLE }}
+        run: python bot_cripto_detalle.py
