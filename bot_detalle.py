@@ -3,13 +3,12 @@ import pandas as pd
 import numpy as np
 import requests
 import time
-import os  # <--- FALTABA ESTO
+import os
 from datetime import datetime
 
-# --- 1. CREDENCIALES (MODO GITHUB ACTIONS) ---
-# Esto permite que el script lea los secretos que configuraste en el archivo YAML
+# --- 1. CREDENCIALES ---
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # --- 2. BASE DE DATOS MAESTRA ---
 TICKERS = sorted([
@@ -32,26 +31,26 @@ TICKERS = sorted([
 
 # --- 3. ENVÍO ---
 def send_telegram_msg(message):
-    if not TELEGRAM_TOKEN or not CHAT_ID: 
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: 
         print("Error de Credenciales")
         return
         
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     
     if len(message) < 4000:
-        requests.post(url, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"})
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"})
     else:
         parts = message.split('\n\n')
         buffer = ""
         for part in parts:
             if len(buffer) + len(part) + 4 > 4000:
-                requests.post(url, data={"chat_id": CHAT_ID, "text": buffer, "parse_mode": "Markdown"})
+                requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": buffer, "parse_mode": "Markdown"})
                 time.sleep(1)
                 buffer = part + "\n\n"
             else:
                 buffer += part + "\n\n"
         if buffer:
-            requests.post(url, data={"chat_id": CHAT_ID, "text": buffer, "parse_mode": "Markdown"})
+            requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": buffer, "parse_mode": "Markdown"})
 
 # --- 4. INDICADORES ---
 def calculate_strategy(df):
@@ -105,7 +104,8 @@ def get_last_signal(df):
         prev_row = df.iloc[-2]
         ha_icon = "🟢" if last_row['HA_Color'] == 1 else "🔴"
         macd_icon = "🟢" if last_row['Hist'] > prev_row['Hist'] else "🔴"
-        return f"⚪ NEUTRO (HA {ha_icon} | MACD {macd_icon})", last_row['Close'], last_row.name
+        # Quitamos la palabra 'NEUTRO' para que se vea más limpio, dejamos los iconos
+        return f"⚪ ({ha_icon}|{macd_icon})", last_row['Close'], last_row.name
 
 # --- 5. MOTOR PRINCIPAL ---
 def run_analysis():
@@ -131,7 +131,7 @@ def run_analysis():
                 except: pass
         except Exception as e: print(e)
 
-    # --- 6. PROCESAMIENTO ---
+    # --- 6. PROCESAMIENTO Y FORMATO ---
     print("⚙️ Generando reporte...")
     report_list = []
     
@@ -144,34 +144,59 @@ def run_analysis():
         
         max_date = max(valid_dates)
         
+        # Banderas de Prioridad
+        has_new_active_signal = False
+        
         lines = []
-        lines.append(f"🔹 **{t}** - ${info['Current_Price']:.2f}")
+        lines.append(f"🔹 **{t}** | ${info['Current_Price']:.2f}")
         
         for tf in ['D', 'S', 'M']:
             data = info[tf]
             sig = data['Signal']
             price = data['Entry_Price']
             date_obj = data['Date']
-            date_str = date_obj.strftime('%d/%m/%y') if date_obj else "-"
+            
+            # Formato de Fecha
+            date_str = date_obj.strftime('%d/%m') if date_obj else "-"
             
             is_newest = (date_obj == max_date)
-            # FILTRO: Solo marcamos NEW si NO es neutro
-            is_active_signal = "LONG" in sig or "SHORT" in sig
+            is_active = "LONG" in sig or "SHORT" in sig
             
-            should_highlight = is_newest and is_active_signal
+            # --- LÓGICA DE RESALTADO ---
+            # Si es la fecha más reciente Y es señal activa (Long/Short) -> Resaltar
+            if is_newest and is_active:
+                prefix = "🆕 "
+                fmt = "**"
+                has_new_active_signal = True # Prioridad alta en el ordenamiento
+            else:
+                prefix = "▪️ "
+                fmt = ""
             
-            prefix = "🆕 " if should_highlight else ""
-            fmt = "**" if should_highlight else ""
+            # --- CONSTRUCCIÓN DE LÍNEA ---
+            if "⚪" in sig: # Si es Neutro
+                # Formato Neutro: ▪️ D ⚪ (🟢|🔴) | $Precio (Sin fecha)
+                line_str = f"{prefix}{tf} {sig} | ${price:.2f}"
+            else:
+                # Formato Activo: 🆕 D 🟢 LONG | $Precio | Fecha
+                line_str = f"{prefix}{tf} {sig} | ${price:.2f} | {date_str}"
             
-            line_str = f"{prefix}{tf} {sig} - ${price:.2f} - {date_str}"
             lines.append(f"{fmt}{line_str}{fmt}")
             
-        report_list.append({'sort_date': max_date, 'text': "\n".join(lines)})
+        report_list.append({
+            'sort_date': max_date,
+            'is_priority': has_new_active_signal, # True si tiene señal nueva activa
+            'text': "\n".join(lines)
+        })
     
-    report_list.sort(key=lambda x: x['sort_date'], reverse=True)
+    # --- ORDENAMIENTO DE DOBLE NIVEL ---
+    # 1. Primero los que tienen señales activas nuevas (True > False)
+    # 2. Luego por fecha (Más reciente > Más viejo)
+    report_list.sort(key=lambda x: (x['is_priority'], x['sort_date']), reverse=True)
     
+    # --- 7. ENVÍO ---
     final_msg = f"🦅 **REPORTE SYSTEMATRADER**\n📅 {datetime.now().strftime('%d/%m %H:%M')}\n\n"
     body = "\n\n".join([item['text'] for item in report_list])
+    
     send_telegram_msg(final_msg + body)
     print("✅ Reporte enviado.")
 
