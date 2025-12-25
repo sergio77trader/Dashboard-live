@@ -1,4 +1,3 @@
-import os
 import yfinance as yf
 import pandas as pd
 import numpy as np
@@ -6,18 +5,11 @@ import requests
 import time
 from datetime import datetime
 
-# --- CREDENCIALES ---
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+# --- 1. CREDENCIALES ---
+TELEGRAM_TOKEN = "TU_TOKEN_AQUI"
+CHAT_ID = "TU_CHAT_ID_AQUI"
 
-# --- CONFIGURACIÓN ---
-TIMEFRAMES = [
-    ("1mo", "MENSUAL", "max"), 
-    ("1wk", "SEMANAL", "10y"), 
-    ("1d", "DIARIO", "5y")
-]
-
-# --- BASE DE DATOS COMPLETA ---
+# --- 2. BASE DE DATOS MAESTRA ---
 TICKERS = sorted([
     'GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'CEPU', 'EDN', 'BFR', 'SUPV', 'CRESY', 'IRS', 'TEO', 'LOMA', 'DESP', 'VIST', 'GLOB', 'MELI', 'BIOX', 'TX',
     'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NFLX',
@@ -36,152 +28,145 @@ TICKERS = sorted([
     'SPY', 'QQQ', 'IWM', 'DIA', 'EEM', 'EWZ', 'FXI', 'XLE', 'XLF', 'XLK', 'XLV', 'XLI', 'XLP', 'XLU', 'XLY', 'ARKK', 'SMH', 'TAN', 'GLD', 'SLV', 'GDX'
 ])
 
-def send_message(msg):
-    if not TELEGRAM_TOKEN or not CHAT_ID: return
-    try:
-        url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-        # Dividir mensajes largos (Telegram limita a 4096 chars)
-        if len(msg) > 4000:
-            parts = [msg[i:i+4000] for i in range(0, len(msg), 4000)]
-            for p in parts:
-                requests.post(url, data={"chat_id": CHAT_ID, "text": p, "parse_mode": "Markdown"})
-                time.sleep(1)
-        else:
-            requests.post(url, data={"chat_id": CHAT_ID, "text": msg, "parse_mode": "Markdown"})
-    except: pass
-
-# --- CÁLCULOS MATEMÁTICOS ---
-def calculate_indicators(df, fast=12, slow=26, sig=9):
-    # MACD
-    exp1 = df['Close'].ewm(span=fast, adjust=False).mean()
-    exp2 = df['Close'].ewm(span=slow, adjust=False).mean()
-    macd = exp1 - exp2
-    signal = macd.ewm(span=sig, adjust=False).mean()
-    hist = macd - signal
-    df['Hist'] = hist
+# --- 3. ENVÍO ---
+def send_telegram_msg(message):
+    if "TU_TOKEN" in TELEGRAM_TOKEN: return
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     
-    # Heikin Ashi Iterativo
+    if len(message) < 4000:
+        requests.post(url, data={"chat_id": CHAT_ID, "text": message, "parse_mode": "Markdown"})
+    else:
+        parts = message.split('\n\n')
+        buffer = ""
+        for part in parts:
+            if len(buffer) + len(part) + 4 > 4000:
+                requests.post(url, data={"chat_id": CHAT_ID, "text": buffer, "parse_mode": "Markdown"})
+                time.sleep(1)
+                buffer = part + "\n\n"
+            else:
+                buffer += part + "\n\n"
+        if buffer:
+            requests.post(url, data={"chat_id": CHAT_ID, "text": buffer, "parse_mode": "Markdown"})
+
+# --- 4. INDICADORES ---
+def calculate_strategy(df):
+    exp1 = df['Close'].ewm(span=12, adjust=False).mean()
+    exp2 = df['Close'].ewm(span=26, adjust=False).mean()
+    macd = exp1 - exp2
+    signal = macd.ewm(span=9, adjust=False).mean()
+    hist = macd - signal
+    
     ha_close = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
     ha_open = [df['Open'].iloc[0]]
     for i in range(1, len(df)):
-        prev_o = ha_open[-1]
-        prev_c = ha_close.iloc[i-1]
-        ha_open.append((prev_o + prev_c) / 2)
-        
-    df['HA_Close'] = ha_close
-    df['HA_Open'] = ha_open
-    df['HA_Color'] = np.where(df['HA_Close'] > df['HA_Open'], 1, -1) # 1 Verde, -1 Rojo
+        ha_open.append((ha_open[-1] + ha_close.iloc[i-1]) / 2)
+    
+    df['Hist'] = hist
+    df['HA_Color'] = np.where(ha_close > ha_open, 1, -1)
     return df
 
-# --- MOTOR DE SIMULACIÓN ---
-def analyze_ticker(ticker, interval, period):
-    try:
-        df = yf.download(ticker, interval=interval, period=period, progress=False, auto_adjust=True)
-        if df.empty: return None
-        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+def get_last_signal(df):
+    if df.empty: return "N/A", 0, None
+    position = "FLAT"
+    entry_price = 0.0
+    entry_date = df.index[0]
+    
+    for i in range(1, len(df)):
+        c_ha = df['HA_Color'].iloc[i]
+        c_hist = df['Hist'].iloc[i]
+        p_hist = df['Hist'].iloc[i-1]
+        date = df.index[i]
+        price = df['Close'].iloc[i]
         
-        df = calculate_indicators(df)
+        if position == "LONG" and c_hist < p_hist: position = "FLAT"
+        if position == "SHORT" and c_hist > p_hist: position = "FLAT"
         
-        position = "FLAT"
-        
-        # Bucle de Simulación
-        for i in range(1, len(df)):
-            c_ha = df['HA_Color'].iloc[i]
-            c_hist = df['Hist'].iloc[i]
-            p_hist = df['Hist'].iloc[i-1]
-            
-            # Salidas (Stop Momentum)
-            if position == "LONG" and c_hist < p_hist: position = "FLAT"
-            elif position == "SHORT" and c_hist > p_hist: position = "FLAT"
-
-            # Entradas (Smart Entry)
-            if position == "FLAT":
-                # Long: HA Verde + Hist < 0 + Hist Subiendo
-                if c_ha == 1 and (c_hist < 0) and (c_hist > p_hist): position = "LONG"
-                # Short: HA Rojo + Hist > 0 + Hist Bajando
-                elif c_ha == -1 and (c_hist > 0) and (c_hist < p_hist): position = "SHORT"
-        
-        # Info Final
+        if position == "FLAT":
+            if c_ha == 1 and c_hist < 0 and c_hist > p_hist:
+                position = "LONG"
+                entry_date = date
+                entry_price = price
+            elif c_ha == -1 and c_hist > 0 and c_hist < p_hist:
+                position = "SHORT"
+                entry_date = date
+                entry_price = price
+                
+    if position == "LONG":
+        return "🟢 LONG", entry_price, entry_date
+    elif position == "SHORT":
+        return "🔴 SHORT", entry_price, entry_date
+    else:
         last_row = df.iloc[-1]
         prev_row = df.iloc[-2]
-        
-        # Datos para Neutro (HA y MACD Status)
         ha_icon = "🟢" if last_row['HA_Color'] == 1 else "🔴"
         macd_icon = "🟢" if last_row['Hist'] > prev_row['Hist'] else "🔴"
-        price = last_row['Close']
-        
-        return {
-            "Ticker": ticker,
-            "Estado": position,
-            "Precio": price,
-            "Detalle_Neutro": f"HA {ha_icon} | MACD {macd_icon}"
-        }
+        return f"⚪ NEUTRO (HA {ha_icon} | MACD {macd_icon})", last_row['Close'], last_row.name
 
-    except: return None
-
-def run_bot():
-    print(f"--- START: {datetime.now()} ---")
-    send_message("⚡ **INICIANDO ESCANEO MAESTRO...**")
+# --- 5. MOTOR PRINCIPAL ---
+def run_analysis():
+    print("⏳ Descargando datos masivos...")
+    master_data = {}
+    configs = [('D', '1d', '2y'), ('S', '1wk', '5y'), ('M', '1mo', 'max')]
     
-    # Almacén de resultados
-    # Estructura: {'LONG': [], 'SHORT': [], 'NEUTRO': []} por cada TF
-    report_data = {
-        'MENSUAL': {'LONG': [], 'SHORT': [], 'NEUTRO': []},
-        'SEMANAL': {'LONG': [], 'SHORT': [], 'NEUTRO': []},
-        'DIARIO':  {'LONG': [], 'SHORT': [], 'NEUTRO': []}
-    }
+    for label, interval, period in configs:
+        print(f"-> Procesando {label}...")
+        try:
+            data = yf.download(TICKERS, interval=interval, period=period, group_by='ticker', progress=False, auto_adjust=True, threads=True)
+            for t in TICKERS:
+                if t not in master_data: master_data[t] = {}
+                try:
+                    df = data[t].dropna() if len(TICKERS) > 1 else data.dropna()
+                    if df.empty: continue
+                    if label == 'D': master_data[t]['Current_Price'] = df['Close'].iloc[-1]
+                    df = calculate_strategy(df)
+                    sig, price, date = get_last_signal(df)
+                    master_data[t][label] = {'Signal': sig, 'Entry_Price': price, 'Date': date}
+                except: pass
+        except Exception as e: print(e)
 
-    # 1. ESCANEO
-    for interval, label, period in TIMEFRAMES:
-        print(f"Analizando {label}...")
-        
-        # Descarga masiva para caché (opcional, aquí iteramos para robustez)
-        # Usamos iteración simple para asegurar cálculo
-        for ticker in TICKERS:
-            res = analyze_ticker(ticker, interval, period)
-            if res:
-                state = res['Estado']
-                line = f"• **{ticker}:** ${res['Precio']:.2f}"
-                
-                if state == "LONG":
-                    report_data[label]['LONG'].append(line)
-                elif state == "SHORT":
-                    report_data[label]['SHORT'].append(line)
-                else:
-                    # En neutro agregamos el detalle visual
-                    line += f" ({res['Detalle_Neutro']})"
-                    report_data[label]['NEUTRO'].append(line)
-            
-            # Pequeña pausa para no saturar CPU en local o server
-            # time.sleep(0.01)
-
-    # 2. GENERAR MENSAJE
-    msg = f"📊 **REPORTE SYSTEMATRADER** ({datetime.now().strftime('%d/%m')})\n\n"
+    # --- 6. PROCESAMIENTO ---
+    print("⚙️ Generando reporte...")
+    report_list = []
     
-    for label in ["MENSUAL", "SEMANAL", "DIARIO"]:
-        data = report_data[label]
+    for t, info in master_data.items():
+        if 'Current_Price' not in info or not all(k in info for k in ['D','S','M']): continue
         
-        msg += f"📅 **{label}**\n"
+        dates = [info['D']['Date'], info['S']['Date'], info['M']['Date']]
+        valid_dates = [d for d in dates if d is not None]
+        if not valid_dates: continue
         
-        if data['LONG']:
-            msg += f"🟢 **LONG ({len(data['LONG'])}):**\n" + "\n".join(data['LONG']) + "\n"
+        max_date = max(valid_dates)
         
-        if data['SHORT']:
-            msg += f"🔴 **SHORT ({len(data['SHORT'])}):**\n" + "\n".join(data['SHORT']) + "\n"
+        lines = []
+        lines.append(f"🔹 **{t}** - ${info['Current_Price']:.2f}")
+        
+        for tf in ['D', 'S', 'M']:
+            data = info[tf]
+            sig = data['Signal']
+            price = data['Entry_Price']
+            date_obj = data['Date']
+            date_str = date_obj.strftime('%d/%m/%y') if date_obj else "-"
             
-        # Opcional: Mostrar Neutros "Calientes" (ej: HA Verde y MACD Verde)
-        # Filtramos los neutros que tienen doble verde o doble rojo para no llenar de basura
-        hot_neutrals = [x for x in data['NEUTRO'] if "HA 🟢 | MACD 🟢" in x]
-        cold_neutrals = [x for x in data['NEUTRO'] if "HA 🔴 | MACD 🔴" in x]
-        
-        if hot_neutrals:
-            msg += f"👀 **ATENTOS (Neutro Alcista):**\n" + "\n".join(hot_neutrals) + "\n"
+            is_newest = (date_obj == max_date)
+            # FILTRO: Solo marcamos NEW si NO es neutro
+            is_active_signal = "LONG" in sig or "SHORT" in sig
             
-        # Separador entre TFs
-        msg += "\n━━━━━━━━━━━━━━\n\n"
-
-    send_message(msg)
-    print("Reporte enviado.")
+            should_highlight = is_newest and is_active_signal
+            
+            prefix = "🆕 " if should_highlight else ""
+            fmt = "**" if should_highlight else ""
+            
+            line_str = f"{prefix}{tf} {sig} - ${price:.2f} - {date_str}"
+            lines.append(f"{fmt}{line_str}{fmt}")
+            
+        report_list.append({'sort_date': max_date, 'text': "\n".join(lines)})
+    
+    report_list.sort(key=lambda x: x['sort_date'], reverse=True)
+    
+    final_msg = f"🦅 **REPORTE SYSTEMATRADER**\n📅 {datetime.now().strftime('%d/%m %H:%M')}\n\n"
+    body = "\n\n".join([item['text'] for item in report_list])
+    send_telegram_msg(final_msg + body)
+    print("✅ Reporte enviado.")
 
 if __name__ == "__main__":
-    run_bot()
+    run_analysis()
