@@ -3,11 +3,13 @@ import pandas as pd
 import numpy as np
 import requests
 import time
+import os  # <--- FALTABA ESTO
 from datetime import datetime
 
-# --- 1. CREDENCIALES ---
-TELEGRAM_TOKEN = "TU_TOKEN_AQUI"
-CHAT_ID = "TU_CHAT_ID_AQUI"
+# --- 1. CREDENCIALES (MODO GITHUB ACTIONS) ---
+# Esto permite que el script lea los secretos que configuraste en el archivo YAML
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
 # --- 2. BASE DE DATOS MAESTRA ---
 TICKERS = sorted([
@@ -30,7 +32,10 @@ TICKERS = sorted([
 
 # --- 3. ENVÍO ---
 def send_telegram_msg(message):
-    if "TU_TOKEN" in TELEGRAM_TOKEN: return
+    if not TELEGRAM_TOKEN or not CHAT_ID: 
+        print("Error de Credenciales")
+        return
+        
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     
     if len(message) < 4000:
@@ -115,7 +120,9 @@ def run_analysis():
             for t in TICKERS:
                 if t not in master_data: master_data[t] = {}
                 try:
-                    df = data[t].dropna() if len(TICKERS) > 1 else data.dropna()
+                    if len(TICKERS) > 1: df = data[t].dropna()
+                    else: df = data.dropna()
+                    
                     if df.empty: continue
                     if label == 'D': master_data[t]['Current_Price'] = df['Close'].iloc[-1]
                     df = calculate_strategy(df)
