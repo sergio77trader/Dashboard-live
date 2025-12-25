@@ -38,10 +38,3 @@ jobs:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python mtf_bot.py
-
-      # 1. Ejecutamos el Nuevo Maestro de Acciones (El que acabamos de hacer)
-      - name: Correr Bot Maestro Acciones
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python bot_maestro.py
