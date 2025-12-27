@@ -28,7 +28,6 @@ TICKERS = sorted([
 
 # --- 1. MATEMÁTICA EXACTA ---
 def calculate_indicators(df, fast=12, slow=26, sig=9):
-    # MACD
     exp1 = df['Close'].ewm(span=fast, adjust=False).mean()
     exp2 = df['Close'].ewm(span=slow, adjust=False).mean()
     macd = exp1 - exp2
@@ -36,7 +35,6 @@ def calculate_indicators(df, fast=12, slow=26, sig=9):
     hist = macd - signal
     df['Hist'] = hist
     
-    # Heikin Ashi Iterativo
     ha_close = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
     ha_open = [df['Open'].iloc[0]]
     for i in range(1, len(df)):
@@ -46,14 +44,13 @@ def calculate_indicators(df, fast=12, slow=26, sig=9):
         
     df['HA_Close'] = ha_close
     df['HA_Open'] = ha_open
-    df['HA_Color'] = np.where(df['HA_Close'] > df['HA_Open'], 1, -1) # 1 Verde, -1 Rojo
+    df['HA_Color'] = np.where(df['HA_Close'] > df['HA_Open'], 1, -1)
     
     return df
 
 # --- 2. MOTOR DE SIMULACIÓN ---
 def run_simulation_for_ticker(ticker, interval, period):
     try:
-        # Corrección de yfinance
         df = yf.download(ticker, interval=interval, period=period, progress=False, auto_adjust=True)
         if df.empty: return "N/A", "Sin Datos", 0
         if isinstance(df.columns, pd.MultiIndex): 
@@ -65,22 +62,16 @@ def run_simulation_for_ticker(ticker, interval, period):
         entry_price = 0.0
         entry_date = None
         
-        # Bucle Vela por Vela
         for i in range(1, len(df)):
             date = df.index[i]
             price = df['Close'].iloc[i]
-            
             c_ha = df['HA_Color'].iloc[i]
             c_hist = df['Hist'].iloc[i]
             p_hist = df['Hist'].iloc[i-1]
             
-            # --- SALIDAS ---
-            if position == "LONG" and c_hist < p_hist:
-                position = "FLAT"
-            elif position == "SHORT" and c_hist > p_hist:
-                position = "FLAT"
+            if position == "LONG" and c_hist < p_hist: position = "FLAT"
+            elif position == "SHORT" and c_hist > p_hist: position = "FLAT"
 
-            # --- ENTRADAS ---
             if position == "FLAT":
                 if c_ha == 1 and (c_hist < 0) and (c_hist > p_hist):
                     position = "LONG"
@@ -93,16 +84,13 @@ def run_simulation_for_ticker(ticker, interval, period):
         
         current_price = df['Close'].iloc[-1]
         
-        # --- INFO PARA NEUTRO ---
         if position == "FLAT":
             last_row = df.iloc[-1]
             prev_row = df.iloc[-2]
-            ha_status = "🟢" if last_row['HA_Color'] == 1 else "🔴"
-            macd_status = "🟢" if last_row['Hist'] > prev_row['Hist'] else "🔴"
-            info_neutro = f"HA {ha_status} | MACD {macd_status}"
-            return "⚪ NEUTRO", info_neutro, current_price
+            ha_st = "🟢" if last_row['HA_Color'] == 1 else "🔴"
+            macd_st = "🟢" if last_row['Hist'] > prev_row['Hist'] else "🔴"
+            return f"⚪ NEUTRO", f"HA {ha_st} | MACD {macd_st}", current_price
         
-        # Calcular PnL
         if position == "LONG":
             pnl = ((current_price - entry_price) / entry_price) * 100
             tipo = "🟢 LONG"
@@ -112,22 +100,17 @@ def run_simulation_for_ticker(ticker, interval, period):
             
         f_date = entry_date.strftime('%d/%m/%y')
         info = f"Desde: {f_date} (${entry_price:.2f}) | PnL: {pnl:+.1f}%"
-        
         return tipo, info, current_price
 
-    except Exception:
-        return "ERROR", "Fallo cálculo", 0
+    except:
+        return "ERROR", "Fallo", 0
 
-# --- 3. PROCESAMIENTO POR LOTE ---
+# --- 3. PROCESAMIENTO ---
 def process_batch(tickers):
     results = []
     prog = st.progress(0)
     
-    configs = [
-        ("M", "1mo", "max"), 
-        ("S", "1wk", "10y"), 
-        ("D", "1d", "5y")
-    ]
+    configs = [("M", "1mo", "max"), ("S", "1wk", "10y"), ("D", "1d", "5y")]
     
     total = len(tickers)
     for i, t in enumerate(tickers):
@@ -143,7 +126,7 @@ def process_batch(tickers):
                 row[f"{col_prefix}_Signal"] = "Error"
                 row[f"{col_prefix}_Info"] = "-"
         
-        # --- LÓGICA DE DIAGNÓSTICO (NUEVA COLUMNA) ---
+        # --- CÁLCULO DE DIAGNÓSTICO (AQUÍ ESTÁ LA MAGIA) ---
         m = str(row.get("M_Signal", ""))
         s = str(row.get("S_Signal", ""))
         d = str(row.get("D_Signal", ""))
@@ -154,15 +137,13 @@ def process_batch(tickers):
             diag = "🔥 FULL ALCISTA"
         elif "SHORT" in m and "SHORT" in s and "SHORT" in d:
             diag = "❄️ FULL BAJISTA"
-        elif "LONG" in m and "LONG" in s and ("NEUTRO" in d or "SHORT" in d):
-            diag = "⚠️ PULLBACK ALCISTA"
-        elif "SHORT" in m and "SHORT" in s and ("NEUTRO" in d or "LONG" in d):
-            diag = "🚀 REBOTE BAJISTA"
+        elif "LONG" in m and "LONG" in s and "NEUTRO" in d:
+            diag = "⚠️ PULLBACK (M+ S+)"
         elif "NEUTRO" in m and "LONG" in s and "LONG" in d:
-            diag = "🌱 NACIMIENTO ALCISTA"
+            diag = "🌱 NACIMIENTO"
         
         row["Diagnostico"] = diag
-        # ---------------------------------------------
+        # ---------------------------------------------------
         
         results.append(row)
         prog.progress((i + 1) / total)
@@ -205,7 +186,11 @@ with st.sidebar:
 if st.session_state['master_results']:
     df = pd.DataFrame(st.session_state['master_results'])
     
-    # Función de estilos
+    # --- REORDENAR COLUMNAS PARA QUE SE VEA EL DIAGNÓSTICO ---
+    # Esto fuerza a que la columna aparezca al principio
+    cols = ["Ticker", "Diagnostico", "Precio", "M_Signal", "M_Info", "S_Signal", "S_Info", "D_Signal", "D_Info"]
+    df = df[cols]
+
     def style_signal(val):
         s_val = str(val)
         if "LONG" in s_val: return "color: #00ff00; font-weight: bold; background-color: rgba(0,255,0,0.1)"
@@ -215,18 +200,15 @@ if st.session_state['master_results']:
         return "color: #888"
 
     st.dataframe(
-        df.style.map(style_signal, subset=['M_Signal', 'S_Signal', 'D_Signal', 'Diagnostico']),
+        df.style.applymap(style_signal, subset=['M_Signal', 'S_Signal', 'D_Signal', 'Diagnostico']),
         column_config={
             "Ticker": st.column_config.TextColumn("Activo", width="small", pinned=True),
-            "Diagnostico": st.column_config.TextColumn("Diagnóstico Global", width="medium"), # Nueva columna
+            "Diagnostico": st.column_config.TextColumn("Diagnóstico Global", width="medium"), # ¡AQUÍ ESTÁ!
             "Precio": st.column_config.NumberColumn(format="$%.2f"),
-            
             "M_Signal": st.column_config.TextColumn("Mensual"),
             "M_Info": st.column_config.TextColumn("Detalle Mensual", width="medium"),
-            
             "S_Signal": st.column_config.TextColumn("Semanal"),
             "S_Info": st.column_config.TextColumn("Detalle Semanal", width="medium"),
-            
             "D_Signal": st.column_config.TextColumn("Diario"),
             "D_Info": st.column_config.TextColumn("Detalle Diario", width="medium"),
         },
@@ -236,13 +218,7 @@ if st.session_state['master_results']:
     )
     
     st.divider()
-    st.info("""
-    **Leyenda para Diagnóstico:**
-    *   🔥 **FULL ALCISTA:** Mes, Semana y Día en LONG.
-    *   ❄️ **FULL BAJISTA:** Mes, Semana y Día en SHORT.
-    *   ⚠️ **PULLBACK ALCISTA:** Tendencia macro alcista, pero el día corrigió (Oportunidad).
-    *   🌱 **NACIMIENTO ALCISTA:** Mes neutro, pero Semana y Día ya dieron compra.
-    """)
+    st.info("🔥 FULL ALCISTA: Las 3 temporalidades están en LONG. Es la señal más fuerte.")
 
 else:
     st.info("👈 Selecciona un lote para comenzar.")
