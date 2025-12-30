@@ -3,6 +3,7 @@ import ccxt
 import pandas as pd
 import pandas_ta as ta
 import time
+import numpy as np
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(layout="wide", page_title="SystemaTrader: MACD Zero Matrix")
@@ -15,7 +16,6 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- MAPEO TEMPORAL ---
-# KuCoin via CCXT soporta estos timeframes
 TIMEFRAMES = {
     '1H': '1h',
     '4H': '4h',
@@ -24,7 +24,7 @@ TIMEFRAMES = {
     'Mensual': '1M'
 }
 
-# --- MOTOR DE CONEXIÓN (KUCOIN FUTURES) ---
+# --- CONEXIÓN ---
 @st.cache_resource
 def get_exchange():
     return ccxt.kucoinfutures({
@@ -34,50 +34,45 @@ def get_exchange():
 
 @st.cache_data(ttl=3600)
 def get_active_pairs():
-    """Obtiene Top monedas por volumen en KuCoin"""
     try:
         ex = get_exchange()
         tickers = ex.fetch_tickers()
         valid = []
         for s in tickers:
             if '/USDT:USDT' in s and tickers[s]['quoteVolume']:
-                valid.append({
-                    'symbol': s, 
-                    'vol': tickers[s]['quoteVolume']
-                })
+                valid.append({'symbol': s, 'vol': tickers[s]['quoteVolume']})
         
-        # Ordenar por volumen descendente
         df = pd.DataFrame(valid).sort_values('vol', ascending=False)
         return df['symbol'].tolist()
     except:
         return ['BTC/USDT:USDT', 'ETH/USDT:USDT', 'SOL/USDT:USDT']
 
 # --- LÓGICA MACD ---
-def check_macd_level(df, fast=12, slow=26, sig=9):
-    """
-    Determina si el MACD está en zona Alcista (>0) o Bajista (<0).
-    Retorna: Valor numérico y Estado
-    """
-    if df.empty or len(df) < 35: return 0, "N/A"
+def get_macd_data(df, fast=12, slow=26, sig=9):
+    """Retorna valor MACD Line y Estado"""
+    if df.empty or len(df) < 35: return 0.0, "N/A"
     
     try:
         macd_df = df.ta.macd(fast=fast, slow=slow, signal=sig)
-        if macd_df is None: return 0, "N/A"
+        if macd_df is None: return 0.0, "N/A"
         
-        # MACD Line es la columna 'MACD_12_26_9'
+        # MACD Line
         col_name = f'MACD_{fast}_{slow}_{sig}'
         macd_val = macd_df[col_name].iloc[-1]
         
-        state = "🟢 Sobre 0" if macd_val > 0 else "🔴 Bajo 0"
-        return macd_val, state
+        # Sanitizar NaN
+        if pd.isna(macd_val): return 0.0, "N/A"
+        
+        state = "BULL" if macd_val > 0 else "BEAR"
+        return float(macd_val), state
     except:
-        return 0, "N/A"
+        return 0.0, "N/A"
 
 def scan_macd_matrix(targets):
     exchange = get_exchange()
     results = []
     
-    prog = st.progress(0, text="Escaneando Estructura MACD...")
+    prog = st.progress(0, text="Escaneando niveles MACD...")
     total = len(targets)
     
     for idx, symbol in enumerate(targets):
@@ -85,128 +80,115 @@ def scan_macd_matrix(targets):
         prog.progress((idx)/total, text=f"Analizando {clean_name}...")
         
         row = {'Activo': clean_name}
-        bullish_count = 0
+        bull_count = 0
         valid_count = 0
         
         for label, tf_code in TIMEFRAMES.items():
             try:
-                # Pedimos suficientes velas para que el MACD se estabilice
                 limit = 60 if tf_code == '1M' else 100
                 ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=limit)
                 
                 if not ohlcv:
-                    row[label] = "⚪" # Sin datos
+                    row[label] = 0.0 # Valor neutro si no hay data
                     continue
                 
                 df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
-                val, state = check_macd_level(df)
+                val, state = get_macd_data(df)
                 
-                # Guardamos solo el icono para la tabla
-                if state == "N/A":
-                    row[label] = "⚪"
-                elif val > 0:
-                    row[label] = "🟢" # Arriba de 0
-                    bullish_count += 1
+                # Guardamos el VALOR REAL
+                row[label] = val
+                
+                if state == "BULL":
+                    bull_count += 1
                     valid_count += 1
-                else:
-                    row[label] = "🔴" # Abajo de 0
+                elif state == "BEAR":
                     valid_count += 1
                     
             except:
-                row[label] = "⚠️"
+                row[label] = 0.0
         
-        # Diagnóstico de Estructura
+        # Diagnóstico Estructural
         if valid_count > 0:
-            if bullish_count == valid_count:
-                row['Estructura'] = "🔥 FULL BULL (Todos > 0)"
-            elif bullish_count == 0:
-                row['Estructura'] = "❄️ FULL BEAR (Todos < 0)"
-            elif bullish_count >= 3:
-                row['Estructura'] = "✅ Mayoría Alcista"
-            else:
-                row['Estructura'] = "🔻 Mayoría Bajista"
+            if bull_count == valid_count: row['Estructura'] = "🔥 FULL BULL"
+            elif bull_count == 0: row['Estructura'] = "❄️ FULL BEAR"
+            elif bull_count >= 3: row['Estructura'] = "✅ Mayoría Alcista"
+            else: row['Estructura'] = "🔻 Mayoría Bajista"
         else:
             row['Estructura'] = "-"
 
         results.append(row)
-        time.sleep(0.15) # Rate limit
+        time.sleep(0.15)
         
     prog.empty()
     return pd.DataFrame(results)
 
-# --- INTERFAZ ---
-st.title("🎛️ SystemaTrader: MACD Zero Matrix")
-st.markdown("""
-**Objetivo:** Identificar la ubicación de las líneas MACD respecto al nivel 0.
-*   **Sobre 0 (🟢):** Tendencia de fondo Alcista. Solo buscar compras.
-*   **Bajo 0 (🔴):** Tendencia de fondo Bajista. Solo buscar ventas.
-""")
+# --- UI ---
+st.title("🎛️ SystemaTrader: MACD Value Matrix")
+st.caption("Valores positivos = Sobre 0 (Tendencia Alcista) | Valores negativos = Bajo 0 (Tendencia Bajista)")
 
-# --- MEMORIA ---
-if 'macd_results' not in st.session_state:
-    st.session_state['macd_results'] = []
+if 'macd_vals' not in st.session_state:
+    st.session_state['macd_vals'] = []
 
 with st.sidebar:
-    st.header("Configuración")
+    st.header("Control")
     
     with st.spinner("Cargando mercado..."):
         all_symbols = get_active_pairs()
     
     st.success(f"Mercado: {len(all_symbols)} activos")
     
-    # Lotes
     BATCH_SIZE = st.selectbox("Tamaño Lote:", [10, 20, 30], index=1)
     batches = [all_symbols[i:i + BATCH_SIZE] for i in range(0, len(all_symbols), BATCH_SIZE)]
     batch_labels = [f"Lote {i+1} ({b[0].split('/')[0]}...)" for i, b in enumerate(batches)]
     sel_batch = st.selectbox("Seleccionar:", range(len(batches)), format_func=lambda x: batch_labels[x])
     
-    c1, c2 = st.columns(2)
-    if c1.button("🚀 ESCANEAR", type="primary"):
+    if st.button("🚀 ESCANEAR VALORES", type="primary"):
         targets = batches[sel_batch]
-        # Filtrar duplicados
-        existing = {x['Activo'] for x in st.session_state['macd_results']}
-        # Ajuste nombre para filtro (Kucoin usa :USDT)
+        existing = {x['Activo'] for x in st.session_state['macd_vals']}
         to_run = [t for t in targets if t.replace(':USDT', '').replace('/USDT', '') not in existing]
         
         if to_run:
             new_data = scan_macd_matrix(to_run)
-            st.session_state['macd_results'].extend(new_data.to_dict('records'))
+            st.session_state['macd_vals'].extend(new_data.to_dict('records'))
             st.success("Datos agregados.")
         else:
             st.warning("Lote ya escaneado.")
 
-    if c2.button("🗑️ Limpiar"):
-        st.session_state['macd_results'] = []
+    if st.button("🗑️ Limpiar"):
+        st.session_state['macd_vals'] = []
         st.rerun()
 
 # --- TABLA ---
-if st.session_state['macd_results']:
-    df = pd.DataFrame(st.session_state['macd_results'])
+if st.session_state['macd_vals']:
+    df = pd.DataFrame(st.session_state['macd_vals'])
     
-    # Ordenar
-    sort_map = {"🔥 FULL BULL (Todos > 0)": 0, "❄️ FULL BEAR (Todos < 0)": 1, "✅ Mayoría Alcista": 2, "🔻 Mayoría Bajista": 3, "-": 4}
+    # Ordenar por estructura
+    sort_map = {"🔥 FULL BULL": 0, "❄️ FULL BEAR": 1, "✅ Mayoría Alcista": 2, "🔻 Mayoría Bajista": 3, "-": 4}
     df['sort'] = df['Estructura'].map(sort_map).fillna(5)
     df = df.sort_values('sort').drop('sort', axis=1)
-    
-    # Filtro Visual
-    ver = st.radio("Filtro:", ["Todos", "Solo Full Bull/Bear"], horizontal=True)
-    if ver == "Solo Full Bull/Bear":
-        df = df[df['Estructura'].str.contains("FULL")]
+
+    # Función de estilo para pintar celdas
+    # Verde si valor > 0, Rojo si valor < 0
+    def style_macd(val):
+        if isinstance(val, (int, float)):
+            if val > 0: return 'color: #00FF00; font-weight: bold; background-color: rgba(0,255,0,0.1)'
+            if val < 0: return 'color: #FF4500; font-weight: bold; background-color: rgba(255,0,0,0.1)'
+        return ''
 
     st.dataframe(
-        df,
+        df.style.applymap(style_macd, subset=['1H', '4H', 'Diario', 'Semanal', 'Mensual']),
         column_config={
             "Activo": st.column_config.TextColumn("Crypto", width="small", pinned=True),
-            "1H": st.column_config.TextColumn("1H", width="small"),
-            "4H": st.column_config.TextColumn("4H", width="small"),
-            "Diario": st.column_config.TextColumn("D", width="small"),
-            "Semanal": st.column_config.TextColumn("S", width="small"),
-            "Mensual": st.column_config.TextColumn("M", width="small"),
-            "Estructura": st.column_config.TextColumn("Contexto Global", width="medium"),
+            "1H": st.column_config.NumberColumn("1H (Val)", format="%.2f"),
+            "4H": st.column_config.NumberColumn("4H (Val)", format="%.2f"),
+            "Diario": st.column_config.NumberColumn("1D (Val)", format="%.2f"),
+            "Semanal": st.column_config.NumberColumn("1S (Val)", format="%.2f"),
+            "Mensual": st.column_config.NumberColumn("1M (Val)", format="%.2f"),
+            "Estructura": st.column_config.TextColumn("Contexto", width="medium"),
         },
         use_container_width=True,
         hide_index=True,
         height=700
     )
 else:
-    st.info("👈 Selecciona un lote para analizar la estructura del mercado.")
+    st.info("👈 Escanea un lote para ver los valores del MACD.")
