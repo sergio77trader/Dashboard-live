@@ -15,8 +15,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- MAPEO TEMPORAL ---
+# --- MAPEO TEMPORAL (AHORA CON 15 MINUTOS) ---
 TIMEFRAMES = {
+    '15m': '15m', # <--- NUEVO: Gatillo de entrada
     '1H': '1h',
     '4H': '4h',
     'Diario': '1d',
@@ -90,7 +91,7 @@ def scan_macd_matrix(targets):
         
         for label, tf_code in TIMEFRAMES.items():
             try:
-                # Límites ajustados para velocidad
+                # Límites ajustados
                 limit = 50 if tf_code == '1M' else 80
                 ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=limit)
                 
@@ -117,8 +118,10 @@ def scan_macd_matrix(targets):
         if valid_count > 0:
             if bull_count == valid_count: row['Estructura'] = "🔥 FULL BULL"
             elif bull_count == 0: row['Estructura'] = "❄️ FULL BEAR"
-            elif bull_count >= 3: row['Estructura'] = "✅ Mayoría Alcista"
-            else: row['Estructura'] = "🔻 Mayoría Bajista"
+            # Ajustamos lógica de mayoría para incluir 15m (ahora son 6 TFs)
+            elif bull_count >= 4: row['Estructura'] = "✅ Mayoría Alcista"
+            elif bull_count <= 2: row['Estructura'] = "🔻 Mayoría Bajista"
+            else: row['Estructura'] = "⚖️ Mixto"
         else:
             row['Estructura'] = "-"
 
@@ -130,7 +133,7 @@ def scan_macd_matrix(targets):
     return pd.DataFrame(results)
 
 # --- UI ---
-st.title("🎛️ SystemaTrader: MACD Zero Matrix")
+st.title("🎛️ SystemaTrader: MACD Zero Matrix (Sniper)")
 st.caption("Valores positivos = Sobre 0 (Tendencia Alcista) | Valores negativos = Bajo 0 (Tendencia Bajista)")
 
 if 'macd_vals' not in st.session_state:
@@ -176,8 +179,8 @@ if st.session_state['macd_vals']:
     df = pd.DataFrame(st.session_state['macd_vals'])
     
     # Ordenar por estructura
-    sort_map = {"🔥 FULL BULL": 0, "❄️ FULL BEAR": 1, "✅ Mayoría Alcista": 2, "🔻 Mayoría Bajista": 3, "-": 4}
-    df['sort'] = df['Estructura'].map(sort_map).fillna(5)
+    sort_map = {"🔥 FULL BULL": 0, "❄️ FULL BEAR": 1, "✅ Mayoría Alcista": 2, "⚖️ Mixto": 3, "🔻 Mayoría Bajista": 4, "-": 5}
+    df['sort'] = df['Estructura'].map(sort_map).fillna(6)
     df = df.sort_values('sort').drop('sort', axis=1)
 
     # Función de estilo
@@ -188,9 +191,10 @@ if st.session_state['macd_vals']:
         return ''
 
     st.dataframe(
-        df.style.applymap(style_macd, subset=['1H', '4H', 'Diario', 'Semanal', 'Mensual']),
+        df.style.applymap(style_macd, subset=['15m', '1H', '4H', 'Diario', 'Semanal', 'Mensual']),
         column_config={
             "Activo": st.column_config.TextColumn("Crypto", width="small", pinned=True),
+            "15m": st.column_config.NumberColumn("15m", format="%.2f"), # NUEVA COLUMNA
             "1H": st.column_config.NumberColumn("1H", format="%.2f"),
             "4H": st.column_config.NumberColumn("4H", format="%.2f"),
             "Diario": st.column_config.NumberColumn("1D", format="%.2f"),
@@ -203,4 +207,4 @@ if st.session_state['macd_vals']:
         height=700
     )
 else:
-    st.info("👈 Escanea un lote para ver los valores del MACD.")
+    st.info("👈 Escanea un lote para ver los valores del MACD (Incluye 15m).")
