@@ -4,15 +4,23 @@ import requests
 import plotly.graph_objects as go
 from datetime import date, datetime
 import urllib3
+import numpy as np
 
-# Desactivar advertencias de SSL (Necesario para APIs argentinas)
+# Desactivar advertencias de SSL
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(layout="wide", page_title="SystemaTrader: Carry Trade Matrix")
 
-# --- BASE DE DATOS ESTATICA (FECHAS Y PAGOS) ---
-# Esto debe actualizarse si salen nuevos bonos
+# --- ESTILOS CSS ---
+st.markdown("""
+<style>
+    [data-testid="stMetricValue"] { font-size: 1.2rem; }
+    .stDataFrame { font-size: 0.9rem; }
+</style>
+""", unsafe_allow_html=True)
+
+# --- BASE DE DATOS (BONOS) ---
 TICKERS_DATE = {
     "S16A5": date(2025, 4, 16), "S28A5": date(2025, 4, 28), "S16Y5": date(2025, 5, 16),
     "S30Y5": date(2025, 5, 30), "S18J5": date(2025, 6, 18), "S30J5": date(2025, 6, 30),
@@ -33,46 +41,86 @@ PAYOFF = {
     "TTM26": 135.238, "TTJ26": 144.629, "TTS26": 152.096, "TTD26": 161.144,
 }
 
-# --- MOTOR DE DATOS ---
+# --- MOTOR DE DATOS BLINDADO ---
 @st.cache_data(ttl=300)
 def fetch_market_data():
     try:
-        # APIs Públicas de Data912 (Suelen usarse en FinTwitter Arg)
-        meps = requests.get('https://data912.com/live/mep', verify=False, timeout=10).json()
-        notes = requests.get('https://data912.com/live/arg_notes', verify=False, timeout=10).json()
-        bonds = requests.get('https://data912.com/live/arg_bonds', verify=False, timeout=10).json()
+        headers = {'User-Agent': 'Mozilla/5.0'}
         
-        mep_val = pd.DataFrame(meps).close.median()
-        df_assets = pd.DataFrame(notes + bonds)
+        # Peticiones con manejo de error individual
+        try:
+            r_mep = requests.get('https://data912.com/live/mep', verify=False, timeout=5, headers=headers)
+            meps = r_mep.json() if r_mep.status_code == 200 else []
+        except: meps = []
+            
+        try:
+            r_notes = requests.get('https://data912.com/live/arg_notes', verify=False, timeout=5, headers=headers)
+            notes = r_notes.json() if r_notes.status_code == 200 else []
+        except: notes = []
+            
+        try:
+            r_bonds = requests.get('https://data912.com/live/arg_bonds', verify=False, timeout=5, headers=headers)
+            bonds = r_bonds.json() if r_bonds.status_code == 200 else []
+        except: bonds = []
+
+        # Validación de estructura
+        if not isinstance(meps, list) or not meps: 
+            return None, None # Fallo crítico en MEP
+
+        # Cálculo MEP
+        mep_val = pd.DataFrame(meps)['close'].median()
+        
+        # Unificación Bonos (Validando que sean listas)
+        full_list = []
+        if isinstance(notes, list): full_list += notes
+        if isinstance(bonds, list): full_list += bonds
+        
+        if not full_list:
+            return mep_val, pd.DataFrame() # Hay MEP pero no bonos
+
+        df_assets = pd.DataFrame(full_list)
         return mep_val, df_assets
+
     except Exception as e:
-        st.error(f"Error conectando a Data912: {e}")
+        st.error(f"Error en motor de datos: {e}")
         return None, None
 
 def calculate_carry(mep, df):
-    # Filtrar solo los que tenemos en nuestra lista maestra
-    carry = df.loc[df.symbol.isin(TICKERS_DATE.keys())].set_index('symbol').copy()
+    if df.empty or 'symbol' not in df.columns:
+        return pd.DataFrame()
+
+    # Filtrar
+    carry = df.loc[df.symbol.isin(TICKERS_DATE.keys())].copy()
+    if carry.empty: return pd.DataFrame()
     
-    # Cálculos
-    carry['bond_price'] = carry['c'].round(2)
+    carry = carry.set_index('symbol')
+    
+    # Cálculos Financieros
+    carry['bond_price'] = carry['c'].astype(float).round(2)
     carry['payoff'] = carry.index.map(PAYOFF)
     carry['expiration'] = carry.index.map(TICKERS_DATE)
-    carry['days_to_exp'] = (pd.to_datetime(carry.expiration).dt.date - date.today()).apply(lambda x: x.days)
+    
+    # Días al vencimiento
+    today = date.today()
+    carry['days_to_exp'] = (pd.to_datetime(carry.expiration).dt.date - today).apply(lambda x: x.days)
+    
+    # Filtrar vencidos
+    carry = carry[carry['days_to_exp'] > 0]
     
     # Tasas
-    carry['tem'] = ((carry['payoff'] / carry['c'])) ** (1/(carry['days_to_exp']/30)) - 1
-    carry['tna'] = ((carry['payoff'] / carry['c']) - 1) / carry['days_to_exp'] * 365
-    carry['tea'] = ((carry['payoff'] / carry['c'])) ** (365/carry['days_to_exp']) - 1
+    carry['tem'] = ((carry['payoff'] / carry['bond_price'])) ** (1/(carry['days_to_exp']/30)) - 1
+    carry['tna'] = ((carry['payoff'] / carry['bond_price']) - 1) / carry['days_to_exp'] * 365
+    carry['tea'] = ((carry['payoff'] / carry['bond_price'])) ** (365/carry['days_to_exp']) - 1
     
-    # Breakeven (¿A cuánto tiene que ir el dólar para salir empatado?)
-    carry['MEP_BREAKEVEN'] = mep * (carry['payoff'] / carry['c'])
-    carry['buffer_deval'] = (carry['MEP_BREAKEVEN'] / mep) - 1 # Colchón de devaluación
+    # Breakeven
+    carry['MEP_BREAKEVEN'] = mep * (carry['payoff'] / carry['bond_price'])
+    carry['buffer_deval'] = (carry['MEP_BREAKEVEN'] / mep) - 1
     
     return carry.sort_values('days_to_exp')
 
 # --- INTERFAZ ---
 st.title("💸 SystemaTrader: Carry Trade Matrix (ARG)")
-st.markdown("Arbitraje de Tasas: Pesos vs Dólar MEP")
+st.markdown("### Arbitraje de Tasas: Pesos vs Dólar MEP")
 
 if st.button("🔄 ACTUALIZAR DATOS", type="primary"):
     st.cache_data.clear()
@@ -80,85 +128,98 @@ if st.button("🔄 ACTUALIZAR DATOS", type="primary"):
 
 mep_now, df_raw = fetch_market_data()
 
-if df_raw is not None:
+if mep_now is not None and df_raw is not None and not df_raw.empty:
     st.metric("Dólar MEP Referencia", f"${mep_now:,.2f}")
     
     df_calc = calculate_carry(mep_now, df_raw)
     
-    # --- PESTAÑAS ---
-    tab1, tab2, tab3 = st.tabs(["📊 Matriz de Tasas", "🛡️ Cobertura (Breakeven)", "📈 Escenarios"])
-    
-    # TAB 1: RENDIMIENTOS
-    with tab1:
-        st.subheader("Rendimiento en Pesos (Tasa Fija)")
-        st.dataframe(
-            df_calc[['bond_price', 'days_to_exp', 'tna', 'tem', 'tea']],
-            column_config={
-                "bond_price": st.column_config.NumberColumn("Precio", format="$%.2f"),
-                "days_to_exp": st.column_config.NumberColumn("Días Vto."),
-                "tna": st.column_config.NumberColumn("TNA", format="%.2f%%"),
-                "tem": st.column_config.NumberColumn("TEM (Mensual)", format="%.2f%%"),
-                "tea": st.column_config.NumberColumn("TEA (Anual)", format="%.2f%%"),
-            },
-            use_container_width=True,
-            height=600
-        )
-    
-    # TAB 2: BREAKEVEN Y COBERTURA
-    with tab2:
-        st.subheader("¿Cuánto aguanta el Dólar?")
-        st.markdown("La columna **'Buffer Deval'** indica cuánto puede subir el dólar desde hoy hasta el vencimiento sin que pierdas dinero contra quedarte en dólares.")
+    if not df_calc.empty:
+        # --- PESTAÑAS ---
+        tab1, tab2, tab3 = st.tabs(["📊 Matriz de Tasas", "🛡️ Cobertura (Breakeven)", "📈 Escenarios"])
         
-        # Gráfico de Barras de Buffer
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=df_calc.index,
-            y=df_calc['buffer_deval'] * 100,
-            marker_color=df_calc['buffer_deval'],
-            text=df_calc['buffer_deval'].apply(lambda x: f"{x:.1%}"),
-            textposition='auto'
-        ))
-        fig.update_layout(title="Colchón de Devaluación (%)", template="plotly_dark", yaxis_title="% Cobertura")
-        st.plotly_chart(fig, use_container_width=True)
-
-        st.dataframe(
-            df_calc[['bond_price', 'MEP_BREAKEVEN', 'buffer_deval']],
-            column_config={
-                "MEP_BREAKEVEN": st.column_config.NumberColumn("MEP de Salida (Equilibrio)", format="$%.2f"),
-                "buffer_deval": st.column_config.ProgressColumn("Colchón Devaluatorio", format="%.2f%%", min_value=0, max_value=1)
-            },
-            use_container_width=True
-        )
-
-    # TAB 3: ESCENARIOS (SENSITIVITY)
-    with tab3:
-        st.subheader("Matriz de Retorno en USD")
-        st.write("Si el dólar a la salida está en X precio, ¿Cuánto gano/pierdo en %?")
+        # TAB 1: RENDIMIENTOS
+        with tab1:
+            st.subheader("Rendimiento en Pesos (Tasa Fija)")
+            st.dataframe(
+                df_calc[['bond_price', 'days_to_exp', 'tna', 'tem', 'tea']],
+                column_config={
+                    "bond_price": st.column_config.NumberColumn("Precio", format="$%.2f"),
+                    "days_to_exp": st.column_config.NumberColumn("Días Vto."),
+                    "tna": st.column_config.NumberColumn("TNA", format="%.2f%%"),
+                    "tem": st.column_config.NumberColumn("TEM (Mensual)", format="%.2f%%"),
+                    "tea": st.column_config.NumberColumn("TEA (Anual)", format="%.2f%%"),
+                },
+                use_container_width=True,
+                height=600
+            )
         
-        # Crear escenarios dinámicos basados en el MEP actual
-        scenarios = [mep_now * (1 + i/100) for i in [0, 5, 10, 20, 30]] # 0%, 5%, 10%... suba
-        
-        sim_data = pd.DataFrame(index=df_calc.index)
-        
-        for s_price in scenarios:
-            col_name = f"MEP ${s_price:.0f}"
-            # Retorno en USD = (Payoff / Precio Bono) / (MEP Salida / MEP Entrada) - 1
-            # Simplificado: (Payoff en USD al final) / (Inversion en USD hoy)
-            usd_in = df_calc['bond_price'] / mep_now
-            usd_out = df_calc['payoff'] / s_price
-            sim_data[col_name] = (usd_out / usd_in) - 1
+        # TAB 2: BREAKEVEN
+        with tab2:
+            st.subheader("¿Cuánto aguanta el Dólar?")
+            st.info("Buffer Deval: Cuánto puede subir el dólar antes de que pierdas dinero.")
+            
+            # Gráfico Interactivo
+            fig = go.Figure()
+            
+            # Línea de MEP Actual
+            fig.add_hline(y=mep_now, line_dash="dash", line_color="red", annotation_text=f"MEP Hoy ${mep_now:.0f}")
+            
+            # Línea de Breakeven
+            fig.add_trace(go.Scatter(
+                x=df_calc.index,
+                y=df_calc['MEP_BREAKEVEN'],
+                mode='lines+markers+text',
+                name='MEP Equilibrio',
+                line=dict(color='#00CC96', width=2),
+                text=[f"${x:.0f}" for x in df_calc['MEP_BREAKEVEN']],
+                textposition="top center"
+            ))
+            
+            fig.update_layout(
+                title="Curva de Cobertura Cambiaria",
+                template="plotly_dark",
+                yaxis_title="Precio Dólar ($)",
+                height=500
+            )
+            st.plotly_chart(fig, use_container_width=True)
 
-        # Estilo de colores para la tabla de simulación
-        def style_ret(val):
-            color = '#00FF00' if val > 0 else '#FF4500'
-            return f'color: {color}'
+            st.dataframe(
+                df_calc[['bond_price', 'MEP_BREAKEVEN', 'buffer_deval']],
+                column_config={
+                    "MEP_BREAKEVEN": st.column_config.NumberColumn("MEP Salida (Equilibrio)", format="$%.2f"),
+                    "buffer_deval": st.column_config.ProgressColumn("Colchón Devaluatorio", format="%.2f%%", min_value=0, max_value=0.5)
+                },
+                use_container_width=True
+            )
 
-        st.dataframe(
-            sim_data.style.map(style_ret).format("{:.1%}"),
-            use_container_width=True,
-            height=600
-        )
-        st.caption("Nota: Columnas indican el precio del Dólar MEP al momento del vencimiento.")
+        # TAB 3: ESCENARIOS
+        with tab3:
+            st.subheader("Simulación de Retorno en USD")
+            st.write(f"Ganancia/Pérdida en USD según el precio del dólar al vencimiento.")
+            
+            # Escenarios: 0% (Dólar quieto), +5%, +10%, +15%, +20%
+            scenarios_pct = [0, 5, 10, 15, 20]
+            sim_data = pd.DataFrame(index=df_calc.index)
+            
+            for pct in scenarios_pct:
+                mep_futuro = mep_now * (1 + pct/100)
+                col_name = f"MEP ${mep_futuro:.0f} (+{pct}%)"
+                
+                # Retorno USD = (Monto Final USD / Monto Inicial USD) - 1
+                usd_in = df_calc['bond_price'] / mep_now
+                usd_out = df_calc['payoff'] / mep_futuro
+                sim_data[col_name] = (usd_out / usd_in) - 1
 
+            def style_ret(val):
+                color = '#00FF00' if val > 0 else '#FF4500'
+                return f'color: {color}; font-weight: bold'
+
+            st.dataframe(
+                sim_data.style.map(style_ret).format("{:.2%}"),
+                use_container_width=True,
+                height=600
+            )
+    else:
+        st.warning("Se descargaron datos pero no coinciden con los bonos configurados.")
 else:
-    st.warning("No se pudieron cargar los datos de Data912. Intenta más tarde.")
+    st.error("⚠️ Error de conexión con el mercado (Data912). Intenta recargar la página.")
