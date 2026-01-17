@@ -112,9 +112,9 @@ def analyze_ticker_tf(symbol, tf_code, exchange):
             hist_subiendo = hist > prev_hist
             hist_bajando = hist < prev_hist
             
-            # Filtros EMA
-            f_ema_long = close > ema
-            f_ema_short = close < ema
+            # Filtros EMA (DESACTIVADOS TEMPORALMENTE PARA TEST)
+            f_ema_long = True 
+            f_ema_short = True
             
             # --- SALIDAS (Priority) ---
             if position == "LONG" and hist_bajando:
