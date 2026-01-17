@@ -5,19 +5,21 @@ import requests
 from datetime import datetime
 
 st.set_page_config(page_title="KuCoin Perpetuos - Señales MTF", layout="wide")
-st.title("KuCoin Perpetuos USDT.P — Señales MTF (5m, 15m, 1H, 4H, 1D)")
+st.title("KuCoin Perpetuos USDT.P — Lotes de 50 + Resultados Acumulados")
+
+# ===========================
+# SESIÓN PARA ACUMULAR TABLA
+# ===========================
+
+if "tabla_acumulada" not in st.session_state:
+    st.session_state["tabla_acumulada"] = pd.DataFrame()
 
 # ===================================================
-# 1) LISTADO DE PERPETUOS (MÉTODO QUE NO FALLA EN STREAMLIT)
+# 1) TRAER LISTADO BASE (SOLO UNA VEZ)
 # ===================================================
 
 @st.cache_data(ttl=300)
 def traer_perpetuos_kucoin():
-    """
-    Usa el endpoint de mercado (publico y estable),
-    y luego filtra los USDT.P
-    """
-
     url = "https://api-futures.kucoin.com/api/v1/contracts"
 
     try:
@@ -31,7 +33,6 @@ def traer_perpetuos_kucoin():
 
     for c in data:
         sym = c.get("symbol", "")
-
         if sym.endswith("USDT.P"):
             filas.append({
                 "symbol": sym,
@@ -76,7 +77,7 @@ def traer_klines(symbol, gran):
     return df.reset_index(drop=True)
 
 # ===================================================
-# 3) INDICADORES (TU LÓGICA ADAPTADA)
+# 3) INDICADORES (TU LÓGICA)
 # ===================================================
 
 def calcular_heikin_ashi(df):
@@ -130,7 +131,7 @@ def calcular_senal(df):
 
     return "NEUTRAL", t
 
-# Temporalidades KuCoin (las que pediste)
+# Temporalidades
 TF_MAP = {
     "5m": 5,
     "15m": 15,
@@ -140,16 +141,16 @@ TF_MAP = {
 }
 
 # ===================================================
-# 4) STREAMLIT UI
+# 4) STREAMLIT UI — LOTES DE 50 + ACUMULACIÓN
 # ===================================================
 
 df_all = traer_perpetuos_kucoin()
 total = len(df_all)
 
-st.write(f"Total perpetuos USDT.P encontrados: **{total}**")
+st.write(f"Total perpetuos USDT.P disponibles: **{total}**")
 
 if total == 0:
-    st.error("❌ KuCoin no devolvió contratos. Recargá la app en 30–60 segundos.")
+    st.error("KuCoin no respondió con contratos. Recargá en 30–60 segundos.")
     st.stop()
 
 bloque = st.number_input(
@@ -160,19 +161,18 @@ bloque = st.number_input(
     step=1
 )
 
-ejecutar = st.button("🚀 EJECUTAR ANÁLISIS DEL BLOQUE")
+ejecutar = st.button("🚀 ANALIZAR ESTE BLOQUE Y ACUMULAR")
 
 inicio = bloque * 50
 fin = min(inicio + 50, total)
 df_slice = df_all.iloc[inicio:fin].copy()
 
-st.write(f"Analizando filas **{inicio} a {fin}**")
-
-resultados = []
+st.write(f"👉 Analizando filas **{inicio} a {fin}**")
 
 if ejecutar:
 
     barra = st.progress(0)
+    resultados = []
     total_filas = len(df_slice)
 
     for i, (_, row) in enumerate(df_slice.iterrows()):
@@ -200,15 +200,25 @@ if ejecutar:
 
         barra.progress((i+1)/total_filas)
 
-    tabla = pd.DataFrame(resultados)
+    nuevo_df = pd.DataFrame(resultados)
 
-    st.subheader("📊 Señales Multitemporales")
-    st.dataframe(tabla, use_container_width=True)
-
-    csv = tabla.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "⬇️ Descargar CSV",
-        csv,
-        file_name="kucoin_senales_mtf.csv",
-        mime="text/csv"
+    # 👉 ACUMULAMOS RESULTADOS
+    st.session_state["tabla_acumulada"] = pd.concat(
+        [st.session_state["tabla_acumulada"], nuevo_df],
+        ignore_index=True
     )
+
+# ===========================
+# MOSTRAR TABLA ACUMULADA
+# ===========================
+
+st.subheader("📊 RESULTADOS ACUMULADOS")
+st.dataframe(st.session_state["tabla_acumulada"], use_container_width=True)
+
+csv = st.session_state["tabla_acumulada"].to_csv(index=False).encode("utf-8")
+st.download_button(
+    "⬇️ Descargar CSV acumulado",
+    csv,
+    file_name="kucoin_senales_acumuladas.csv",
+    mime="text/csv"
+)
