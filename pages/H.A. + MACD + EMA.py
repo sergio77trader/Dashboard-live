@@ -4,32 +4,38 @@ import numpy as np
 import requests
 from datetime import datetime
 
-st.set_page_config(page_title="Binance Perpetuos - Señales MTF", layout="wide")
-st.title("Binance Perpetuos USDT — Señales MTF (5m,15m,1H,4H,1D)")
+st.set_page_config(page_title="KuCoin Perpetuos - Señales MTF", layout="wide")
+st.title("KuCoin Perpetuos USDT.P — Señales MTF (5m, 15m, 1H, 4H, 1D)")
 
 # ===================================================
-# 1) TRAER PERPETUOS DE BINANCE (FUNCIONA EN STREAMLIT)
+# 1) LISTADO DE PERPETUOS (MÉTODO QUE NO FALLA EN STREAMLIT)
 # ===================================================
 
 @st.cache_data(ttl=300)
-def traer_perpetuos_binance():
-    url = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+def traer_perpetuos_kucoin():
+    """
+    Usa el endpoint de mercado (publico y estable),
+    y luego filtra los USDT.P
+    """
+
+    url = "https://api-futures.kucoin.com/api/v1/contracts"
 
     try:
         r = requests.get(url, timeout=20)
-        data = r.json()["symbols"]
+        data = r.json().get("data", [])
     except Exception as e:
-        st.error(f"Error Binance: {e}")
+        st.error(f"Error consultando KuCoin: {e}")
         return pd.DataFrame(columns=["symbol","cripto"])
 
     filas = []
 
-    for s in data:
-        symbol = s["symbol"]
-        if symbol.endswith("USDT") and s["contractType"] == "PERPETUAL":
+    for c in data:
+        sym = c.get("symbol", "")
+
+        if sym.endswith("USDT.P"):
             filas.append({
-                "symbol": symbol,
-                "cripto": symbol.replace("USDT","")
+                "symbol": sym,
+                "cripto": sym.replace("USDT.P", "")
             })
 
     df = pd.DataFrame(filas)
@@ -43,35 +49,34 @@ def traer_perpetuos_binance():
 # 2) TRAER VELAS (KLINES)
 # ===================================================
 
-def traer_klines(symbol, intervalo):
-    url = "https://fapi.binance.com/fapi/v1/klines"
+def traer_klines(symbol, gran):
+    url = "https://api-futures.kucoin.com/api/v1/kline/query"
     params = {
         "symbol": symbol,
-        "interval": intervalo,
+        "granularity": gran,
         "limit": 150
     }
 
     try:
         r = requests.get(url, params=params, timeout=15)
-        data = r.json()
+        data = r.json().get("data", [])
     except:
-        return pd.DataFrame(columns=["time","open","close","high","low","volume"])
+        return pd.DataFrame(columns=["time","open","high","low","close","volume"])
 
     if not data:
-        return pd.DataFrame(columns=["time","open","close","high","low","volume"])
+        return pd.DataFrame(columns=["time","open","high","low","close","volume"])
 
     df = pd.DataFrame(data, columns=[
-        "time","open","high","low","close","volume",
-        "close_time","qav","trades","tbbav","tbqav","ignore"
+        "time","open","close","high","low","volume","turnover"
     ])
 
     df = df[["time","open","high","low","close","volume"]].astype(float)
-    df["time"] = pd.to_datetime(df["time"], unit="ms")
+    df["time"] = pd.to_datetime(df["time"], unit="s")
     df = df.sort_values("time")
     return df.reset_index(drop=True)
 
 # ===================================================
-# 3) INDICADORES + SEÑAL (TU LÓGICA ADAPTADA)
+# 3) INDICADORES (TU LÓGICA ADAPTADA)
 # ===================================================
 
 def calcular_heikin_ashi(df):
@@ -125,26 +130,26 @@ def calcular_senal(df):
 
     return "NEUTRAL", t
 
-# Temporalidades equivalentes en Binance
+# Temporalidades KuCoin (las que pediste)
 TF_MAP = {
-    "5m": "5m",
-    "15m": "15m",
-    "1H": "1h",
-    "4H": "4h",
-    "1D": "1d"
+    "5m": 5,
+    "15m": 15,
+    "1H": 60,
+    "4H": 240,
+    "1D": 1440
 }
 
 # ===================================================
 # 4) STREAMLIT UI
 # ===================================================
 
-df_all = traer_perpetuos_binance()
+df_all = traer_perpetuos_kucoin()
 total = len(df_all)
 
-st.write(f"Total perpetuos USDT encontrados en Binance: **{total}**")
+st.write(f"Total perpetuos USDT.P encontrados: **{total}**")
 
 if total == 0:
-    st.error("No se pudieron cargar contratos de Binance.")
+    st.error("❌ KuCoin no devolvió contratos. Recargá la app en 30–60 segundos.")
     st.stop()
 
 bloque = st.number_input(
@@ -177,8 +182,8 @@ if ejecutar:
         senales = {}
         horas = {}
 
-        for tf, interval in TF_MAP.items():
-            df_k = traer_klines(sym, interval)
+        for tf, gran in TF_MAP.items():
+            df_k = traer_klines(sym, gran)
             s, h = calcular_senal(df_k)
 
             senales[tf] = s
@@ -204,6 +209,6 @@ if ejecutar:
     st.download_button(
         "⬇️ Descargar CSV",
         csv,
-        file_name="binance_senales_mtf.csv",
+        file_name="kucoin_senales_mtf.csv",
         mime="text/csv"
     )
