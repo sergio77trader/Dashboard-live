@@ -2,12 +2,60 @@ import streamlit as st
 import pandas as pd
 import time
 import requests
-
-BASE_URL = "https://api-futures.kucoin.com"
+from datetime import datetime, timezone, timedelta
+import numpy as np
 
 st.set_page_config(page_title="KuCoin Scanner", layout="wide")
 
-st.title("KuCoin Perpetuos - Prueba Base (FUNCIONAL)")
+BASE_URL = "https://api-futures.kucoin.com"
+
+# ===============================
+# UTILIDADES
+# ===============================
+
+def hora_argentina():
+    return datetime.now(timezone.utc).astimezone(
+        timezone(timedelta(hours=-3))
+    )
+
+def fetch_klines(symbol, tf, limit=50):
+    """
+    Trae velas de KuCoin Futures (USDT-M)
+    """
+    url = f"{BASE_URL}/api/v1/kline/query"
+    params = {
+        "symbol": symbol,
+        "granularity": tf,
+        "limit": limit
+    }
+    r = requests.get(url, params=params, timeout=15)
+    data = r.json()
+    if data.get("code") != "200000":
+        return None
+
+    cols = ["ts","open","close","high","low","volume","turnover"]
+    df = pd.DataFrame(data["data"], columns=cols)
+    df = df.astype(float)
+    df["ts"] = pd.to_datetime(df["ts"], unit="s")
+    df = df.sort_values("ts")
+    return df
+
+def macd_signal(df, fast=12, slow=26, signal=9):
+    df["ema_fast"] = df["close"].ewm(span=fast).mean()
+    df["ema_slow"] = df["close"].ewm(span=slow).mean()
+    df["macd"] = df["ema_fast"] - df["ema_slow"]
+    df["signal"] = df["macd"].ewm(span=signal).mean()
+
+    if df.iloc[-1]["macd"] > df.iloc[-1]["signal"]:
+        return "COMPRA"
+    elif df.iloc[-1]["macd"] < df.iloc[-1]["signal"]:
+        return "VENTA"
+    else:
+        return "ESPERA"
+
+# ===============================
+# TRAER CONTRATOS POR LOTES
+# ===============================
 
 @st.cache_data(ttl=60)
 def traer_perpetuos_usdtp_por_lotes(lote_size=50):
@@ -17,65 +65,81 @@ def traer_perpetuos_usdtp_por_lotes(lote_size=50):
     data = r.json()
 
     if data.get("code") != "200000":
-        st.error("KuCoin no respondió bien. Probá en 30–60 segundos.")
+        st.error("KuCoin no respondió. Probá en 30–60 segundos.")
         return pd.DataFrame()
 
-    contracts = data["data"]
-
-    symbols = [c["symbol"] for c in contracts if "USDTM" in c["symbol"]]
+    symbols = [
+        c["symbol"] 
+        for c in data["data"] 
+        if c["symbol"].endswith("USDTM")
+    ]
 
     st.write(f"Total contratos USDT-M encontrados: {len(symbols)}")
 
-    dfs = []
-    columnas_vistas = set()
+    resultados = []
+
+    timeframes = {
+        "5m": 300,
+        "15m": 900,
+        "1h": 3600,
+        "4h": 14400,
+        "1D": 86400
+    }
+
+    now_ar = hora_argentina()
+    fecha = now_ar.strftime("%Y-%m-%d")
+    hora = now_ar.strftime("%H:%M:%S")
 
     for i in range(0, len(symbols), lote_size):
         lote = symbols[i:i+lote_size]
         st.write(f"Procesando lote {i} → {i+lote_size}")
 
-        filas = []
-
         for s in lote:
-            try:
-                ticker_url = f"{BASE_URL}/api/v1/ticker?symbol={s}"
-                r = requests.get(ticker_url, timeout=10)
-                d = r.json()
+            fila = {
+                "cripto": s.replace("USDTM", "USDT.P"),
+                "fecha": fecha,
+                "hora": hora
+            }
 
-                if d.get("code") == "200000":
-                    row = d["data"]
-                    row["cripto"] = s
-                    filas.append(row)
+            for nombre_tf, segundos in timeframes.items():
+                df_kl = fetch_klines(s, segundos, limit=60)
 
-            except Exception as e:
-                st.warning(f"Error con {s}: {e}")
+                if df_kl is None or len(df_kl) < 30:
+                    fila[f"{nombre_tf}_señal"] = "SIN DATOS"
+                else:
+                    fila[f"{nombre_tf}_señal"] = macd_signal(df_kl)
 
-        if filas:
-            df_lote = pd.DataFrame(filas)
-            columnas_vistas.update(df_lote.columns)
-            dfs.append(df_lote)
+            resultados.append(fila)
+            time.sleep(0.8)
 
-        time.sleep(1.2)
+        time.sleep(2)
 
-    if not dfs:
-        st.error("KuCoin no devolvió datos válidos.")
-        return pd.DataFrame()
+    return pd.DataFrame(resultados)
 
-    df_final = pd.concat(dfs, ignore_index=True)
-    df_final = df_final.reindex(columns=list(columnas_vistas))
+# ===============================
+# STREAMLIT UI
+# ===============================
 
-    if "cripto" in df_final.columns:
-        df_final = df_final.sort_values("cripto").reset_index(drop=True)
-
-    return df_final
-
+st.title("Scanner KuCoin Perpetuos (Base Operativa)")
 
 df = traer_perpetuos_usdtp_por_lotes(lote_size=50)
 
 if df.empty:
     st.stop()
 
-st.subheader("Datos crudos de KuCoin (base funcional)")
+orden = [
+    "cripto",
+    "fecha",
+    "hora",
+    "5m_señal",
+    "15m_señal",
+    "1h_señal",
+    "4h_señal",
+    "1D_señal"
+]
+
+df = df[orden]
 
 st.dataframe(df, use_container_width=True)
 
-st.success("Si ves la tabla arriba, ESTO FUNCIONA y ya tenés la base correcta.")
+st.success("Base funcional lista. Ahora podemos meter TU lógica exacta de H.A + EMA + MACD.")
