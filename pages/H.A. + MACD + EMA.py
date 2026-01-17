@@ -8,12 +8,12 @@ st.set_page_config(page_title="KuCoin Perpetuos - Señales MTF", layout="wide")
 st.title("KuCoin Perpetuos USDT.P — Señales MTF")
 
 # ===================================================
-# 1) TRAER PERPETUOS (VERSIÓN A PRUEBA DE ERRORES)
+# 1) TRAER PERPETUOS (ENDPOINT QUE FUNCIONA EN STREAMLIT)
 # ===================================================
 
 @st.cache_data(ttl=300)
 def traer_perpetuos_usdtp():
-    url = "https://api-futures.kucoin.com/api/v1/contracts/active"
+    url = "https://api-futures.kucoin.com/api/v1/contracts"
 
     try:
         r = requests.get(url, timeout=20)
@@ -35,7 +35,6 @@ def traer_perpetuos_usdtp():
 
     df = pd.DataFrame(filas)
 
-    # 👉 FIX CLAVE: si viene vacío, devolvemos estructura válida
     if df.empty:
         return pd.DataFrame(columns=["symbol","cripto"])
 
@@ -53,11 +52,13 @@ def traer_klines(symbol, gran):
         "limit": 150
     }
 
-    r = requests.get(url, params=params, timeout=15)
-    data = r.json().get("data", [])
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        data = r.json().get("data", [])
+    except:
+        return pd.DataFrame(columns=["time","open","close","high","low","volume"])
 
     if not data:
-        # Devuelvo DataFrame vacío con columnas correctas
         return pd.DataFrame(columns=["time","open","close","high","low","volume"])
 
     df = pd.DataFrame(data, columns=[
@@ -70,7 +71,7 @@ def traer_klines(symbol, gran):
     return df.reset_index(drop=True)
 
 # ===================================================
-# 3) INDICADORES + SEÑAL
+# 3) INDICADORES + SEÑAL (TU LÓGICA ADAPTADA)
 # ===================================================
 
 def calcular_heikin_ashi(df):
@@ -124,7 +125,7 @@ def calcular_senal(df):
 
     return "NEUTRAL", t
 
-# Temporalidades
+# Temporalidades EXACTAS que querías
 TF_MAP = {
     "5m": 5,
     "15m": 15,
@@ -143,7 +144,7 @@ total = len(df_all)
 st.write(f"Total perpetuos USDT.P encontrados: **{total}**")
 
 if total == 0:
-    st.warning("⚠️ KuCoin no devolvió contratos en este momento. Recargá la app en 1 minuto.")
+    st.error("❌ KuCoin sigue bloqueando desde Streamlit. Probá en local o decime y cambiamos a Binance.")
     st.stop()
 
 bloque = st.number_input(
