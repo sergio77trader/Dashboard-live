@@ -73,3 +73,9 @@ def traer_perpetuos_usdtp_por_lotes(lote_size=50):
 
     return df_final
  df_final
+
+st.title("Dashboard KuCoin Perpetuos")
+
+df = traer_perpetuos_usdtp_por_lotes(lote_size=50)
+
+st.dataframe(df)
