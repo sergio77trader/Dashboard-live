@@ -5,23 +5,28 @@ import requests
 from datetime import datetime
 
 st.set_page_config(page_title="KuCoin Perpetuos - Señales MTF", layout="wide")
-
 st.title("KuCoin Perpetuos USDT.P — Señales MTF")
 
-# ==========================
-# 1) TRAER CONTRATOS KUCOIN
-# ==========================
+# ===================================================
+# 1) TRAER PERPETUOS (VERSIÓN A PRUEBA DE ERRORES)
+# ===================================================
 
 @st.cache_data(ttl=300)
 def traer_perpetuos_usdtp():
     url = "https://api-futures.kucoin.com/api/v1/contracts/active"
-    r = requests.get(url, timeout=15)
-    data = r.json()["data"]
 
-    # Filtramos SOLO los que terminan en USDT.P
+    try:
+        r = requests.get(url, timeout=20)
+        data = r.json().get("data", [])
+    except Exception as e:
+        st.error(f"Error al consultar KuCoin: {e}")
+        return pd.DataFrame(columns=["symbol","cripto"])
+
     filas = []
+
     for c in data:
-        sym = c["symbol"]
+        sym = c.get("symbol","")
+
         if sym.endswith("USDT.P"):
             filas.append({
                 "symbol": sym,
@@ -29,11 +34,16 @@ def traer_perpetuos_usdtp():
             })
 
     df = pd.DataFrame(filas)
+
+    # 👉 FIX CLAVE: si viene vacío, devolvemos estructura válida
+    if df.empty:
+        return pd.DataFrame(columns=["symbol","cripto"])
+
     return df.sort_values("cripto").reset_index(drop=True)
 
-# ==========================
+# ===================================================
 # 2) TRAER VELAS (KLINES)
-# ==========================
+# ===================================================
 
 def traer_klines(symbol, gran):
     url = "https://api-futures.kucoin.com/api/v1/kline/query"
@@ -42,22 +52,31 @@ def traer_klines(symbol, gran):
         "granularity": gran,
         "limit": 150
     }
+
     r = requests.get(url, params=params, timeout=15)
-    data = r.json()["data"]
+    data = r.json().get("data", [])
+
+    if not data:
+        # Devuelvo DataFrame vacío con columnas correctas
+        return pd.DataFrame(columns=["time","open","close","high","low","volume"])
 
     df = pd.DataFrame(data, columns=[
         "time","open","close","high","low","volume","turnover"
     ])
+
     df = df.astype(float)
     df["time"] = pd.to_datetime(df["time"], unit="s")
     df = df.sort_values("time")
     return df.reset_index(drop=True)
 
-# ==========================
-# 3) INDICADORES Y SEÑAL
-# ==========================
+# ===================================================
+# 3) INDICADORES + SEÑAL
+# ===================================================
 
 def calcular_heikin_ashi(df):
+    if df.empty:
+        return df
+
     ha = pd.DataFrame()
     ha["close"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
 
@@ -72,6 +91,9 @@ def calcular_heikin_ashi(df):
     return ha
 
 def macd_hist(df, fast=12, slow=26, signal=9):
+    if df.empty:
+        return pd.Series(dtype=float)
+
     ema_fast = df["close"].ewm(span=fast).mean()
     ema_slow = df["close"].ewm(span=slow).mean()
     macd = ema_fast - ema_slow
@@ -79,6 +101,9 @@ def macd_hist(df, fast=12, slow=26, signal=9):
     return macd - sig
 
 def calcular_senal(df):
+    if df.empty:
+        return "SIN DATOS", None
+
     ha = calcular_heikin_ashi(df)
     hist = macd_hist(df)
     ema200 = df["close"].ewm(span=200).mean()
@@ -99,7 +124,7 @@ def calcular_senal(df):
 
     return "NEUTRAL", t
 
-# Temporalidades a analizar
+# Temporalidades
 TF_MAP = {
     "5m": 5,
     "15m": 15,
@@ -108,14 +133,18 @@ TF_MAP = {
     "1D": 1440
 }
 
-# ==========================
-# 4) INTERFAZ STREAMLIT
-# ==========================
+# ===================================================
+# 4) STREAMLIT UI
+# ===================================================
 
 df_all = traer_perpetuos_usdtp()
 total = len(df_all)
 
 st.write(f"Total perpetuos USDT.P encontrados: **{total}**")
+
+if total == 0:
+    st.warning("⚠️ KuCoin no devolvió contratos en este momento. Recargá la app en 1 minuto.")
+    st.stop()
 
 bloque = st.number_input(
     "Bloque (0 = primeros 50)",
@@ -150,21 +179,23 @@ if ejecutar:
         for tf, gran in TF_MAP.items():
             df_k = traer_klines(sym, gran)
             s, h = calcular_senal(df_k)
+
             senales[tf] = s
-            horas[tf] = h.strftime("%Y-%m-%d %H:%M")
+            horas[tf] = h.strftime("%Y-%m-%d %H:%M") if h is not None else "SIN DATOS"
 
         resultados.append({
             "Cripto": cripto,
-            "5m": senales["5m"], "Hora 5m": horas["5m"],
+            "5m": senales["5m"],  "Hora 5m": horas["5m"],
             "15m": senales["15m"], "Hora 15m": horas["15m"],
-            "1H": senales["1H"], "Hora 1H": horas["1H"],
-            "4H": senales["4H"], "Hora 4H": horas["4H"],
-            "1D": senales["1D"], "Hora 1D": horas["1D"],
+            "1H": senales["1H"],  "Hora 1H": horas["1H"],
+            "4H": senales["4H"],  "Hora 4H": horas["4H"],
+            "1D": senales["1D"],  "Hora 1D": horas["1D"],
         })
 
         barra.progress((i+1)/total_filas)
 
     tabla = pd.DataFrame(resultados)
+
     st.subheader("📊 Señales Multitemporales")
     st.dataframe(tabla, use_container_width=True)
 
