@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(layout="wide", page_title="SystemaTrader: Sniper Matrix")
+st.set_page_config(layout="wide", page_title="SystemaTrader: MNQ Sniper Matrix")
 
 st.markdown("""
 <style>
@@ -20,7 +20,7 @@ st.markdown("""
 if 'sniper_results' not in st.session_state:
     st.session_state['sniper_results'] = []
 
-# --- TEMPORALIDADES SOLICITADAS ---
+# --- TEMPORALIDADES ---
 TIMEFRAMES = {
     '1m': '1m',
     '5m': '5m',
@@ -52,12 +52,11 @@ def get_active_pairs():
     except:
         return []
 
-# --- LÓGICA DE ESTRATEGIA (REPLICA EXACTA PINE SCRIPT) ---
+# --- LÓGICA DE ESTRATEGIA (SIN FILTRO EMA - PURA REACCIÓN) ---
 def calculate_heikin_ashi(df):
     df_ha = df.copy()
     df_ha['HA_Close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
     
-    # Cálculo iterativo de HA Open
     ha_open = [df['open'].iloc[0]]
     for i in range(1, len(df)):
         ha_open.append((ha_open[-1] + df_ha['HA_Close'].iloc[i-1]) / 2)
@@ -70,18 +69,15 @@ def calculate_heikin_ashi(df):
 
 def analyze_ticker_tf(symbol, tf_code, exchange):
     try:
-        # Bajamos 300 velas para que la EMA 200 se calcule bien
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=300)
-        if not ohlcv or len(ohlcv) < 200: return None
+        # Bajamos datos
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=100)
+        if not ohlcv or len(ohlcv) < 50: return None
         
         df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
         df['dt'] = pd.to_datetime(df['time'], unit='ms')
         
         # 1. INDICADORES
-        # EMA 200
-        df['EMA200'] = ta.ema(df['close'], length=200)
-        
-        # MACD (12, 26, 9)
+        # MACD
         macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
         df['Hist'] = macd['MACDh_12_26_9']
         
@@ -89,34 +85,24 @@ def analyze_ticker_tf(symbol, tf_code, exchange):
         df = calculate_heikin_ashi(df)
         
         # 2. SIMULACIÓN DE ESTADO (State Machine)
-        # Recorremos para ver el estado actual
         position = "NEUTRO"
-        last_date = df['dt'].iloc[-1] # Por defecto
+        last_date = df['dt'].iloc[-1]
         
-        # Optimizamos recorriendo solo las últimas 100 velas (ya con indicadores calculados)
-        start_idx = 201 
-        if len(df) <= start_idx: start_idx = 0
-        
-        for i in range(start_idx, len(df)):
-            # Datos actuales
-            close = df['close'].iloc[i]
-            ema = df['EMA200'].iloc[i]
+        # Recorremos la historia reciente para determinar el estado actual
+        for i in range(1, len(df)):
+            # Datos
             hist = df['Hist'].iloc[i]
             prev_hist = df['Hist'].iloc[i-1]
             ha_color = df['HA_Color'].iloc[i]
             date = df['dt'].iloc[i]
             
-            # Lógica de Gatillo
+            # Gatillos Puros (Sin EMA)
             ha_verde = (ha_color == 1)
             ha_rojo = (ha_color == -1)
             hist_subiendo = hist > prev_hist
             hist_bajando = hist < prev_hist
             
-            # Filtros EMA (DESACTIVADOS TEMPORALMENTE PARA TEST)
-            f_ema_long = True 
-            f_ema_short = True
-            
-            # --- SALIDAS (Priority) ---
+            # --- SALIDAS (Priority Exit) ---
             if position == "LONG" and hist_bajando:
                 position = "NEUTRO"
                 last_date = date
@@ -127,13 +113,13 @@ def analyze_ticker_tf(symbol, tf_code, exchange):
                 
             # --- ENTRADAS ---
             if position == "NEUTRO":
-                # Long: HA Verde + Hist Sube + Sobre EMA 200
-                if ha_verde and hist_subiendo and f_ema_long:
+                # Long: HA Verde + Hist Sube
+                if ha_verde and hist_subiendo:
                     position = "LONG"
                     last_date = date
                 
-                # Short: HA Rojo + Hist Baja + Bajo EMA 200
-                elif ha_rojo and hist_bajando and f_ema_short:
+                # Short: HA Rojo + Hist Baja
+                elif ha_rojo and hist_bajando:
                     position = "SHORT"
                     last_date = date
                     
@@ -155,37 +141,37 @@ def scan_batch(targets):
         
         row = {'Activo': clean_name}
         
-        # Iteramos las 7 temporalidades
         for label, tf_code in TIMEFRAMES.items():
             res = analyze_ticker_tf(sym, tf_code, ex)
             
             if res:
                 state, date_sig = res
                 
-                # Formateo visual
                 icon = "⚪"
                 if state == "LONG": icon = "🟢"
                 elif state == "SHORT": icon = "🔴"
                 
-                # Formato de fecha corto
-                date_str = date_sig.strftime('%d/%m %H:%M')
+                # Formato inteligente de fecha
+                now = datetime.now()
+                if date_sig.date() == now.date():
+                    date_str = date_sig.strftime('%H:%M')
+                else:
+                    date_str = date_sig.strftime('%d/%m')
                 
-                # Guardamos string compuesto: "🟢 25/12 14:00"
                 row[label] = f"{icon} {state} \n({date_str})"
             else:
-                row[label] = "⚠️ Error/Data"
+                row[label] = "⚠️ N/A"
         
         results.append(row)
-        time.sleep(0.1) # Breve pausa
+        time.sleep(0.1) 
         
     prog.empty()
     return results
 
 # --- INTERFAZ ---
 st.title("🎯 SystemaTrader: MNQ Sniper Matrix")
-st.caption("Estrategia: Heikin Ashi + MACD + EMA200 (Filtrado por Tendencia)")
+st.caption("Estrategia: Heikin Ashi + MACD (Pura Acción de Precio)")
 
-# Sidebar
 with st.sidebar:
     st.header("Configuración")
     
@@ -204,7 +190,7 @@ with st.sidebar:
         
         if st.button("🚀 ESCANEAR LOTE", type="primary"):
             targets = batches[sel_batch]
-            with st.spinner("Calculando matrices... esto toma tiempo por la cantidad de TFs..."):
+            with st.spinner("Escaneando matriz de confluencia..."):
                 new_data = scan_batch(targets)
                 
                 if new_data:
@@ -226,7 +212,6 @@ with st.sidebar:
 if st.session_state['sniper_results']:
     df = pd.DataFrame(st.session_state['sniper_results'])
     
-    # Estilo visual
     st.dataframe(
         df,
         column_config={
@@ -243,4 +228,4 @@ if st.session_state['sniper_results']:
         height=700
     )
 else:
-    st.info("👈 Selecciona un lote. El escaneo analiza 7 temporalidades por cada moneda.")
+    st.info("👈 Selecciona un lote. El filtro EMA ha sido desactivado para coincidencia visual.")
