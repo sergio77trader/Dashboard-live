@@ -28,7 +28,10 @@ TIMEFRAMES = {
 # --- CONEXIÓN ---
 @st.cache_resource
 def get_exchange():
-    return ccxt.kucoinfutures({'enableRateLimit': True, 'timeout': 30000})
+    return ccxt.kucoinfutures({
+        'enableRateLimit': True,
+        'timeout': 30000
+    })
 
 @st.cache_data(ttl=3600)
 def get_active_pairs():
@@ -54,13 +57,14 @@ def calculate_heikin_ashi(df):
     df_ha['HA_Color'] = np.where(df_ha['HA_Close'] > df_ha['HA_Open'], 1, -1)
     return df_ha
 
-# --- ANALISIS POR TF ---
+# --- ANALISIS POR TEMPORALIDAD ---
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=100)
         if not ohlcv or len(ohlcv) < 50:
             return None
 
+        # Precio en tiempo real
         ohlcv[-1][4] = current_price
 
         df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','vol'])
@@ -101,12 +105,12 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         else:
             rsi_state = "RSI="
 
-        return position, last_date, rsi_state, round(rsi_val,1)
+        return position, last_date, rsi_state, round(rsi_val, 1)
 
     except:
         return None
 
-# --- RECOMENDACIÓN ---
+# --- RECOMENDACIÓN FINAL ---
 def get_recommendation(row):
     longs = sum("LONG" in str(row.get(tf,'')) for tf in TIMEFRAMES)
     shorts = sum("SHORT" in str(row.get(tf,'')) for tf in TIMEFRAMES)
@@ -122,19 +126,19 @@ def get_recommendation(row):
     if "LONG" in str(row.get('1m','')) and rsi_htf_bear:
         return "⚠️ REBOTE (Scalp)"
     if "SHORT" in str(row.get('1m','')) and rsi_htf_bull:
-        return "📉 DIP (Entrada Pro)"
+        return "📉 DIP (Entrada)"
 
     return "⚖️ RANGO / ESPERAR"
 
-# --- ESCANEO ---
+# --- ESCANEO POR LOTE ---
 def scan_batch(targets):
     ex = get_exchange()
     results = []
-    prog = st.progress(0)
+    prog = st.progress(0, text="Iniciando radar...")
 
-    for i, sym in enumerate(targets):
-        prog.progress(i/len(targets))
-        clean = sym.replace('/USDT:USDT','')
+    for idx, sym in enumerate(targets):
+        clean = sym.replace(':USDT','').replace('/USDT','')
+        prog.progress(idx/len(targets), text=f"Analizando {clean} ({idx+1}/{len(targets)})")
 
         try:
             price = ex.fetch_ticker(sym)['last']
@@ -160,21 +164,51 @@ def scan_batch(targets):
     prog.empty()
     return results
 
-# --- UI ---
-st.title("🎯 SystemaTrader: Sniper Matrix RSI")
+# --- INTERFAZ ---
+st.title("🎯 SystemaTrader: MNQ Sniper Matrix V4")
 st.caption("Heikin Ashi + MACD + RSI MTF | KuCoin Futures")
 
 with st.sidebar:
     st.header("Configuración")
-    symbols = get_active_pairs()
-    batch = st.selectbox("Tamaño lote", [10,20,30,50], index=1)
 
-    if st.button("🚀 ESCANEAR"):
-        st.session_state['sniper_results'] = scan_batch(symbols[:batch])
+    with st.spinner("Cargando mercado..."):
+        all_symbols = get_active_pairs()
+
+    if all_symbols:
+        st.success(f"Mercado: {len(all_symbols)} activos")
+        st.divider()
+
+        BATCH_SIZE = st.selectbox("Tamaño Lote:", [10, 20, 30, 50], index=1)
+        batches = [all_symbols[i:i + BATCH_SIZE] for i in range(0, len(all_symbols), BATCH_SIZE)]
+        batch_opts = [f"Lote {i+1} ({b[0].split('/')[0]}...)" for i, b in enumerate(batches)]
+        sel_batch = st.selectbox("Seleccionar Lote:", range(len(batches)),
+                                 format_func=lambda x: batch_opts[x])
+
+        accumulate = st.checkbox("Acumular Resultados", value=True)
+
+        if st.button("🚀 ESCANEAR LOTE", type="primary"):
+            target = batches[sel_batch]
+            with st.spinner("Procesando matriz fractal..."):
+                new_data = scan_batch(target)
+
+                if new_data:
+                    if accumulate:
+                        existing = {x['Activo'] for x in st.session_state['sniper_results']}
+                        for item in new_data:
+                            if item['Activo'] not in existing:
+                                st.session_state['sniper_results'].append(item)
+                    else:
+                        st.session_state['sniper_results'] = new_data
+    else:
+        st.error("Error de conexión.")
+
+    if st.button("Limpiar"):
+        st.session_state['sniper_results'] = []
+        st.rerun()
 
 # --- TABLA ---
 if st.session_state['sniper_results']:
     df = pd.DataFrame(st.session_state['sniper_results'])
     st.dataframe(df, use_container_width=True, height=800)
 else:
-    st.info("Esperando escaneo...")
+    st.info("👈 Seleccioná un lote para comenzar el escaneo.")
