@@ -80,7 +80,7 @@ def calculate_heikin_ashi(df):
 # ─────────────────────────────────────────────
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=100)
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=120)
         if not ohlcv or len(ohlcv) < 50:
             return None
 
@@ -92,15 +92,19 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         df['dt'] = pd.to_datetime(df['time'], unit='ms')
 
         macd = ta.macd(df['close'])
-        df['Hist'] = macd['MACDh_12_26_9']
+        df['macd'] = macd['MACD_12_26_9']
+        df['signal'] = macd['MACDs_12_26_9']
+        df['hist'] = macd['MACDh_12_26_9']
+
         df['RSI'] = ta.rsi(df['close'], length=14)
         df = calculate_heikin_ashi(df)
 
+        # ── Estado HA + Histograma (TU LÓGICA ORIGINAL)
         position = "NEUTRO"
         last_date = df['dt'].iloc[-1]
 
         for i in range(1, len(df)):
-            hist, prev_hist = df['Hist'].iloc[i], df['Hist'].iloc[i-1]
+            hist, prev_hist = df['hist'].iloc[i], df['hist'].iloc[i-1]
             ha_color = df['HA_Color'].iloc[i]
             date = df['dt'].iloc[i]
 
@@ -117,6 +121,26 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
                     position = "SHORT"
                     last_date = date
 
+        # ── MACD HIST VS PREV
+        if df['hist'].iloc[-1] > df['hist'].iloc[-2]:
+            hist_state = "📈 Hist ↑"
+        else:
+            hist_state = "📉 Hist ↓"
+
+        # ── ÚLTIMO CRUCE MACD
+        macd_cross = "❌"
+        macd_cross_dt = pd.NaT
+
+        for i in range(len(df)-1, 0, -1):
+            if df['macd'].iloc[i] > df['signal'].iloc[i] and df['macd'].iloc[i-1] <= df['signal'].iloc[i-1]:
+                macd_cross = "🟢 Cruce Alcista"
+                macd_cross_dt = df['dt'].iloc[i]
+                break
+            if df['macd'].iloc[i] < df['signal'].iloc[i] and df['macd'].iloc[i-1] >= df['signal'].iloc[i-1]:
+                macd_cross = "🔴 Cruce Bajista"
+                macd_cross_dt = df['dt'].iloc[i]
+                break
+
         rsi_val = round(df['RSI'].iloc[-1], 1)
         if rsi_val > 55:
             rsi_state = "RSI↑"
@@ -125,13 +149,21 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         else:
             rsi_state = "RSI="
 
-        return position, last_date, rsi_state, rsi_val
+        return (
+            position,
+            last_date,
+            rsi_state,
+            rsi_val,
+            hist_state,
+            macd_cross,
+            macd_cross_dt
+        )
 
     except:
         return None
 
 # ─────────────────────────────────────────────
-# RECOMENDACIÓN FINAL
+# RECOMENDACIÓN FINAL (SIN TOCAR)
 # ─────────────────────────────────────────────
 def get_recommendation(row):
     longs = sum(row.get(f"{tf}_state") == "LONG" for tf in TIMEFRAMES)
@@ -175,18 +207,24 @@ def scan_batch(targets):
         for label, tf in TIMEFRAMES.items():
             res = analyze_ticker_tf(sym, tf, ex, price)
             if res:
-                state, date, rsi_state, rsi_val = res
-                date_dt = date - pd.Timedelta(hours=3)
+                (
+                    state,
+                    date,
+                    rsi_state,
+                    rsi_val,
+                    hist_state,
+                    macd_cross,
+                    macd_cross_dt
+                ) = res
 
                 row[f"{label}_state"] = state
                 row[f"{label}_rsi"] = rsi_val
                 row[f"{label}_rsi_state"] = rsi_state
-                row[f"{label}_datetime"] = date_dt
-            else:
-                row[f"{label}_state"] = "NEUTRO"
-                row[f"{label}_rsi"] = np.nan
-                row[f"{label}_rsi_state"] = "-"
-                row[f"{label}_datetime"] = pd.NaT
+                row[f"{label}_datetime"] = date
+
+                row[f"{label}_hist"] = hist_state
+                row[f"{label}_macd_cross"] = macd_cross
+                row[f"{label}_macd_dt"] = macd_cross_dt
 
         row['Estrategia'] = get_recommendation(row)
         results.append(row)
@@ -198,7 +236,7 @@ def scan_batch(targets):
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("🎯 SystemaTrader: MNQ Sniper Matrix V4")
+st.title("🎯 SystemaTrader: MNQ Sniper Matrix V5")
 
 with st.sidebar:
     st.header("Configuración")
@@ -225,60 +263,27 @@ with st.sidebar:
         st.session_state['sniper_results'] = []
         st.rerun()
 
-    st.divider()
-    st.subheader("Filtro post-análisis")
-
-    alert_filter = st.multiselect(
-        "Mostrar solo alertas:",
-        [
-            "🔥 COMPRA FUERTE",
-            "🩸 VENTA FUERTE",
-            "⚖️ RANGO / ESPERAR"
-        ],
-        default=[
-            "🔥 COMPRA FUERTE",
-            "🩸 VENTA FUERTE",
-            "⚖️ RANGO / ESPERAR"
-        ]
-    )
-
 # ─────────────────────────────────────────────
-# TABLA FINAL (ROBUSTA)
+# TABLA FINAL
 # ─────────────────────────────────────────────
 if st.session_state['sniper_results']:
     df = pd.DataFrame(st.session_state['sniper_results'])
 
-    df['Alerta'] = df['Estrategia']
-
-    if alert_filter:
-        df = df[df['Alerta'].isin(alert_filter)]
-
-    for tf in TIMEFRAMES:
-        df[f"{tf} Fecha alerta"] = df[f"{tf}_datetime"].dt.strftime('%Y-%m-%d')
-        df[f"{tf} Hora alerta"]  = df[f"{tf}_datetime"].dt.strftime('%H:%M')
-
-        df[tf] = (
-            df[f"{tf}_state"]
-            .map({"LONG":"🟢 LONG","SHORT":"🔴 SHORT","NEUTRO":"⚪ NEUTRO"})
-            + " | "
-            + df[f"{tf}_rsi_state"]
-            + " ("
-            + df[f"{tf}_rsi"].astype(str)
-            + ")"
-        )
-
-    columnas = ['Activo', 'Alerta']
+    columnas = ['Activo', 'Estrategia']
     for tf in TIMEFRAMES:
         columnas += [
-            f"{tf} Fecha alerta",
-            f"{tf} Hora alerta",
-            tf
+            f"{tf}_hist",
+            f"{tf}_macd_cross",
+            f"{tf}_macd_dt",
+            f"{tf}_state",
+            f"{tf}_rsi_state",
+            f"{tf}_rsi"
         ]
 
-    columnas_existentes = [c for c in columnas if c in df.columns]
+    columnas = [c for c in columnas if c in df.columns]
 
     st.data_editor(
-        df[columnas_existentes],
+        df[columnas],
         use_container_width=True,
         height=800,
         disabled=True
