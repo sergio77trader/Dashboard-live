@@ -226,14 +226,13 @@ with st.sidebar:
         st.rerun()
 
 # ─────────────────────────────────────────────
-# TABLA
+# TABLA FINAL (SIN REDUNDANCIA)
 # ─────────────────────────────────────────────
 if st.session_state['sniper_results']:
     df = pd.DataFrame(st.session_state['sniper_results'])
 
     df['Alerta'] = df['Estrategia']
 
-    # Fecha y hora de alerta POR TF
     for tf in TIMEFRAMES:
         df[f"{tf} Fecha alerta"] = df[f"{tf}_datetime"].dt.strftime('%Y-%m-%d')
         df[f"{tf} Hora alerta"]  = df[f"{tf}_datetime"].dt.strftime('%H:%M')
@@ -245,8 +244,6 @@ if st.session_state['sniper_results']:
             + df[f"{tf}_rsi_state"]
             + " ("
             + df[f"{tf}_rsi"].astype(str)
-            + ")\n("
-            + df[f"{tf}_datetime"].dt.strftime('%d/%m %H:%M')
             + ")"
         )
 
