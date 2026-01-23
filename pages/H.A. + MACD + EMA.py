@@ -6,31 +6,34 @@ import numpy as np
 import time
 from datetime import datetime
 
-# ─────────────────────────────────────────────
-# CONFIGURACIÓN
-# ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SystemaTrader: MACD Deep Dive")
+# --- CONFIGURACIÓN ---
+st.set_page_config(layout="wide", page_title="SystemaTrader: MACD Titan Matrix")
+
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 14px; }
     .stProgress > div > div > div > div { background-color: #2962FF; }
+    /* Ajuste para que las celdas multilinea se vean bien */
+    div[data-testid="stVerticalBlock"] div[data-testid="stDataFrame"] div[role="grid"] {
+        white-space: pre-wrap !important; 
+    }
 </style>
 """, unsafe_allow_html=True)
 
-if 'deep_results' not in st.session_state:
-    st.session_state['deep_results'] = []
+# --- MEMORIA ---
+if 'titan_results' not in st.session_state:
+    st.session_state['titan_results'] = []
 
-# Seleccionamos TFs clave para no saturar la pantalla con 50 columnas
+# --- TEMPORALIDADES SOLICITADAS ---
 TIMEFRAMES = {
     '15m': '15m',
     '1H': '1h',
     '4H': '4h',
-    '1D': '1d'
+    '1D': '1d',
+    '1W': '1w'
 }
 
-# ─────────────────────────────────────────────
-# CONEXIÓN
-# ─────────────────────────────────────────────
+# --- CONEXIÓN KUCOIN ---
 @st.cache_resource
 def get_exchange():
     return ccxt.kucoinfutures({
@@ -50,42 +53,38 @@ def get_active_pairs():
         return pd.DataFrame(valid).sort_values('vol', ascending=False)['symbol'].tolist()
     except: return []
 
-# ─────────────────────────────────────────────
-# CÁLCULOS MATEMÁTICOS
-# ─────────────────────────────────────────────
+# --- LÓGICA DE ANÁLISIS ---
 def calculate_heikin_ashi(df):
-    df = df.copy()
-    df['HA_Close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
+    df_ha = df.copy()
+    df_ha['HA_Close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
     ha_open = [df['open'].iloc[0]]
     for i in range(1, len(df)):
-        ha_open.append((ha_open[-1] + df['HA_Close'].iloc[i-1]) / 2)
-    df['HA_Open'] = ha_open
-    df['HA_Color'] = np.where(df['HA_Close'] > df['HA_Open'], 1, -1)
-    return df
+        ha_open.append((ha_open[-1] + df_ha['HA_Close'].iloc[i-1]) / 2)
+    df_ha['HA_Open'] = ha_open
+    df_ha['HA_Color'] = np.where(df_ha['HA_Close'] > df_ha['HA_Open'], 1, -1)
+    return df_ha
 
-def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
+def analyze_ticker_tf(symbol, tf_code, exchange):
     try:
-        # Bajamos suficiente historial para encontrar cruces pasados
+        # Bajamos historial suficiente para detectar cruces viejos
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=200)
         if not ohlcv or len(ohlcv) < 50: return None
-
-        # Actualizar última vela con precio real
-        ohlcv[-1][4] = current_price
-
-        df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','vol'])
+        
+        df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
         df['dt'] = pd.to_datetime(df['time'], unit='ms')
-
+        
         # 1. MACD
         macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
-        df['MACD_Line'] = macd['MACD_12_26_9']
-        df['Signal_Line'] = macd['MACDs_12_26_9']
+        df['MACD'] = macd['MACD_12_26_9']
+        df['Signal'] = macd['MACDs_12_26_9']
         df['Hist'] = macd['MACDh_12_26_9']
-
+        
         # 2. Heikin Ashi
         df = calculate_heikin_ashi(df)
-
-        # 3. Lógica de Estado (Position)
+        
+        # --- ANÁLISIS DE ESTADO HA (TU ESTRATEGIA ORIGINAL) ---
         position = "NEUTRO"
+        
         for i in range(1, len(df)):
             hist = df['Hist'].iloc[i]
             prev_hist = df['Hist'].iloc[i-1]
@@ -98,179 +97,174 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
                 if ha_color == 1 and hist > prev_hist: position = "LONG"
                 elif ha_color == -1 and hist < prev_hist: position = "SHORT"
 
-        # 4. Lógica Profunda MACD
+        # --- ANÁLISIS DE HISTOGRAMA (MOMENTUM) ---
         curr_hist = df['Hist'].iloc[-1]
         prev_hist = df['Hist'].iloc[-2]
         
-        # Momentum: ¿Crece o Decrece?
-        mom_type = "Fortaleciendo" if abs(curr_hist) > abs(prev_hist) else "Debilitando"
-        if curr_hist > 0 and curr_hist > prev_hist: mom_icon = "🟢 Crece"
-        elif curr_hist > 0 and curr_hist < prev_hist: mom_icon = "🟡 Cae"
-        elif curr_hist < 0 and curr_hist < prev_hist: mom_icon = "🔴 Crece" # Crece a la baja
-        else: mom_icon = "🟠 Cae" # Cae la baja (Rebote)
-
-        # Cruce de Líneas (Cross)
-        # Detectamos cuándo fue la última vez que MACD cruzó Signal
-        df['Cross'] = np.where(df['MACD_Line'] > df['Signal_Line'], 1, -1)
-        df['Crossover'] = df['Cross'].diff() # != 0 es un cruce
+        # ¿Sube o baja respecto a la vela anterior?
+        hist_status = "📈 Subiendo" if curr_hist > prev_hist else "📉 Bajando"
         
-        # Buscar último cruce
-        last_cross_idx = df[df['Crossover'] != 0].index[-1]
-        last_cross_val = df['Cross'].iloc[last_cross_idx]
-        last_cross_time = df['dt'].iloc[last_cross_idx]
+        # --- ANÁLISIS DE CRUCE (CROSSOVER) ---
+        # Detectar cuándo cruzó MACD y Signal
+        df['Cross'] = np.where(df['MACD'] > df['Signal'], 1, -1)
+        df['Change'] = df['Cross'].diff() # Donde no es 0, hubo cruce
         
-        cross_state = "BULLISH 🐂" if df['MACD_Line'].iloc[-1] > df['Signal_Line'].iloc[-1] else "BEARISH 🐻"
-        cross_time_str = (last_cross_time - pd.Timedelta(hours=3)).strftime('%d/%m %H:%M')
-
+        last_cross_row = df[df['Change'] != 0].iloc[-1]
+        cross_type = "🐂 GOLDEN" if last_cross_row['Cross'] == 1 else "🐻 DEATH"
+        
+        # Ajuste horario Argentina (-3h)
+        cross_dt = last_cross_row['dt'] - pd.Timedelta(hours=3)
+        cross_str = cross_dt.strftime('%d/%m %H:%M')
+        
         return {
             "pos": position,
-            "mom": mom_icon,
-            "cross_st": cross_state,
-            "cross_tm": cross_time_str
+            "hist_st": hist_status,
+            "cross_type": cross_type,
+            "cross_time": cross_str,
+            "raw_hist": curr_hist # Para recomendaciones
         }
-
-    except: return None
-
-# ─────────────────────────────────────────────
-# MOTOR DE RECOMENDACIÓN (IA SIMULADA)
-# ─────────────────────────────────────────────
-def get_recommendation(row):
-    # Puntos
-    bull_score = 0
-    bear_score = 0
-    
-    # Pesos
-    weights = {'15m': 1, '1H': 2, '4H': 3, '1D': 4}
-    
-    for tf, w in weights.items():
-        # Leer estado del cruce
-        cross = row.get(f"{tf} Cruce", "")
-        mom = row.get(f"{tf} Mom", "")
         
-        if "BULLISH" in cross: 
-            bull_score += w
-            if "🟢" in mom: bull_score += 0.5 # Bonus por momentum
-            
-        if "BEARISH" in cross: 
-            bear_score += w
-            if "🔴" in mom: bear_score += 0.5
-            
-    # Diagnóstico
-    total = bull_score + bear_score
-    if total == 0: return "⚖️ NEUTRO"
-    
-    bull_pct = bull_score / total
-    
-    if bull_pct > 0.85: return "🚀 COMPRA FUERTE"
-    if bull_pct > 0.60: return "🟢 ALCISTA"
-    if bull_pct < 0.15: return "🩸 VENTA FUERTE"
-    if bull_pct < 0.40: return "🔴 BAJISTA"
-    
-    # Casos especiales
-    if "BULLISH" in row.get("1D Cruce", "") and "BEARISH" in row.get("15m Cruce", ""):
-        return "📉 DIP (Compra en retroceso)"
-        
-    if "BEARISH" in row.get("1D Cruce", "") and "BULLISH" in row.get("15m Cruce", ""):
-        return "⚠️ REBOTE (Venta en subida)"
+    except Exception: return None
 
-    return "⚖️ RANGO / INDECISIÓN"
+# --- RECOMENDACIÓN IA ---
+def get_recommendations(row):
+    # Estrategia HA (Original)
+    bull_count = 0
+    bear_count = 0
+    
+    # Estrategia MACD Pura
+    macd_bull_mom = 0
+    
+    for tf in TIMEFRAMES:
+        raw = row.get(f"raw_{tf}")
+        if raw:
+            if raw['pos'] == "LONG": bull_count += 1
+            if raw['pos'] == "SHORT": bear_count += 1
+            if "Subiendo" in raw['hist_st']: macd_bull_mom += 1
 
-# ─────────────────────────────────────────────
-# BUCLE DE ESCANEO
-# ─────────────────────────────────────────────
+    # Diagnóstico HA
+    ha_diag = "⚖️ Rango"
+    if bull_count >= 3: ha_diag = "🔥 COMPRA"
+    if bear_count >= 3: ha_diag = "🩸 VENTA"
+    
+    # Diagnóstico MACD
+    macd_diag = "Neutro"
+    if macd_bull_mom >= 4: macd_diag = "🚀 Potencia Alcista"
+    elif macd_bull_mom == 0: macd_diag = "📉 Caída Libre"
+    
+    return ha_diag, macd_diag
+
+# --- BUCLE ---
 def scan_batch(targets):
     ex = get_exchange()
     results = []
-    prog = st.progress(0, text="Iniciando Deep Dive...")
+    prog = st.progress(0, text="Iniciando...")
     
     for idx, sym in enumerate(targets):
-        clean = sym.replace(':USDT','').replace('/USDT','')
-        prog.progress((idx+1)/len(targets), text=f"Analizando MACD: {clean}")
+        clean = sym.replace(':USDT', '').replace('/USDT', '')
+        prog.progress(idx/len(targets), text=f"Analizando {clean}...")
         
         try:
-            price = ex.fetch_ticker(sym)['last']
+            ticker = ex.fetch_ticker(sym)
+            price = ticker['last']
         except: price = 0
             
         row = {'Activo': clean, 'Precio': price}
         
-        for label, tf in TIMEFRAMES.items():
-            res = analyze_ticker_tf(sym, tf, ex, price)
+        # Iterar TFs
+        for label, tf_code in TIMEFRAMES.items():
+            res = analyze_ticker_tf(sym, tf_code, ex)
             if res:
-                # Guardamos columnas planas para la tabla
-                row[f"{label} Est"] = res['pos']
-                row[f"{label} Mom"] = res['mom']
-                row[f"{label} Cruce"] = res['cross_st']
-                row[f"{label} Fecha"] = res['cross_tm']
+                # Guardamos datos crudos para el diagnóstico
+                row[f"raw_{label}"] = res
+                
+                # --- FORMATEO DE CELDA (MULTILINEA) ---
+                # Icono Estado
+                icon = "🟢" if res['pos'] == "LONG" else "🔴" if res['pos'] == "SHORT" else "⚪"
+                
+                # Construcción del texto visible
+                # Línea 1: Estado HA
+                # Línea 2: Histograma
+                # Línea 3: Cruce MACD
+                cell_text = f"{icon} {res['pos']}\nH: {res['hist_st']}\nX: {res['cross_type']} ({res['cross_time']})"
+                
+                row[label] = cell_text
             else:
-                row[f"{label} Est"] = "-"
-                row[f"{label} Mom"] = "-"
-                row[f"{label} Cruce"] = "-"
-                row[f"{label} Fecha"] = "-"
-
-        # Recomendación final
-        row['OBSERVACIÓN IA'] = get_recommendation(row)
+                row[label] = "⚠️ Error"
+        
+        # Generar Diagnósticos
+        strat_ha, strat_macd = get_recommendations(row)
+        row['Estrategia HA'] = strat_ha
+        row['Radar MACD'] = strat_macd
+        
         results.append(row)
         time.sleep(0.1)
         
     prog.empty()
     return results
 
-# ─────────────────────────────────────────────
-# INTERFAZ
-# ─────────────────────────────────────────────
-st.title("🔬 SystemaTrader: MACD Deep Dive")
-st.caption("Análisis Forense de Momentum y Cruces en Múltiples Temporalidades")
+# --- INTERFAZ ---
+st.title("🛡️ SystemaTrader: MACD Titan Matrix")
+st.caption("Heikin Ashi Trend + MACD Deep Dive (Datos Histograma y Cruces)")
 
 with st.sidebar:
     st.header("Configuración")
     all_symbols = get_active_pairs()
-    BATCH_SIZE = st.selectbox("Tamaño Lote", [10, 20, 30], index=0)
-    batches = [all_symbols[i:i+BATCH_SIZE] for i in range(0, len(all_symbols), BATCH_SIZE)]
-    sel = st.selectbox("Lote", range(len(batches)))
     
-    accumulate = st.checkbox("Acumular", value=True)
+    if all_symbols:
+        st.success(f"Mercado: {len(all_symbols)} activos")
+        BATCH_SIZE = st.selectbox("Lote:", [10, 20, 30, 50], index=1)
+        batches = [all_symbols[i:i + BATCH_SIZE] for i in range(0, len(all_symbols), BATCH_SIZE)]
+        sel_batch = st.selectbox("Seleccionar:", range(len(batches)), format_func=lambda x: f"Lote {x+1}")
+        
+        accumulate = st.checkbox("Acumular", value=True)
+        
+        if st.button("🚀 ESCANEAR", type="primary"):
+            target = batches[sel_batch]
+            with st.spinner("Procesando datos complejos..."):
+                new_data = scan_batch(target)
+                if accumulate:
+                    existing = {x['Activo'] for x in st.session_state['titan_results']}
+                    for item in new_data:
+                        if item['Activo'] not in existing:
+                            st.session_state['titan_results'].append(item)
+                else:
+                    st.session_state['titan_results'] = new_data
     
-    if st.button("🚀 EJECUTAR ESCANEO"):
-        new = scan_batch(batches[sel])
-        if accumulate:
-            st.session_state['deep_results'].extend(new)
-        else:
-            st.session_state['deep_results'] = new
-            
     if st.button("Limpiar"):
-        st.session_state['deep_results'] = []
+        st.session_state['titan_results'] = []
         st.rerun()
 
-# ─────────────────────────────────────────────
-# TABLA FINAL
-# ─────────────────────────────────────────────
-if st.session_state['deep_results']:
-    df = pd.DataFrame(st.session_state['deep_results'])
+# --- TABLA ---
+if st.session_state['titan_results']:
+    df = pd.DataFrame(st.session_state['titan_results'])
     
-    # 1. Columna de Recomendación primero
-    cols = ['Activo', 'OBSERVACIÓN IA', 'Precio']
-    # 2. Agregar columnas dinámicas de TFs
-    for tf in TIMEFRAMES:
-        cols.extend([f"{tf} Est", f"{tf} Mom", f"{tf} Cruce", f"{tf} Fecha"])
-    
-    # Verificar existencia
-    final_cols = [c for c in cols if c in df.columns]
+    # Colores para diagnósticos
+    def style_diag(val):
+        if "COMPRA" in str(val) or "Potencia" in str(val): return "color: #00FF00; font-weight: bold"
+        if "VENTA" in str(val) or "Caída" in str(val): return "color: #FF0000; font-weight: bold"
+        return ""
+
+    # Ordenar columnas
+    cols = ['Activo', 'Estrategia HA', 'Radar MACD', 'Precio', '15m', '1H', '4H', '1D', '1W']
     
     st.dataframe(
-        df[final_cols],
+        df[cols].style.map(style_diag, subset=['Estrategia HA', 'Radar MACD']),
         column_config={
-            "Activo": st.column_config.TextColumn("Crypto", pinned=True),
-            "OBSERVACIÓN IA": st.column_config.TextColumn("Diagnóstico", width="medium"),
+            "Activo": st.column_config.TextColumn("Crypto", width="small", pinned=True),
+            "Estrategia HA": st.column_config.TextColumn("Diag. Tendencia", width="small"),
+            "Radar MACD": st.column_config.TextColumn("Diag. Momentum", width="small"),
             "Precio": st.column_config.NumberColumn(format="$%.4f"),
-            # Configuración repetitiva para cada TF para que se vea lindo
-            "15m Est": st.column_config.TextColumn("15m HA"),
-            "15m Mom": st.column_config.TextColumn("15m Hist"),
-            "15m Cruce": st.column_config.TextColumn("15m Cross"),
-            "15m Fecha": st.column_config.TextColumn("15m Time"),
-            # (Streamlit aplica config por defecto si no especifico todos, pero funciona igual)
+            
+            # Las columnas de tiempo son anchas para que entre el texto
+            "15m": st.column_config.TextColumn("15 Minutos", width="medium"),
+            "1H": st.column_config.TextColumn("1 Hora", width="medium"),
+            "4H": st.column_config.TextColumn("4 Horas", width="medium"),
+            "1D": st.column_config.TextColumn("Diario", width="medium"),
+            "1W": st.column_config.TextColumn("Semanal", width="medium"),
         },
         use_container_width=True,
         height=800
     )
 else:
-    st.info("Selecciona un lote para el análisis profundo.")
+    st.info("👈 Selecciona un lote. El análisis incluye Fecha de Cruce y Dirección del Histograma.")
