@@ -268,3 +268,4 @@ if st.session_state['sniper_results']:
     )
 else:
     st.info("Seleccioná un lote y escaneá.")
+
