@@ -13,23 +13,20 @@ st.set_page_config(layout="wide", page_title="SystemaTrader: MNQ Sniper Matrix")
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 14px; }
-    /* Ajuste para que se vean bien tantas columnas */
+    .stProgress > div > div > div > div { background-color: #2962FF; }
     .stDataFrame { font-size: 0.8rem; }
 </style>
 """, unsafe_allow_html=True)
 
-# ─────────────────────────────────────────────
-# MEMORIA
-# ─────────────────────────────────────────────
-if 'sniper_results' not in st.session_state:
-    st.session_state['sniper_results'] = []
+if 'full_results_v9' not in st.session_state:
+    st.session_state['full_results_v9'] = []
 
-# ─────────────────────────────────────────────
-# TEMPORALIDADES
-# ─────────────────────────────────────────────
 TIMEFRAMES = {
-    '1m': '1m', '5m': '5m', '15m': '15m',
-    '30m': '30m', '1H': '1h', '4H': '4h', '1D': '1d'
+    '15m': '15m',
+    '1H': '1h',
+    '4H': '4h',
+    'Diario': '1d',
+    'Semanal': '1w'
 }
 
 # ─────────────────────────────────────────────
@@ -51,11 +48,11 @@ def get_active_pairs():
         for s in tickers:
             if '/USDT:USDT' in s and tickers[s].get('quoteVolume'):
                 valid.append({'symbol': s, 'vol': tickers[s]['quoteVolume']})
-        return (pd.DataFrame(valid).sort_values('vol', ascending=False)['symbol'].tolist())
+        return pd.DataFrame(valid).sort_values('vol', ascending=False)['symbol'].tolist()
     except: return []
 
 # ─────────────────────────────────────────────
-# HEIKIN ASHI
+# MOTORES LÓGICOS
 # ─────────────────────────────────────────────
 def calculate_heikin_ashi(df):
     df = df.copy()
@@ -67,250 +64,164 @@ def calculate_heikin_ashi(df):
     df['HA_Color'] = np.where(df['HA_Close'] > df['HA_Open'], 1, -1)
     return df
 
-# ─────────────────────────────────────────────
-# ANÁLISIS POR TF (EXPANDIDO)
-# ─────────────────────────────────────────────
-def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
+def analyze_tf_data(symbol, tf_label, tf_code, exchange):
     try:
-        # Bajamos 200 velas para detectar cruces viejos
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=200)
         if not ohlcv or len(ohlcv) < 50: return None
-
-        ohlcv[-1][4] = current_price
-
-        df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','vol'])
+        
+        df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
         df['dt'] = pd.to_datetime(df['time'], unit='ms')
-
-        # MACD (12, 26, 9)
+        
         macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
         df['MACD'] = macd['MACD_12_26_9']
         df['Signal'] = macd['MACDs_12_26_9']
         df['Hist'] = macd['MACDh_12_26_9']
-        df['RSI'] = ta.rsi(df['close'], length=14)
         
         df = calculate_heikin_ashi(df)
-
-        # --- LÓGICA HA ORIGINAL ---
+        
         position = "NEUTRO"
-        last_date = df['dt'].iloc[-1]
-
         for i in range(1, len(df)):
-            hist, prev_hist = df['Hist'].iloc[i], df['Hist'].iloc[i-1]
+            hist = df['Hist'].iloc[i]
+            prev_hist = df['Hist'].iloc[i-1]
             ha_color = df['HA_Color'].iloc[i]
-            date = df['dt'].iloc[i]
-
             if position == "LONG" and hist < prev_hist: position = "NEUTRO"
             elif position == "SHORT" and hist > prev_hist: position = "NEUTRO"
-
             if position == "NEUTRO":
-                if ha_color == 1 and hist > prev_hist:
-                    position = "LONG"
-                    last_date = date
-                elif ha_color == -1 and hist < prev_hist:
-                    position = "SHORT"
-                    last_date = date
+                if ha_color == 1 and hist > prev_hist: position = "LONG"
+                elif ha_color == -1 and hist < prev_hist: position = "SHORT"
 
-        # --- NUEVOS DATOS SOLICITADOS ---
-        
-        # 1. Histograma (Subiendo/Bajando)
         curr_hist = df['Hist'].iloc[-1]
         prev_hist = df['Hist'].iloc[-2]
-        hist_trend = "↗️ Subiendo" if curr_hist > prev_hist else "↘️ Bajando"
+        hist_trend = "↗️ Sube" if curr_hist > prev_hist else "↘️ Baja"
         
-        # 2. Cruce MACD
         df['Cross'] = np.where(df['MACD'] > df['Signal'], 1, -1)
-        df['Change'] = df['Cross'].diff() # != 0 es cruce
+        df['Change'] = df['Cross'].diff()
         
-        # Buscar último cruce
         cross_rows = df[df['Change'] != 0]
         if not cross_rows.empty:
             last_cross = cross_rows.iloc[-1]
-            cross_type = "🐂 BULL" if last_cross['Cross'] == 1 else "🐻 BEAR"
-            cross_dt = last_cross['dt'] - pd.Timedelta(hours=3) # Hora Arg
-            cross_date = cross_dt.strftime('%Y-%m-%d')
-            cross_time = cross_dt.strftime('%H:%M')
+            c_type = "🐂 BULL" if last_cross['Cross'] == 1 else "🐻 BEAR"
+            c_time = (last_cross['dt'] - pd.Timedelta(hours=3)).strftime('%d/%m %H:%M')
         else:
-            cross_type = "-"
-            cross_date = "-"
-            cross_time = "-"
-
-        # RSI Estado
-        rsi_val = round(df['RSI'].iloc[-1], 1)
-        rsi_state = "RSI↑" if rsi_val > 55 else ("RSI↓" if rsi_val < 45 else "RSI=")
+            c_type = "-"
+            c_time = "-"
 
         return {
-            "state": position,
-            "date": last_date,
-            "rsi_st": rsi_state,
-            "rsi_val": rsi_val,
-            # Nuevos
-            "hist_trend": hist_trend,
-            "cross_type": cross_type,
-            "cross_date": cross_date,
-            "cross_time": cross_time
+            f"{tf_label} Estado": position,
+            f"{tf_label} Hist": hist_trend,
+            f"{tf_label} Cruce": c_type,
+            f"{tf_label} Fecha": c_time
         }
-
     except: return None
 
-# ─────────────────────────────────────────────
-# RECOMENDACIONES (EXPANDIDO)
-# ─────────────────────────────────────────────
-def get_recommendations(row):
-    # 1. Estrategia HA (Original)
-    longs = sum(row.get(f"{tf}_state") == "LONG" for tf in TIMEFRAMES)
-    shorts = sum(row.get(f"{tf}_state") == "SHORT" for tf in TIMEFRAMES)
+def get_final_verdict(row):
+    score = 0
+    weights = {'15m': 1, '1H': 2, '4H': 3, 'Diario': 4}
+    for tf, w in weights.items():
+        cell_data = row.get(f"{tf} Estado", "") 
+        if "LONG" in cell_data: score += w
+        if "SHORT" in cell_data: score -= w
     
-    rsi_bull = row.get("4H_rsi_state") == "RSI↑" or row.get("1D_rsi_state") == "RSI↑"
-    rsi_bear = row.get("4H_rsi_state") == "RSI↓" or row.get("1D_rsi_state") == "RSI↓"
+    if score >= 6: return "🔥 COMPRA FUERTE"
+    if score <= -6: return "🩸 VENTA FUERTE"
+    if score >= 2: return "🟢 ALCISTA"
+    if score <= -2: return "🔴 BAJISTA"
+    return "⚖️ RANGO / ESPERAR"
 
-    strat_ha = "⚖️ RANGO"
-    if longs >= 5 and rsi_bull: strat_ha = "🔥 COMPRA FUERTE"
-    elif shorts >= 5 and rsi_bear: strat_ha = "🩸 VENTA FUERTE"
-
-    # 2. Recomendación MACD (Nueva)
-    # Basada en Histograma y Cruces
-    macd_bull = 0
-    macd_bear = 0
-    
-    for tf in TIMEFRAMES:
-        h = row.get(f"{tf}_hist", "")
-        c = row.get(f"{tf}_cross", "")
-        if "Subiendo" in h: macd_bull += 1
-        if "Bajando" in h: macd_bear += 1
-        if "BULL" in c: macd_bull += 2
-        if "BEAR" in c: macd_bear += 2
-        
-    strat_macd = "Neutro"
-    if macd_bull >= 12: strat_macd = "🚀 Momentum Alcista"
-    elif macd_bear >= 12: strat_macd = "📉 Momentum Bajista"
-    
-    # 3. Recomendación GLOBAL (La Definitiva)
-    strat_global = "ESPERAR"
-    if "COMPRA" in strat_ha and "Alcista" in strat_macd: strat_global = "💎 ALL IN LONG"
-    elif "VENTA" in strat_ha and "Bajista" in strat_macd: strat_global = "☠️ ALL IN SHORT"
-    elif "COMPRA" in strat_ha: strat_global = "🟢 LONG (Con cuidado)"
-    elif "VENTA" in strat_ha: strat_global = "🔴 SHORT (Con cuidado)"
-    
-    return strat_ha, strat_macd, strat_global
-
-# ─────────────────────────────────────────────
-# ESCANEO
-# ─────────────────────────────────────────────
 def scan_batch(targets):
     ex = get_exchange()
     results = []
     prog = st.progress(0, text="Escaneando...")
-
+    
     for idx, sym in enumerate(targets):
-        clean = sym.replace(':USDT','').replace('/USDT','')
-        prog.progress((idx+1)/len(targets), text=f"{clean}")
-
-        try: price = ex.fetch_ticker(sym)['last']
-        except: continue
-
-        row = {'Activo': clean}
-
-        for label, tf in TIMEFRAMES.items():
-            res = analyze_ticker_tf(sym, tf, ex, price)
-            if res:
-                date_dt = res['date'] - pd.Timedelta(hours=3)
-                
-                # Datos Originales
-                row[f"{label}_state"] = res['state']
-                row[f"{label}_rsi"] = res['rsi_val']
-                row[f"{label}_rsi_state"] = res['rsi_st']
-                row[f"{label}_datetime"] = date_dt
-                
-                # Datos Nuevos
-                row[f"{label}_hist"] = res['hist_trend']
-                row[f"{label}_cross"] = res['cross_type']
-                row[f"{label}_c_date"] = res['cross_date']
-                row[f"{label}_c_time"] = res['cross_time']
-            else:
-                # Rellenar vacíos
-                row[f"{label}_state"] = "NEUTRO"
-                row[f"{label}_rsi"] = 0
-                row[f"{label}_rsi_state"] = "-"
-                row[f"{label}_datetime"] = pd.NaT
-                row[f"{label}_hist"] = "-"
-                row[f"{label}_cross"] = "-"
-                row[f"{label}_c_date"] = "-"
-                row[f"{label}_c_time"] = "-"
-
-        # Calcular Recomendaciones
-        s_ha, s_macd, s_glob = get_recommendations(row)
-        row['Estrategia HA'] = s_ha
-        row['Recom. MACD'] = s_macd
-        row['VEREDICTO FINAL'] = s_glob
+        clean_name = sym.replace(':USDT', '').replace('/USDT', '')
+        prog.progress(idx/len(targets), text=f"Analizando {clean_name}...")
         
+        try: px = ex.fetch_ticker(sym)['last']
+        except: px = 0
+        
+        row = {'Activo': clean_name, 'Precio': px}
+        
+        for label, code in TIMEFRAMES.items():
+            data_tf = analyze_tf_data(sym, label, code, ex)
+            if data_tf: row.update(data_tf)
+            else:
+                row[f"{label} Estado"] = "-"
+                row[f"{label} Hist"] = "-"
+                row[f"{label} Cruce"] = "-"
+                row[f"{label} Fecha"] = "-"
+        
+        row['VEREDICTO'] = get_final_verdict(row)
         results.append(row)
-        time.sleep(0.05)
-
+        time.sleep(0.1)
+    
     prog.empty()
     return results
 
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("🎯 SystemaTrader: MNQ Sniper Matrix V5 (Extended)")
+st.title("🎛️ SystemaTrader: MACD Full Detail V9")
 
 with st.sidebar:
     st.header("Configuración")
     all_symbols = get_active_pairs()
-    BATCH_SIZE = st.selectbox("Tamaño lote", [10,20,30,50], index=1)
-    batches = [all_symbols[i:i+BATCH_SIZE] for i in range(0, len(all_symbols), BATCH_SIZE)]
-    sel = st.selectbox("Lote", range(len(batches)))
-    accumulate = st.checkbox("Acumular resultados", value=True)
-
-    if st.button("🚀 ESCANEAR"):
-        new = scan_batch(batches[sel])
-        if accumulate: st.session_state['sniper_results'].extend(new)
-        else: st.session_state['sniper_results'] = new
-
-    if st.button("Limpiar"):
-        st.session_state['sniper_results'] = []
-        st.rerun()
-
-# ─────────────────────────────────────────────
-# TABLA FINAL (ESTRUCTURA MASIVA)
-# ─────────────────────────────────────────────
-if st.session_state['sniper_results']:
-    df = pd.DataFrame(st.session_state['sniper_results'])
-
-    # 1. Preprocesar columnas originales para visualización
-    for tf in TIMEFRAMES:
-        df[f"{tf} Alerta Fecha"] = df[f"{tf}_datetime"].dt.strftime('%Y-%m-%d')
-        df[f"{tf} Alerta Hora"]  = df[f"{tf}_datetime"].dt.strftime('%H:%M')
-
-        df[tf] = (
-            df[f"{tf}_state"].map({"LONG":"🟢 LONG","SHORT":"🔴 SHORT","NEUTRO":"⚪ NEUTRO"}) + 
-            " | " + df[f"{tf}_rsi_state"] + " (" + df[f"{tf}_rsi"].astype(str) + ")"
-        )
-
-    # 2. Armar Lista de Columnas en Orden Lógico
-    cols_show = ['Activo', 'VEREDICTO FINAL', 'Estrategia HA', 'Recom. MACD']
     
-    for tf in TIMEFRAMES:
-        # Bloque por temporalidad
-        cols_show.append(tf)                  # Estado + RSI
-        cols_show.append(f"{tf} Alerta Fecha")
-        cols_show.append(f"{tf} Alerta Hora")
-        cols_show.append(f"{tf}_hist")        # Nuevo: Histograma
-        cols_show.append(f"{tf}_cross")       # Nuevo: Cruce
-        cols_show.append(f"{tf}_c_date")      # Nuevo: Fecha Cruce
-        cols_show.append(f"{tf}_c_time")      # Nuevo: Hora Cruce
+    if all_symbols:
+        BATCH = st.selectbox("Lote:", [10, 20, 30, 50], index=0)
+        batches = [all_symbols[i:i+BATCH] for i in range(0, len(all_symbols), BATCH)]
+        sel_batch = st.selectbox("Seleccionar:", range(len(batches)), format_func=lambda x: f"Lote {x+1}")
+        accumulate = st.checkbox("Acumular", value=True)
+        
+        if st.button("🚀 ESCANEAR", type="primary"):
+            target = batches[sel_batch]
+            with st.spinner("Procesando matriz detallada..."):
+                new_data = scan_batch(target)
+                if accumulate: st.session_state['full_results_v9'].extend(new_data)
+                else: st.session_state['full_results_v9'] = new_data
+    
+    if st.button("Limpiar"):
+        st.session_state['full_results_v9'] = []
+        st.rerun()
+    
+    st.divider()
+    
+    # --- FILTRO POR VEREDICTO (NUEVO) ---
+    st.subheader("Filtros de Visualización")
+    filter_opts = ["🔥 COMPRA FUERTE", "🩸 VENTA FUERTE", "🟢 ALCISTA", "🔴 BAJISTA", "⚖️ RANGO / ESPERAR"]
+    selected_filters = st.multiselect("Mostrar solo:", filter_opts, default=filter_opts)
 
-    # Filtrar existentes
-    cols_final = [c for c in cols_show if c in df.columns]
+# ─────────────────────────────────────────────
+# TABLA
+# ─────────────────────────────────────────────
+if st.session_state['full_results_v9']:
+    df = pd.DataFrame(st.session_state['full_results_v9'])
+    
+    # Aplicar Filtro
+    if selected_filters:
+        df = df[df['VEREDICTO'].isin(selected_filters)]
+    
+    # Ordenar Columnas
+    cols_show = ['Activo', 'VEREDICTO', 'Precio']
+    for tf in ["15m", "1H", "4H", "Diario", "Semanal"]:
+        cols_show.extend([f"{tf} Estado", f"{tf} Hist", f"{tf} Cruce", f"{tf} Fecha"])
+    
+    final_cols = [c for c in cols_show if c in df.columns]
+    
+    def color_verdict(val):
+        if "COMPRA" in str(val): return "background-color: #1b3a1b; color: #00ff00; font-weight: bold"
+        if "VENTA" in str(val): return "background-color: #3a1b1b; color: #ff0000; font-weight: bold"
+        return ""
 
     st.dataframe(
-        df[cols_final],
-        use_container_width=True,
-        height=800,
+        df[final_cols].style.map(color_verdict, subset=['VEREDICTO']),
         column_config={
             "Activo": st.column_config.TextColumn(pinned=True),
-            "VEREDICTO FINAL": st.column_config.TextColumn("⭐ VEREDICTO", width="medium"),
-        }
+            "VEREDICTO": st.column_config.TextColumn(width="medium"),
+            "Precio": st.column_config.NumberColumn(format="$%.4f")
+        },
+        use_container_width=True,
+        height=800
     )
 else:
-    st.info("Seleccioná un lote y escaneá.")
+    st.info("👈 Escanea un lote para comenzar.")
