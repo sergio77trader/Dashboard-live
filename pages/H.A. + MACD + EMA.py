@@ -9,17 +9,17 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SystemaTrader: MNQ Sniper Matrix")
+st.set_page_config(layout="wide", page_title="SystemaTrader: The Monolith")
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 14px; }
     .stProgress > div > div > div > div { background-color: #2962FF; }
-    .stDataFrame { font-size: 0.85rem; }
+    .stDataFrame { font-size: 0.8rem; }
 </style>
 """, unsafe_allow_html=True)
 
-if 'full_results_v10' not in st.session_state:
-    st.session_state['full_results_v10'] = []
+if 'monolith_results' not in st.session_state:
+    st.session_state['monolith_results'] = []
 
 TIMEFRAMES = {
     '15m': '15m',
@@ -52,7 +52,7 @@ def get_active_pairs():
     except: return []
 
 # ─────────────────────────────────────────────
-# MOTORES LÓGICOS
+# CÁLCULOS
 # ─────────────────────────────────────────────
 def calculate_heikin_ashi(df):
     df = df.copy()
@@ -72,14 +72,16 @@ def analyze_tf_data(symbol, tf_label, tf_code, exchange):
         df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
         df['dt'] = pd.to_datetime(df['time'], unit='ms')
         
+        # INDICADORES
         macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
         df['MACD'] = macd['MACD_12_26_9']
         df['Signal'] = macd['MACDs_12_26_9']
         df['Hist'] = macd['MACDh_12_26_9']
+        df['RSI'] = ta.rsi(df['close'], length=14)
         
         df = calculate_heikin_ashi(df)
         
-        # Lógica HA
+        # 1. ESTADO ESTRATEGIA (TU ORIGINAL)
         position = "NEUTRO"
         for i in range(1, len(df)):
             hist = df['Hist'].iloc[i]
@@ -91,61 +93,54 @@ def analyze_tf_data(symbol, tf_label, tf_code, exchange):
                 if ha_color == 1 and hist > prev_hist: position = "LONG"
                 elif ha_color == -1 and hist < prev_hist: position = "SHORT"
 
-        # Nuevos Datos
+        # 2. RSI
+        rsi_val = round(df['RSI'].iloc[-1], 1)
+
+        # 3. HISTOGRAMA (NUEVO)
         curr_hist = df['Hist'].iloc[-1]
         prev_hist = df['Hist'].iloc[-2]
         hist_trend = "↗️ Sube" if curr_hist > prev_hist else "↘️ Baja"
-        
+
+        # 4. CRUCE MACD (NUEVO)
         df['Cross'] = np.where(df['MACD'] > df['Signal'], 1, -1)
         df['Change'] = df['Cross'].diff()
         
         cross_rows = df[df['Change'] != 0]
         if not cross_rows.empty:
             last_cross = cross_rows.iloc[-1]
-            c_type = "🐂 BULL" if last_cross['Cross'] == 1 else "🐻 BEAR"
-            c_time = (last_cross['dt'] - pd.Timedelta(hours=3)).strftime('%d/%m %H:%M')
+            c_type = "🐂 GOLDEN" if last_cross['Cross'] == 1 else "🐻 DEATH"
+            dt_arg = last_cross['dt'] - pd.Timedelta(hours=3)
+            c_date = dt_arg.strftime('%Y-%m-%d')
+            c_time = dt_arg.strftime('%H:%M')
         else:
             c_type = "-"
+            c_date = "-"
             c_time = "-"
 
+        # RETORNO DE TODO POR SEPARADO
         return {
             f"{tf_label} Estado": position,
+            f"{tf_label} RSI": rsi_val,
             f"{tf_label} Hist": hist_trend,
             f"{tf_label} Cruce": c_type,
-            f"{tf_label} Fecha": c_time
+            f"{tf_label} Fecha": c_date,
+            f"{tf_label} Hora": c_time
         }
     except: return None
 
-def get_recommendations(row):
-    longs = 0; shorts = 0
+def get_verdict(row):
+    score = 0
+    # Usamos el Estado Original para el veredicto
     for tf in TIMEFRAMES:
-        if "LONG" in row.get(f"{tf} Estado", ""): longs += 1
-        if "SHORT" in row.get(f"{tf} Estado", ""): shorts += 1
-
-    strat_ha = "⚖️ RANGO"
-    if longs >= 4: strat_ha = "🔥 COMPRA"
-    elif shorts >= 4: strat_ha = "🩸 VENTA"
-
-    macd_bull = 0; macd_bear = 0
-    for tf in TIMEFRAMES:
-        h = row.get(f"{tf} Hist", "")
-        c = row.get(f"{tf} Cruce", "")
-        if "Sube" in h: macd_bull += 1
-        if "Baja" in h: macd_bear += 1
-        if "BULL" in c: macd_bull += 2
-        if "BEAR" in c: macd_bear += 2
-        
-    strat_macd = "Neutro"
-    if macd_bull >= 10: strat_macd = "🚀 Alcista"
-    elif macd_bear >= 10: strat_macd = "📉 Bajista"
+        st = row.get(f"{tf} Estado", "")
+        if "LONG" in st: score += 1
+        if "SHORT" in st: score -= 1
     
-    strat_global = "ESPERAR"
-    if "COMPRA" in strat_ha and "Alcista" in strat_macd: strat_global = "💎 ALL IN LONG"
-    elif "VENTA" in strat_ha and "Bajista" in strat_macd: strat_global = "☠️ ALL IN SHORT"
-    elif "COMPRA" in strat_ha: strat_global = "🟢 LONG"
-    elif "VENTA" in strat_ha: strat_global = "🔴 SHORT"
-    
-    return strat_ha, strat_macd, strat_global
+    if score >= 4: return "🔥 COMPRA FUERTE"
+    if score <= -4: return "🩸 VENTA FUERTE"
+    if score > 0: return "🟢 ALCISTA"
+    if score < 0: return "🔴 BAJISTA"
+    return "⚖️ RANGO"
 
 def scan_batch(targets):
     ex = get_exchange()
@@ -155,22 +150,22 @@ def scan_batch(targets):
     for idx, sym in enumerate(targets):
         clean_name = sym.replace(':USDT', '').replace('/USDT', '')
         prog.progress(idx/len(targets), text=f"Analizando {clean_name}...")
+        
         try: px = ex.fetch_ticker(sym)['last']
         except: px = 0
         
         row = {'Activo': clean_name, 'Precio': px}
+        
         for label, code in TIMEFRAMES.items():
             data_tf = analyze_tf_data(sym, label, code, ex)
-            if data_tf: row.update(data_tf)
+            if data_tf: 
+                row.update(data_tf)
             else:
-                for k in ["Estado", "Hist", "Cruce", "Fecha"]:
+                # Rellenar vacíos para que la tabla no se rompa
+                for k in ["Estado", "RSI", "Hist", "Cruce", "Fecha", "Hora"]:
                     row[f"{label} {k}"] = "-"
         
-        s_ha, s_macd, s_glob = get_recommendations(row)
-        row['Estrategia HA'] = s_ha
-        row['Recom. MACD'] = s_macd
-        row['VEREDICTO FINAL'] = s_glob
-        
+        row['VEREDICTO'] = get_verdict(row)
         results.append(row)
         time.sleep(0.1)
     
@@ -180,75 +175,76 @@ def scan_batch(targets):
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("🎛️ SystemaTrader: MACD Full Detail V10")
+st.title("🎛️ SystemaTrader: The Monolith Matrix (V11)")
 
 with st.sidebar:
     st.header("Configuración")
     all_symbols = get_active_pairs()
     
     if all_symbols:
-        BATCH = st.selectbox("Lote:", [10, 20, 30, 50], index=0)
+        BATCH = st.selectbox("Lote:", [10, 20, 30], index=0)
         batches = [all_symbols[i:i+BATCH] for i in range(0, len(all_symbols), BATCH)]
         sel_batch = st.selectbox("Seleccionar:", range(len(batches)), format_func=lambda x: f"Lote {x+1}")
         accumulate = st.checkbox("Acumular", value=True)
         
         if st.button("🚀 ESCANEAR", type="primary"):
             target = batches[sel_batch]
-            with st.spinner("Procesando matriz detallada..."):
+            with st.spinner("Generando matriz completa..."):
                 new_data = scan_batch(target)
-                if accumulate: st.session_state['full_results_v10'].extend(new_data)
-                else: st.session_state['full_results_v10'] = new_data
+                if accumulate: st.session_state['monolith_results'].extend(new_data)
+                else: st.session_state['monolith_results'] = new_data
     
     if st.button("Limpiar"):
-        st.session_state['full_results_v10'] = []
+        st.session_state['monolith_results'] = []
         st.rerun()
     
     st.divider()
-    st.subheader("Filtros de Visualización")
-    filter_opts = ["💎 ALL IN LONG", "☠️ ALL IN SHORT", "🟢 LONG", "🔴 SHORT", "ESPERAR"]
-    selected_filters = st.multiselect("Mostrar solo:", filter_opts, default=filter_opts)
+    st.subheader("Filtros")
+    f_opts = ["🔥 COMPRA FUERTE", "🩸 VENTA FUERTE", "🟢 ALCISTA", "🔴 BAJISTA", "⚖️ RANGO"]
+    sel_filt = st.multiselect("Filtrar por Veredicto:", f_opts, default=f_opts)
 
 # ─────────────────────────────────────────────
 # TABLA
 # ─────────────────────────────────────────────
-if st.session_state['full_results_v10']:
-    df = pd.DataFrame(st.session_state['full_results_v10'])
+if st.session_state['monolith_results']:
+    df = pd.DataFrame(st.session_state['monolith_results'])
     
-    if selected_filters:
-        df = df[df['VEREDICTO FINAL'].isin(selected_filters)]
+    # Filtro
+    if sel_filt:
+        df = df[df['VEREDICTO'].isin(sel_filt)]
     
-    cols_show = ['Activo', 'VEREDICTO FINAL', 'Estrategia HA', 'Recom. MACD', 'Precio']
+    # Definición de Columnas (Orden Estricto)
+    cols = ['Activo', 'VEREDICTO', 'Precio']
+    # Bucle para generar las 30 columnas de datos (5 TFs * 6 Datos)
     for tf in ["15m", "1H", "4H", "Diario", "Semanal"]:
-        cols_show.extend([f"{tf} Estado", f"{tf} Hist", f"{tf} Cruce", f"{tf} Fecha"])
-    
-    final_cols = [c for c in cols_show if c in df.columns]
-    
-    # --- FUNCIÓN DE COLOREADO GLOBAL ---
-    def style_cells(val):
-        s_val = str(val)
-        # Paleta de Colores
-        c_green_soft = "background-color: #d4edda; color: #155724; font-weight: bold" # Verde Claro Legible
-        c_red_soft   = "background-color: #f8d7da; color: #721c24; font-weight: bold" # Rojo Claro Legible
+        cols.append(f"{tf} Estado")
+        cols.append(f"{tf} RSI")
+        cols.append(f"{tf} Hist")
+        cols.append(f"{tf} Cruce")
+        cols.append(f"{tf} Fecha")
+        cols.append(f"{tf} Hora")
         
-        # Palabras Clave ALCISTAS
-        if any(x in s_val for x in ["LONG", "COMPRA", "Alcista", "Sube", "BULL", "ALL IN LONG"]):
-            return c_green_soft
-            
-        # Palabras Clave BAJISTAS
-        if any(x in s_val for x in ["SHORT", "VENTA", "Bajista", "Baja", "BEAR", "ALL IN SHORT"]):
-            return c_red_soft
-            
+    final_cols = [c for c in cols if c in df.columns]
+    
+    # Función de Estilo (Colores Claros/Legibles)
+    def style_universal(val):
+        s = str(val)
+        # Verde Claro
+        if any(x in s for x in ["LONG", "Sube", "GOLDEN", "COMPRA", "ALCISTA", "BULL"]):
+            return "background-color: #d4edda; color: #155724; font-weight: bold"
+        # Rojo Claro
+        if any(x in s for x in ["SHORT", "Baja", "DEATH", "VENTA", "BAJISTA", "BEAR"]):
+            return "background-color: #f8d7da; color: #721c24; font-weight: bold"
         return ""
 
     st.dataframe(
-        df[final_cols].style.applymap(style_cells),
+        df[final_cols].style.map(style_universal),
         column_config={
             "Activo": st.column_config.TextColumn(pinned=True),
-            "VEREDICTO FINAL": st.column_config.TextColumn(width="medium"),
             "Precio": st.column_config.NumberColumn(format="$%.4f")
         },
         use_container_width=True,
         height=800
     )
 else:
-    st.info("👈 Escanea un lote para comenzar.")
+    st.info("👈 Escanea un lote para ver la Matriz Completa.")
