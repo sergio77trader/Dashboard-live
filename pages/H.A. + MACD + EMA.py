@@ -255,11 +255,13 @@ if st.session_state['sniper_results']:
     for tf in TIMEFRAMES:
         columnas.append(f"{tf}_macd")
 
-    st.data_editor(
-        df[columnas],
-        use_container_width=True,
-        height=800,
-        disabled=True
-    )
+columnas_existentes = [c for c in columnas if c in df.columns]
+
+st.data_editor(
+    df[columnas_existentes],
+    use_container_width=True,
+    height=800,
+    disabled=True
+)
 else:
     st.info("Seleccioná un lote y escaneá.")
