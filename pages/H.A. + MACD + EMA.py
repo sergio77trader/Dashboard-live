@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SystemaTrader: MNQ Sniper Matrix")
+st.set_page_config(layout="wide", page_title="SystemaTrader: MNQ Sniper Matrix V5")
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 14px; }
@@ -76,11 +76,11 @@ def calculate_heikin_ashi(df):
     return df
 
 # ─────────────────────────────────────────────
-# ANÁLISIS POR TF (AGREGADO MACD)
+# ANÁLISIS POR TF (EXTENDIDO CON MACD)
 # ─────────────────────────────────────────────
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=120)
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=150)
         if not ohlcv or len(ohlcv) < 60:
             return None
 
@@ -91,33 +91,24 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         )
         df['dt'] = pd.to_datetime(df['time'], unit='ms')
 
-        macd = ta.macd(df['close'])
-        df['MACD'] = macd['MACD_12_26_9']
-        df['SIGNAL'] = macd['MACDs_12_26_9']
-        df['HIST'] = macd['MACDh_12_26_9']
-
+        # RSI
         df['RSI'] = ta.rsi(df['close'], length=14)
+
+        # MACD ROBUSTO
+        macd_df = ta.macd(df['close'], fast=12, slow=26, signal=9)
+        if macd_df is None or macd_df.isna().all().all():
+            return None
+
+        df = pd.concat([df, macd_df], axis=1)
+        df.rename(columns={
+            'MACD_12_26_9': 'MACD',
+            'MACDs_12_26_9': 'SIGNAL',
+            'MACDh_12_26_9': 'HIST'
+        }, inplace=True)
+
         df = calculate_heikin_ashi(df)
 
-        # ───── HISTOGRAMA
-        hist_now = df['HIST'].iloc[-1]
-        hist_prev = df['HIST'].iloc[-2]
-        hist_state = "📈 Hist ↑" if hist_now > hist_prev else "📉 Hist ↓"
-
-        # ───── ÚLTIMO CRUCE
-        cross = "—"
-        cross_time = pd.NaT
-
-        for i in range(len(df)-1, 0, -1):
-            if df['MACD'].iloc[i-1] < df['SIGNAL'].iloc[i-1] and df['MACD'].iloc[i] > df['SIGNAL'].iloc[i]:
-                cross = "🟢 Cruce ↑"
-                cross_time = df['dt'].iloc[i]
-                break
-            if df['MACD'].iloc[i-1] > df['SIGNAL'].iloc[i-1] and df['MACD'].iloc[i] < df['SIGNAL'].iloc[i]:
-                cross = "🔴 Cruce ↓"
-                cross_time = df['dt'].iloc[i]
-                break
-
+        # ───── Estado principal (TU lógica intacta)
         position = "NEUTRO"
         last_date = df['dt'].iloc[-1]
 
@@ -139,6 +130,7 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
                     position = "SHORT"
                     last_date = date
 
+        # RSI estado
         rsi_val = round(df['RSI'].iloc[-1], 1)
         if rsi_val > 55:
             rsi_state = "RSI↑"
@@ -147,13 +139,32 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         else:
             rsi_state = "RSI="
 
+        # ───── MACD INFO NUEVA
+        hist_now = df['HIST'].iloc[-1]
+        hist_prev = df['HIST'].iloc[-2]
+        hist_dir = "📈 Hist ↑" if hist_now > hist_prev else "📉 Hist ↓"
+
+        cross_type = "—"
+        cross_time = pd.NaT
+
+        for i in range(len(df)-2, 0, -1):
+            if df['MACD'].iloc[i-1] < df['SIGNAL'].iloc[i-1] and df['MACD'].iloc[i] > df['SIGNAL'].iloc[i]:
+                cross_type = "🟢 Cruce ↑"
+                cross_time = df['dt'].iloc[i]
+                break
+            if df['MACD'].iloc[i-1] > df['SIGNAL'].iloc[i-1] and df['MACD'].iloc[i] < df['SIGNAL'].iloc[i]:
+                cross_type = "🔴 Cruce ↓"
+                cross_time = df['dt'].iloc[i]
+                break
+
+        macd_text = f"{hist_dir} | {cross_type}"
+
         return (
             position,
             last_date,
             rsi_state,
             rsi_val,
-            hist_state,
-            cross,
+            macd_text,
             cross_time
         )
 
@@ -161,17 +172,16 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         return None
 
 # ─────────────────────────────────────────────
-# RECOMENDACIÓN FINAL
+# RECOMENDACIÓN MACD GLOBAL
 # ─────────────────────────────────────────────
-def get_recommendation(row):
-    macd_up = sum("📈" in str(row.get(f"{tf}_hist")) for tf in TIMEFRAMES)
-    macd_dn = sum("📉" in str(row.get(f"{tf}_hist")) for tf in TIMEFRAMES)
+def macd_recommendation(row):
+    bull = sum("📈" in str(row.get(f"{tf}_macd")) for tf in TIMEFRAMES)
+    bear = sum("📉" in str(row.get(f"{tf}_macd")) for tf in TIMEFRAMES)
 
-    if macd_up >= 5:
-        return "🚀 SESGO ALCISTA MACD"
-    if macd_dn >= 5:
-        return "🩸 SESGO BAJISTA MACD"
-
+    if bull >= 5:
+        return "🚀 MACD ALCISTA MULTI-TF"
+    if bear >= 5:
+        return "🩸 MACD BAJISTA MULTI-TF"
     return "⚖️ MACD MIXTO / ESPERAR"
 
 # ─────────────────────────────────────────────
@@ -196,28 +206,23 @@ def scan_batch(targets):
         for label, tf in TIMEFRAMES.items():
             res = analyze_ticker_tf(sym, tf, ex, price)
             if res:
-                (
-                    state, date, rsi_state, rsi_val,
-                    hist_state, cross, cross_time
-                ) = res
+                state, date, rsi_state, rsi_val, macd_txt, macd_time = res
 
                 row[f"{label}_state"] = state
                 row[f"{label}_rsi"] = rsi_val
                 row[f"{label}_rsi_state"] = rsi_state
                 row[f"{label}_datetime"] = date
-                row[f"{label}_hist"] = hist_state
-                row[f"{label}_macd_cross"] = cross
-                row[f"{label}_macd_time"] = cross_time
+                row[f"{label}_macd"] = macd_txt
+                row[f"{label}_macd_time"] = macd_time
             else:
                 row[f"{label}_state"] = "NEUTRO"
                 row[f"{label}_rsi"] = np.nan
                 row[f"{label}_rsi_state"] = "-"
                 row[f"{label}_datetime"] = pd.NaT
-                row[f"{label}_hist"] = "—"
-                row[f"{label}_macd_cross"] = "—"
+                row[f"{label}_macd"] = "—"
                 row[f"{label}_macd_time"] = pd.NaT
 
-        row['Estrategia'] = get_recommendation(row)
+        row['MACD Estrategia'] = macd_recommendation(row)
         results.append(row)
         time.sleep(0.05)
 
@@ -231,56 +236,24 @@ st.title("🎯 SystemaTrader: MNQ Sniper Matrix V5")
 
 with st.sidebar:
     st.header("Configuración")
-
     all_symbols = get_active_pairs()
     BATCH_SIZE = st.selectbox("Tamaño lote", [10,20,30,50], index=1)
 
-    batches = [
-        all_symbols[i:i+BATCH_SIZE]
-        for i in range(0, len(all_symbols), BATCH_SIZE)
-    ]
-
+    batches = [all_symbols[i:i+BATCH_SIZE] for i in range(0, len(all_symbols), BATCH_SIZE)]
     sel = st.selectbox("Lote", range(len(batches)))
-    accumulate = st.checkbox("Acumular resultados", value=True)
 
     if st.button("🚀 ESCANEAR"):
-        new = scan_batch(batches[sel])
-        if accumulate:
-            st.session_state['sniper_results'].extend(new)
-        else:
-            st.session_state['sniper_results'] = new
-
-    if st.button("Limpiar"):
-        st.session_state['sniper_results'] = []
-        st.rerun()
+        st.session_state['sniper_results'] = scan_batch(batches[sel])
 
 # ─────────────────────────────────────────────
-# TABLA FINAL (BLINDADA)
+# TABLA FINAL
 # ─────────────────────────────────────────────
 if st.session_state['sniper_results']:
     df = pd.DataFrame(st.session_state['sniper_results'])
 
-    # BLINDAJE ANTI KeyError
+    columnas = ['Activo', 'MACD Estrategia']
     for tf in TIMEFRAMES:
-        for col, default in {
-            f"{tf}_hist": "—",
-            f"{tf}_macd_cross": "—",
-            f"{tf}_macd_time": pd.NaT
-        }.items():
-            if col not in df.columns:
-                df[col] = default
-
-    columnas = ['Activo', 'Estrategia']
-
-    for tf in TIMEFRAMES:
-        df[f"{tf} MACD"] = (
-            df[f"{tf}_hist"]
-            + " | "
-            + df[f"{tf}_macd_cross"]
-            + " "
-            + df[f"{tf}_macd_time"].dt.strftime('%d/%m %H:%M').fillna("")
-        )
-        columnas.append(f"{tf} MACD")
+        columnas.append(f"{tf}_macd")
 
     st.data_editor(
         df[columnas],
