@@ -76,7 +76,7 @@ def calculate_heikin_ashi(df):
     return df
 
 # ─────────────────────────────────────────────
-# ANÁLISIS POR TF (EXTENDIDO)
+# ANÁLISIS POR TF (EXTENDIDO SIN CAMBIAR LÓGICA)
 # ─────────────────────────────────────────────
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
@@ -92,9 +92,9 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         df['dt'] = pd.to_datetime(df['time'], unit='ms')
 
         macd = ta.macd(df['close'])
-        df['MACD']   = macd['MACD_12_26_9']
+        df['MACD'] = macd['MACD_12_26_9']
         df['SIGNAL'] = macd['MACDs_12_26_9']
-        df['Hist']   = macd['MACDh_12_26_9']
+        df['Hist'] = macd['MACDh_12_26_9']
 
         df['RSI'] = ta.rsi(df['close'], length=14)
         df = calculate_heikin_ashi(df)
@@ -130,7 +130,7 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         else:
             rsi_state = "RSI="
 
-        # ───── DIRECCIÓN HISTOGRAMA ─────
+        # ───── HISTOGRAMA DIRECCIÓN ─────
         hist_dir = "📈 Hist ↑" if df['Hist'].iloc[-1] > df['Hist'].iloc[-2] else "📉 Hist ↓"
 
         # ───── ÚLTIMO CRUCE MACD ─────
@@ -149,7 +149,7 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         return None
 
 # ─────────────────────────────────────────────
-# RECOMENDACIÓN FINAL (NO TOCADA)
+# RECOMENDACIÓN FINAL (INTOCADA)
 # ─────────────────────────────────────────────
 def get_recommendation(row):
     longs = sum(row.get(f"{tf}_state") == "LONG" for tf in TIMEFRAMES)
@@ -162,6 +162,7 @@ def get_recommendation(row):
         return "🔥 COMPRA FUERTE"
     if shorts >= 5 and rsi_htf_bear:
         return "🩸 VENTA FUERTE"
+
     return "⚖️ RANGO / ESPERAR"
 
 # ─────────────────────────────────────────────
@@ -211,28 +212,43 @@ def scan_batch(targets):
     return results
 
 # ─────────────────────────────────────────────
-# INTERFAZ + TABLA FINAL
+# INTERFAZ
 # ─────────────────────────────────────────────
 st.title("🎯 SystemaTrader: MNQ Sniper Matrix V4")
 
 with st.sidebar:
     st.header("Configuración")
+
     all_symbols = get_active_pairs()
     BATCH_SIZE = st.selectbox("Tamaño lote", [10,20,30,50], index=1)
+
     batches = [all_symbols[i:i+BATCH_SIZE] for i in range(0, len(all_symbols), BATCH_SIZE)]
     sel = st.selectbox("Lote", range(len(batches)))
     accumulate = st.checkbox("Acumular resultados", value=True)
 
     if st.button("🚀 ESCANEAR"):
         new = scan_batch(batches[sel])
-        st.session_state['sniper_results'] = new if not accumulate else st.session_state['sniper_results'] + new
+        if accumulate:
+            st.session_state['sniper_results'].extend(new)
+        else:
+            st.session_state['sniper_results'] = new
 
     if st.button("Limpiar"):
         st.session_state['sniper_results'] = []
         st.rerun()
 
+# ─────────────────────────────────────────────
+# TABLA FINAL (BLINDADA)
+# ─────────────────────────────────────────────
 if st.session_state['sniper_results']:
     df = pd.DataFrame(st.session_state['sniper_results'])
+
+    # ───── BLINDAJE ─────
+    for tf in TIMEFRAMES:
+        for col in [f"{tf}_hist", f"{tf}_macd_cross"]:
+            if col not in df.columns:
+                df[col] = "-"
+
     df['Alerta'] = df['Estrategia']
 
     for tf in TIMEFRAMES:
@@ -247,8 +263,10 @@ if st.session_state['sniper_results']:
             + df[f"{tf}_macd_cross"]
         )
 
+    columnas = ['Activo', 'Alerta'] + list(TIMEFRAMES.keys())
+
     st.data_editor(
-        df[['Activo','Alerta'] + list(TIMEFRAMES.keys())],
+        df[columnas],
         use_container_width=True,
         height=800,
         disabled=True
