@@ -231,10 +231,10 @@ with st.sidebar:
 if st.session_state['sniper_results']:
     df = pd.DataFrame(st.session_state['sniper_results'])
 
-    # Columnas para filtrar (NO CAMBIA LÓGICA)
+    # Columnas de alerta (NO CAMBIA LÓGICA)
     df['Alerta'] = df['Estrategia']
-    df['Fecha'] = df['1m_datetime'].dt.date
-    df['Hora'] = df['1m_datetime'].dt.hour
+    df['Fecha alerta'] = df['1m_datetime'].dt.strftime('%Y-%m-%d')
+    df['Hora alerta'] = df['1m_datetime'].dt.strftime('%H:%M')
 
     # Columnas visuales
     for tf in TIMEFRAMES:
@@ -252,13 +252,12 @@ if st.session_state['sniper_results']:
 
     st.data_editor(
         df[
-            ['Activo', 'Alerta', 'Fecha', 'Hora']
+            ['Activo', 'Alerta', 'Fecha alerta', 'Hora alerta']
             + list(TIMEFRAMES.keys())
         ],
         use_container_width=True,
         height=800,
         disabled=True
     )
-
 else:
     st.info("Seleccioná un lote y escaneá.")
