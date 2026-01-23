@@ -8,7 +8,6 @@ from datetime import datetime
 
 # --- CONFIGURACIÓN ---
 st.set_page_config(layout="wide", page_title="SystemaTrader: MNQ Sniper Matrix")
-
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 14px; }
@@ -103,12 +102,12 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
                     position = "SHORT"
                     last_date = date
                     
-        rsi_val = round(df['RSI'].iloc[-1], 1)
+        rsi_val = df['RSI'].iloc[-1]
         if rsi_val > 55: rsi_state = "RSI↑"
         elif rsi_val < 45: rsi_state = "RSI↓"
         else: rsi_state = "RSI="
             
-        return position, last_date, rsi_state, rsi_val
+        return position, last_date, rsi_state, round(rsi_val, 1)
         
     except: return None
 
@@ -136,7 +135,7 @@ def scan_batch(targets):
     
     for idx, sym in enumerate(targets):
         clean = sym.replace(':USDT','').replace('/USDT','')
-        prog.progress((idx+1)/len(targets), text=f"Analizando {clean} ({idx+1}/{len(targets)})")
+        prog.progress(idx/len(targets), text=f"Analizando {clean} ({idx+1}/{len(targets)})")
         
         try: price = ex.fetch_ticker(sym)['last']
         except: continue
