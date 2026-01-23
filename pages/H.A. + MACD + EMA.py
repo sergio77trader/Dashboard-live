@@ -226,18 +226,18 @@ with st.sidebar:
         st.rerun()
 
 # ─────────────────────────────────────────────
-# TABLA FILTRABLE POR COLUMNA
+# TABLA
 # ─────────────────────────────────────────────
 if st.session_state['sniper_results']:
     df = pd.DataFrame(st.session_state['sniper_results'])
 
-    # Columnas de alerta (NO CAMBIA LÓGICA)
     df['Alerta'] = df['Estrategia']
-    df['Fecha alerta'] = df['1m_datetime'].dt.strftime('%Y-%m-%d')
-    df['Hora alerta'] = df['1m_datetime'].dt.strftime('%H:%M')
 
-    # Columnas visuales
+    # Fecha y hora de alerta POR TF
     for tf in TIMEFRAMES:
+        df[f"{tf} Fecha alerta"] = df[f"{tf}_datetime"].dt.strftime('%Y-%m-%d')
+        df[f"{tf} Hora alerta"]  = df[f"{tf}_datetime"].dt.strftime('%H:%M')
+
         df[tf] = (
             df[f"{tf}_state"]
             .map({"LONG":"🟢 LONG","SHORT":"🔴 SHORT","NEUTRO":"⚪ NEUTRO"})
@@ -250,11 +250,16 @@ if st.session_state['sniper_results']:
             + ")"
         )
 
+    columnas = ['Activo', 'Alerta']
+    for tf in TIMEFRAMES:
+        columnas += [
+            f"{tf} Fecha alerta",
+            f"{tf} Hora alerta",
+            tf
+        ]
+
     st.data_editor(
-        df[
-            ['Activo', 'Alerta', 'Fecha alerta', 'Hora alerta']
-            + list(TIMEFRAMES.keys())
-        ],
+        df[columnas],
         use_container_width=True,
         height=800,
         disabled=True
