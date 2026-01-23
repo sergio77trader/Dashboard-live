@@ -225,13 +225,34 @@ with st.sidebar:
         st.session_state['sniper_results'] = []
         st.rerun()
 
+    # ───────── FILTRO POST-ANÁLISIS ─────────
+    st.divider()
+    st.subheader("Filtro post-análisis")
+
+    alert_filter = st.multiselect(
+        "Mostrar solo alertas:",
+        [
+            "🔥 COMPRA FUERTE",
+            "🩸 VENTA FUERTE",
+            "⚖️ RANGO / ESPERAR"
+        ],
+        default=[
+            "🔥 COMPRA FUERTE",
+            "🩸 VENTA FUERTE",
+            "⚖️ RANGO / ESPERAR"
+        ]
+    )
+
 # ─────────────────────────────────────────────
-# TABLA FINAL (SIN REDUNDANCIA)
+# TABLA FINAL
 # ─────────────────────────────────────────────
 if st.session_state['sniper_results']:
     df = pd.DataFrame(st.session_state['sniper_results'])
 
     df['Alerta'] = df['Estrategia']
+
+    if alert_filter:
+        df = df[df['Alerta'].isin(alert_filter)]
 
     for tf in TIMEFRAMES:
         df[f"{tf} Fecha alerta"] = df[f"{tf}_datetime"].dt.strftime('%Y-%m-%d')
