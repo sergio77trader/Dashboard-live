@@ -14,12 +14,12 @@ st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 14px; }
     .stProgress > div > div > div > div { background-color: #2962FF; }
-    .stDataFrame { font-size: 0.8rem; }
+    .stDataFrame { font-size: 0.85rem; }
 </style>
 """, unsafe_allow_html=True)
 
-if 'full_results_v91' not in st.session_state:
-    st.session_state['full_results_v91'] = []
+if 'full_results_v10' not in st.session_state:
+    st.session_state['full_results_v10'] = []
 
 TIMEFRAMES = {
     '15m': '15m',
@@ -79,7 +79,7 @@ def analyze_tf_data(symbol, tf_label, tf_code, exchange):
         
         df = calculate_heikin_ashi(df)
         
-        # Lógica HA Original
+        # Lógica HA
         position = "NEUTRO"
         for i in range(1, len(df)):
             hist = df['Hist'].iloc[i]
@@ -116,11 +116,8 @@ def analyze_tf_data(symbol, tf_label, tf_code, exchange):
         }
     except: return None
 
-# --- RECOMENDACIONES (V7 RESTAURADO) ---
 def get_recommendations(row):
-    # 1. Estrategia HA
-    longs = 0
-    shorts = 0
+    longs = 0; shorts = 0
     for tf in TIMEFRAMES:
         if "LONG" in row.get(f"{tf} Estado", ""): longs += 1
         if "SHORT" in row.get(f"{tf} Estado", ""): shorts += 1
@@ -129,9 +126,7 @@ def get_recommendations(row):
     if longs >= 4: strat_ha = "🔥 COMPRA"
     elif shorts >= 4: strat_ha = "🩸 VENTA"
 
-    # 2. Recomendación MACD
-    macd_bull = 0
-    macd_bear = 0
+    macd_bull = 0; macd_bear = 0
     for tf in TIMEFRAMES:
         h = row.get(f"{tf} Hist", "")
         c = row.get(f"{tf} Cruce", "")
@@ -144,7 +139,6 @@ def get_recommendations(row):
     if macd_bull >= 10: strat_macd = "🚀 Alcista"
     elif macd_bear >= 10: strat_macd = "📉 Bajista"
     
-    # 3. GLOBAL
     strat_global = "ESPERAR"
     if "COMPRA" in strat_ha and "Alcista" in strat_macd: strat_global = "💎 ALL IN LONG"
     elif "VENTA" in strat_ha and "Bajista" in strat_macd: strat_global = "☠️ ALL IN SHORT"
@@ -161,22 +155,17 @@ def scan_batch(targets):
     for idx, sym in enumerate(targets):
         clean_name = sym.replace(':USDT', '').replace('/USDT', '')
         prog.progress(idx/len(targets), text=f"Analizando {clean_name}...")
-        
         try: px = ex.fetch_ticker(sym)['last']
         except: px = 0
         
         row = {'Activo': clean_name, 'Precio': px}
-        
         for label, code in TIMEFRAMES.items():
             data_tf = analyze_tf_data(sym, label, code, ex)
             if data_tf: row.update(data_tf)
             else:
-                row[f"{label} Estado"] = "-"
-                row[f"{label} Hist"] = "-"
-                row[f"{label} Cruce"] = "-"
-                row[f"{label} Fecha"] = "-"
+                for k in ["Estado", "Hist", "Cruce", "Fecha"]:
+                    row[f"{label} {k}"] = "-"
         
-        # Calculamos TODAS las recomendaciones
         s_ha, s_macd, s_glob = get_recommendations(row)
         row['Estrategia HA'] = s_ha
         row['Recom. MACD'] = s_macd
@@ -191,7 +180,7 @@ def scan_batch(targets):
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("🎛️ SystemaTrader: MACD Full Detail V9.1")
+st.title("🎛️ SystemaTrader: MACD Full Detail V10")
 
 with st.sidebar:
     st.header("Configuración")
@@ -205,18 +194,16 @@ with st.sidebar:
         
         if st.button("🚀 ESCANEAR", type="primary"):
             target = batches[sel_batch]
-            with st.spinner("Procesando..."):
+            with st.spinner("Procesando matriz detallada..."):
                 new_data = scan_batch(target)
-                if accumulate: st.session_state['full_results_v91'].extend(new_data)
-                else: st.session_state['full_results_v91'] = new_data
+                if accumulate: st.session_state['full_results_v10'].extend(new_data)
+                else: st.session_state['full_results_v10'] = new_data
     
     if st.button("Limpiar"):
-        st.session_state['full_results_v91'] = []
+        st.session_state['full_results_v10'] = []
         st.rerun()
     
     st.divider()
-    
-    # --- FILTRO POR VEREDICTO (NUEVO) ---
     st.subheader("Filtros de Visualización")
     filter_opts = ["💎 ALL IN LONG", "☠️ ALL IN SHORT", "🟢 LONG", "🔴 SHORT", "ESPERAR"]
     selected_filters = st.multiselect("Mostrar solo:", filter_opts, default=filter_opts)
@@ -224,30 +211,37 @@ with st.sidebar:
 # ─────────────────────────────────────────────
 # TABLA
 # ─────────────────────────────────────────────
-if st.session_state['full_results_v91']:
-    df = pd.DataFrame(st.session_state['full_results_v91'])
+if st.session_state['full_results_v10']:
+    df = pd.DataFrame(st.session_state['full_results_v10'])
     
-    # Aplicar Filtro
     if selected_filters:
         df = df[df['VEREDICTO FINAL'].isin(selected_filters)]
     
-    # Ordenar Columnas (Completo V7)
     cols_show = ['Activo', 'VEREDICTO FINAL', 'Estrategia HA', 'Recom. MACD', 'Precio']
     for tf in ["15m", "1H", "4H", "Diario", "Semanal"]:
         cols_show.extend([f"{tf} Estado", f"{tf} Hist", f"{tf} Cruce", f"{tf} Fecha"])
     
     final_cols = [c for c in cols_show if c in df.columns]
     
-    def color_verdict(val):
-        if "LONG" in str(val) or "COMPRA" in str(val) or "Alcista" in str(val): 
-            return "background-color: #1b3a1b; color: #00ff00; font-weight: bold"
-        if "SHORT" in str(val) or "VENTA" in str(val) or "Bajista" in str(val): 
-            return "background-color: #3a1b1b; color: #ff0000; font-weight: bold"
+    # --- FUNCIÓN DE COLOREADO GLOBAL ---
+    def style_cells(val):
+        s_val = str(val)
+        # Paleta de Colores
+        c_green_soft = "background-color: #d4edda; color: #155724; font-weight: bold" # Verde Claro Legible
+        c_red_soft   = "background-color: #f8d7da; color: #721c24; font-weight: bold" # Rojo Claro Legible
+        
+        # Palabras Clave ALCISTAS
+        if any(x in s_val for x in ["LONG", "COMPRA", "Alcista", "Sube", "BULL", "ALL IN LONG"]):
+            return c_green_soft
+            
+        # Palabras Clave BAJISTAS
+        if any(x in s_val for x in ["SHORT", "VENTA", "Bajista", "Baja", "BEAR", "ALL IN SHORT"]):
+            return c_red_soft
+            
         return ""
 
-    # Aplicamos estilo a las 3 columnas de recomendación
     st.dataframe(
-        df[final_cols].style.map(color_verdict, subset=['VEREDICTO FINAL', 'Estrategia HA', 'Recom. MACD']),
+        df[final_cols].style.applymap(style_cells),
         column_config={
             "Activo": st.column_config.TextColumn(pinned=True),
             "VEREDICTO FINAL": st.column_config.TextColumn(width="medium"),
