@@ -13,6 +13,8 @@ st.set_page_config(layout="wide", page_title="SystemaTrader: MNQ Sniper Matrix")
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 14px; }
+    /* Ajuste para que se vean bien tantas columnas */
+    .stDataFrame { font-size: 0.8rem; }
 </style>
 """, unsafe_allow_html=True)
 
