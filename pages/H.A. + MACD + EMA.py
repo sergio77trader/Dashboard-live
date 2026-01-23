@@ -76,7 +76,7 @@ def calculate_heikin_ashi(df):
     return df
 
 # ─────────────────────────────────────────────
-# ANÁLISIS POR TF
+# ANÁLISIS POR TF (NO TOCADO)
 # ─────────────────────────────────────────────
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
@@ -131,7 +131,7 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         return None
 
 # ─────────────────────────────────────────────
-# RECOMENDACIÓN FINAL
+# RECOMENDACIÓN FINAL (NO TOCADA)
 # ─────────────────────────────────────────────
 def get_recommendation(row):
     longs = sum(row.get(f"{tf}_state") == "LONG" for tf in TIMEFRAMES)
@@ -182,13 +182,11 @@ def scan_batch(targets):
                 row[f"{label}_rsi"] = rsi_val
                 row[f"{label}_rsi_state"] = rsi_state
                 row[f"{label}_datetime"] = date_dt
-                row[f"{label}_hour"] = date_dt.hour
             else:
                 row[f"{label}_state"] = "NEUTRO"
                 row[f"{label}_rsi"] = np.nan
                 row[f"{label}_rsi_state"] = "-"
                 row[f"{label}_datetime"] = pd.NaT
-                row[f"{label}_hour"] = np.nan
 
         row['Estrategia'] = get_recommendation(row)
         results.append(row)
@@ -228,26 +226,17 @@ with st.sidebar:
         st.rerun()
 
 # ─────────────────────────────────────────────
-# TABLA + FILTROS
+# TABLA FILTRABLE POR COLUMNA
 # ─────────────────────────────────────────────
 if st.session_state['sniper_results']:
     df = pd.DataFrame(st.session_state['sniper_results'])
 
-    st.sidebar.subheader("Filtros")
-    estr = st.sidebar.multiselect(
-        "Estrategia",
-        df['Estrategia'].unique().tolist(),
-        default=df['Estrategia'].unique().tolist()
-    )
+    # Columnas para filtrar (NO CAMBIA LÓGICA)
+    df['Alerta'] = df['Estrategia']
+    df['Fecha'] = df['1m_datetime'].dt.date
+    df['Hora'] = df['1m_datetime'].dt.hour
 
-    hmin, hmax = st.sidebar.slider("Horario", 0, 23, (0, 23))
-
-    df = df[
-        (df['Estrategia'].isin(estr)) &
-        (df['1m_hour'] >= hmin) &
-        (df['1m_hour'] <= hmax)
-    ]
-
+    # Columnas visuales
     for tf in TIMEFRAMES:
         df[tf] = (
             df[f"{tf}_state"]
@@ -261,11 +250,15 @@ if st.session_state['sniper_results']:
             + ")"
         )
 
-    st.dataframe(
-        df[['Activo'] + list(TIMEFRAMES.keys()) + ['Estrategia']],
+    st.data_editor(
+        df[
+            ['Activo', 'Alerta', 'Fecha', 'Hora']
+            + list(TIMEFRAMES.keys())
+        ],
         use_container_width=True,
-        height=800
+        height=800,
+        disabled=True
     )
+
 else:
     st.info("Seleccioná un lote y escaneá.")
-
