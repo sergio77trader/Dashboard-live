@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SystemaTrader: The Monolith")
+st.set_page_config(layout="wide", page_title="SystemaTrader: MNQ Sniper Matrix V5")
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 14px; }
@@ -18,15 +18,12 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-if 'monolith_results' not in st.session_state:
-    st.session_state['monolith_results'] = []
+if 'sniper_results_v5' not in st.session_state:
+    st.session_state['sniper_results_v5'] = []
 
 TIMEFRAMES = {
-    '15m': '15m',
-    '1H': '1h',
-    '4H': '4h',
-    'Diario': '1d',
-    'Semanal': '1w'
+    '1m': '1m', '5m': '5m', '15m': '15m',
+    '30m': '30m', '1H': '1h', '4H': '4h', '1D': '1d'
 }
 
 # ─────────────────────────────────────────────
@@ -52,7 +49,7 @@ def get_active_pairs():
     except: return []
 
 # ─────────────────────────────────────────────
-# CÁLCULOS
+# LÓGICA TÉCNICA
 # ─────────────────────────────────────────────
 def calculate_heikin_ashi(df):
     df = df.copy()
@@ -64,187 +61,246 @@ def calculate_heikin_ashi(df):
     df['HA_Color'] = np.where(df['HA_Close'] > df['HA_Open'], 1, -1)
     return df
 
-def analyze_tf_data(symbol, tf_label, tf_code, exchange):
+def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
+        # Bajamos 200 velas para tener historial de cruces
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=200)
         if not ohlcv or len(ohlcv) < 50: return None
-        
-        df = pd.DataFrame(ohlcv, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
+
+        ohlcv[-1][4] = current_price
+
+        df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','vol'])
         df['dt'] = pd.to_datetime(df['time'], unit='ms')
-        
-        # INDICADORES
+
+        # MACD
         macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
         df['MACD'] = macd['MACD_12_26_9']
         df['Signal'] = macd['MACDs_12_26_9']
         df['Hist'] = macd['MACDh_12_26_9']
+        
+        # RSI
         df['RSI'] = ta.rsi(df['close'], length=14)
         
+        # HA
         df = calculate_heikin_ashi(df)
-        
-        # 1. ESTADO ESTRATEGIA (TU ORIGINAL)
+
+        # 1. ESTADO DE ESTRATEGIA (HA + MOMENTUM)
         position = "NEUTRO"
+        last_date = df['dt'].iloc[-1]
+
         for i in range(1, len(df)):
             hist = df['Hist'].iloc[i]
             prev_hist = df['Hist'].iloc[i-1]
             ha_color = df['HA_Color'].iloc[i]
+            date = df['dt'].iloc[i]
+
             if position == "LONG" and hist < prev_hist: position = "NEUTRO"
             elif position == "SHORT" and hist > prev_hist: position = "NEUTRO"
+
             if position == "NEUTRO":
-                if ha_color == 1 and hist > prev_hist: position = "LONG"
-                elif ha_color == -1 and hist < prev_hist: position = "SHORT"
+                if ha_color == 1 and hist > prev_hist:
+                    position = "LONG"
+                    last_date = date
+                elif ha_color == -1 and hist < prev_hist:
+                    position = "SHORT"
+                    last_date = date
 
-        # 2. RSI
-        rsi_val = round(df['RSI'].iloc[-1], 1)
-
-        # 3. HISTOGRAMA (NUEVO)
+        # 2. ANÁLISIS DE HISTOGRAMA
         curr_hist = df['Hist'].iloc[-1]
         prev_hist = df['Hist'].iloc[-2]
-        hist_trend = "↗️ Sube" if curr_hist > prev_hist else "↘️ Baja"
+        hist_trend = "↗ Subiendo" if curr_hist > prev_hist else "↘ Bajando"
 
-        # 4. CRUCE MACD (NUEVO)
+        # 3. ANÁLISIS DE CRUCE MACD
         df['Cross'] = np.where(df['MACD'] > df['Signal'], 1, -1)
-        df['Change'] = df['Cross'].diff()
+        df['Change'] = df['Cross'].diff() # != 0 es un cruce
         
+        # Buscar el último cruce
         cross_rows = df[df['Change'] != 0]
         if not cross_rows.empty:
             last_cross = cross_rows.iloc[-1]
-            c_type = "🐂 GOLDEN" if last_cross['Cross'] == 1 else "🐻 DEATH"
-            dt_arg = last_cross['dt'] - pd.Timedelta(hours=3)
-            c_date = dt_arg.strftime('%Y-%m-%d')
-            c_time = dt_arg.strftime('%H:%M')
+            c_type = "🐂 BULL" if last_cross['Cross'] == 1 else "🐻 BEAR"
+            
+            # Ajuste horario (-3h Argentina)
+            c_dt = last_cross['dt'] - pd.Timedelta(hours=3)
+            c_date = c_dt.strftime('%Y-%m-%d')
+            c_time = c_dt.strftime('%H:%M')
         else:
             c_type = "-"
             c_date = "-"
             c_time = "-"
 
-        # RETORNO DE TODO POR SEPARADO
+        # RSI Estado
+        rsi_val = round(df['RSI'].iloc[-1], 1)
+        rsi_state = "RSI↑" if rsi_val > 55 else ("RSI↓" if rsi_val < 45 else "RSI=")
+
         return {
-            f"{tf_label} Estado": position,
-            f"{tf_label} RSI": rsi_val,
-            f"{tf_label} Hist": hist_trend,
-            f"{tf_label} Cruce": c_type,
-            f"{tf_label} Fecha": c_date,
-            f"{tf_label} Hora": c_time
+            "state": position,
+            "date": last_date,
+            "rsi_st": rsi_state,
+            "rsi_val": rsi_val,
+            # Nuevos datos
+            "hist_trend": hist_trend,
+            "cross_type": c_type,
+            "cross_date": c_date,
+            "cross_time": c_time
         }
+
     except: return None
 
-def get_verdict(row):
-    score = 0
-    # Usamos el Estado Original para el veredicto
-    for tf in TIMEFRAMES:
-        st = row.get(f"{tf} Estado", "")
-        if "LONG" in st: score += 1
-        if "SHORT" in st: score -= 1
+# ─────────────────────────────────────────────
+# RECOMENDACIÓN IA
+# ─────────────────────────────────────────────
+def get_final_verdict(row):
+    # Puntos por Estrategia HA
+    longs = sum(row.get(f"{tf}_state") == "LONG" for tf in TIMEFRAMES)
+    shorts = sum(row.get(f"{tf}_state") == "SHORT" for tf in TIMEFRAMES)
     
-    if score >= 4: return "🔥 COMPRA FUERTE"
-    if score <= -4: return "🩸 VENTA FUERTE"
-    if score > 0: return "🟢 ALCISTA"
-    if score < 0: return "🔴 BAJISTA"
-    return "⚖️ RANGO"
+    # Puntos por Cruces MACD (Momentum Puro)
+    macd_bull = 0
+    macd_bear = 0
+    for tf in TIMEFRAMES:
+        cross = row.get(f"{tf}_cross", "")
+        if "BULL" in cross: macd_bull += 1
+        if "BEAR" in cross: macd_bear += 1
 
+    # Veredicto
+    if longs >= 5 and macd_bull >= 5: return "🔥 COMPRA FUERTE (Trend + Mom)"
+    if shorts >= 5 and macd_bear >= 5: return "🩸 VENTA FUERTE (Trend + Mom)"
+    
+    if longs >= 4: return "🟢 ALCISTA (Trend)"
+    if shorts >= 4: return "🔴 BAJISTA (Trend)"
+    
+    if macd_bull >= 5: return "🚀 MOMENTUM ALCISTA (Posible Entrada)"
+    if macd_bear >= 5: return "📉 MOMENTUM BAJISTA (Posible Caída)"
+    
+    return "⚖️ RANGO / INDECISIÓN"
+
+# ─────────────────────────────────────────────
+# BUCLE ESCANEO
+# ─────────────────────────────────────────────
 def scan_batch(targets):
     ex = get_exchange()
     results = []
     prog = st.progress(0, text="Escaneando...")
-    
+
     for idx, sym in enumerate(targets):
-        clean_name = sym.replace(':USDT', '').replace('/USDT', '')
-        prog.progress(idx/len(targets), text=f"Analizando {clean_name}...")
-        
-        try: px = ex.fetch_ticker(sym)['last']
-        except: px = 0
-        
-        row = {'Activo': clean_name, 'Precio': px}
-        
-        for label, code in TIMEFRAMES.items():
-            data_tf = analyze_tf_data(sym, label, code, ex)
-            if data_tf: 
-                row.update(data_tf)
+        clean = sym.replace(':USDT','').replace('/USDT','')
+        prog.progress((idx+1)/len(targets), text=f"{clean}")
+
+        try: price = ex.fetch_ticker(sym)['last']
+        except: continue
+
+        row = {'Activo': clean}
+
+        for label, tf in TIMEFRAMES.items():
+            res = analyze_ticker_tf(sym, tf, ex, price)
+            if res:
+                date_dt = res['date'] - pd.Timedelta(hours=3)
+                
+                # Datos Originales
+                row[f"{label}_state"] = res['state']
+                row[f"{label}_rsi"] = res['rsi_val']
+                row[f"{label}_rsi_state"] = res['rsi_st']
+                row[f"{label}_datetime"] = date_dt
+                
+                # Datos Nuevos
+                row[f"{label}_hist"] = res['hist_trend']
+                row[f"{label}_cross"] = res['cross_type']
+                row[f"{label}_c_date"] = res['cross_date']
+                row[f"{label}_c_time"] = res['cross_time']
             else:
-                # Rellenar vacíos para que la tabla no se rompa
-                for k in ["Estado", "RSI", "Hist", "Cruce", "Fecha", "Hora"]:
-                    row[f"{label} {k}"] = "-"
-        
-        row['VEREDICTO'] = get_verdict(row)
+                # Rellenar vacíos
+                row[f"{label}_state"] = "NEUTRO"
+                row[f"{label}_rsi"] = 0
+                row[f"{label}_rsi_state"] = "-"
+                row[f"{label}_datetime"] = pd.NaT
+                row[f"{label}_hist"] = "-"
+                row[f"{label}_cross"] = "-"
+                row[f"{label}_c_date"] = "-"
+                row[f"{label}_c_time"] = "-"
+
+        row['VEREDICTO'] = get_final_verdict(row)
         results.append(row)
-        time.sleep(0.1)
-    
+        time.sleep(0.05)
+
     prog.empty()
     return results
 
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("🎛️ SystemaTrader: The Monolith Matrix (V11)")
+st.title("🎯 SystemaTrader: MNQ Sniper Matrix V5 (Extended)")
 
 with st.sidebar:
     st.header("Configuración")
     all_symbols = get_active_pairs()
-    
-    if all_symbols:
-        BATCH = st.selectbox("Lote:", [10, 20, 30], index=0)
-        batches = [all_symbols[i:i+BATCH] for i in range(0, len(all_symbols), BATCH)]
-        sel_batch = st.selectbox("Seleccionar:", range(len(batches)), format_func=lambda x: f"Lote {x+1}")
-        accumulate = st.checkbox("Acumular", value=True)
-        
-        if st.button("🚀 ESCANEAR", type="primary"):
-            target = batches[sel_batch]
-            with st.spinner("Generando matriz completa..."):
-                new_data = scan_batch(target)
-                if accumulate: st.session_state['monolith_results'].extend(new_data)
-                else: st.session_state['monolith_results'] = new_data
-    
+    BATCH_SIZE = st.selectbox("Tamaño lote", [10,20,30,50], index=1)
+    batches = [all_symbols[i:i+BATCH_SIZE] for i in range(0, len(all_symbols), BATCH_SIZE)]
+    sel = st.selectbox("Lote", range(len(batches)))
+    accumulate = st.checkbox("Acumular resultados", value=True)
+
+    if st.button("🚀 ESCANEAR"):
+        new = scan_batch(batches[sel])
+        if accumulate: st.session_state['sniper_results_v5'].extend(new)
+        else: st.session_state['sniper_results_v5'] = new
+
     if st.button("Limpiar"):
-        st.session_state['monolith_results'] = []
+        st.session_state['sniper_results_v5'] = []
         st.rerun()
-    
+
     st.divider()
-    st.subheader("Filtros")
-    f_opts = ["🔥 COMPRA FUERTE", "🩸 VENTA FUERTE", "🟢 ALCISTA", "🔴 BAJISTA", "⚖️ RANGO"]
-    sel_filt = st.multiselect("Filtrar por Veredicto:", f_opts, default=f_opts)
+    st.subheader("Filtro IA")
+    # Filtro por veredicto
+    f_opts = ["🔥 COMPRA FUERTE", "🩸 VENTA FUERTE", "🟢 ALCISTA", "🔴 BAJISTA", "🚀 MOMENTUM ALCISTA", "📉 MOMENTUM BAJISTA", "⚖️ RANGO"]
+    # Por defecto mostramos todo, pero el usuario puede filtrar
+    sel_filt = st.multiselect("Mostrar solo:", f_opts, default=f_opts)
 
 # ─────────────────────────────────────────────
-# TABLA
+# TABLA FINAL
 # ─────────────────────────────────────────────
-if st.session_state['monolith_results']:
-    df = pd.DataFrame(st.session_state['monolith_results'])
+if st.session_state['sniper_results_v5']:
+    df = pd.DataFrame(st.session_state['sniper_results_v5'])
     
-    # Filtro
-    if sel_filt:
-        df = df[df['VEREDICTO'].isin(sel_filt)]
-    
-    # Definición de Columnas (Orden Estricto)
-    cols = ['Activo', 'VEREDICTO', 'Precio']
-    # Bucle para generar las 30 columnas de datos (5 TFs * 6 Datos)
-    for tf in ["15m", "1H", "4H", "Diario", "Semanal"]:
-        cols.append(f"{tf} Estado")
-        cols.append(f"{tf} RSI")
-        cols.append(f"{tf} Hist")
-        cols.append(f"{tf} Cruce")
-        cols.append(f"{tf} Fecha")
-        cols.append(f"{tf} Hora")
+    # Filtrar por veredicto (búsqueda parcial para flexibilidad)
+    mask = df['VEREDICTO'].apply(lambda x: any(f in x for f in sel_filt))
+    df = df[mask]
+
+    # Preprocesar columnas compuestas para visualización compacta
+    for tf in TIMEFRAMES:
+        df[f"{tf} Alerta Fecha"] = df[f"{tf}_datetime"].dt.strftime('%Y-%m-%d')
+        df[f"{tf} Alerta Hora"]  = df[f"{tf}_datetime"].dt.strftime('%H:%M')
         
-    final_cols = [c for c in cols if c in df.columns]
-    
-    # Función de Estilo (Colores Claros/Legibles)
-    def style_universal(val):
-        s = str(val)
-        # Verde Claro
-        if any(x in s for x in ["LONG", "Sube", "GOLDEN", "COMPRA", "ALCISTA", "BULL"]):
-            return "background-color: #d4edda; color: #155724; font-weight: bold"
-        # Rojo Claro
-        if any(x in s for x in ["SHORT", "Baja", "DEATH", "VENTA", "BAJISTA", "BEAR"]):
-            return "background-color: #f8d7da; color: #721c24; font-weight: bold"
-        return ""
+        # Columna Estado Original Compacta
+        df[tf] = (
+            df[f"{tf}_state"].map({"LONG":"🟢","SHORT":"🔴","NEUTRO":"⚪"}) + " " +
+            df[f"{tf}_rsi_state"] + "(" + df[f"{tf}_rsi"].astype(str) + ")"
+        )
+
+    # Definir Orden de Columnas
+    cols_show = ['Activo', 'VEREDICTO']
+    for tf in ["1m", "5m", "15m", "30m", "1H", "4H", "1D"]: # Orden lógico
+        # Bloque de columnas por TF
+        cols_show.append(tf) # Estado Resumido
+        cols_show.append(f"{tf}_hist")
+        cols_show.append(f"{tf}_cross")
+        cols_show.append(f"{tf}_c_date")
+        cols_show.append(f"{tf}_c_time")
+        # Opcional: Agregar Fecha Alerta Original si se desea
+        # cols_show.append(f"{tf} Alerta Hora") 
+
+    # Filtrar columnas existentes
+    final_cols = [c for c in cols_show if c in df.columns]
 
     st.dataframe(
-        df[final_cols].style.map(style_universal),
+        df[final_cols],
+        use_container_width=True,
+        height=800,
         column_config={
             "Activo": st.column_config.TextColumn(pinned=True),
-            "Precio": st.column_config.NumberColumn(format="$%.4f")
-        },
-        use_container_width=True,
-        height=800
+            "VEREDICTO": st.column_config.TextColumn(width="medium"),
+            # Las columnas dinámicas se ajustan solas
+        }
     )
 else:
-    st.info("👈 Escanea un lote para ver la Matriz Completa.")
+    st.info("Seleccioná un lote y escaneá.")
+    
