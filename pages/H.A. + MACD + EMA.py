@@ -7,16 +7,15 @@ import time
 from datetime import datetime
 
 # ─────────────────────────────────────────────
-# CONFIGURACIÓN DE PÁGINA
+# CONFIGURACIÓN INSTITUCIONAL
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER MATRIX V17.0")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V20.0")
 
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 14px; }
     .stDataFrame { font-size: 12px; border: 1px solid #333; }
     h1 { color: #2962FF; font-weight: 800; }
-    .stProgress > div > div > div > div { background-color: #2962FF; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -26,7 +25,7 @@ if "sniper_results" not in st.session_state:
 TIMEFRAMES = {"1m":"1m", "5m":"5m", "15m":"15m", "30m":"30m", "1H":"1h", "4H":"4h", "1D":"1d"}
 
 # ─────────────────────────────────────────────
-# MOTOR DE CONEXIÓN
+# MOTOR DE DATOS
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchange():
@@ -37,11 +36,7 @@ def get_active_pairs():
     try:
         ex = get_exchange()
         tickers = ex.fetch_tickers()
-        valid = []
-        for s, t in tickers.items():
-            if "/USDT:USDT" in s and t.get("quoteVolume", 0) > 1000000:
-                valid.append({"symbol": s, "vol": t["quoteVolume"]})
-        return pd.DataFrame(valid).sort_values("vol", ascending=False)["symbol"].tolist()
+        return [s for s, t in tickers.items() if "/USDT:USDT" in s and t.get("quoteVolume", 0) > 1000000]
     except: return []
 
 def calculate_heikin_ashi(df):
@@ -55,7 +50,7 @@ def calculate_heikin_ashi(df):
     return df
 
 # ─────────────────────────────────────────────
-# ANÁLISIS TÉCNICO V17.0
+# ANÁLISIS TÉCNICO
 # ─────────────────────────────────────────────
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
@@ -72,52 +67,33 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         df["RSI"] = ta.rsi(df["close"], length=14)
         df = calculate_heikin_ashi(df)
 
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
+        last, prev = df.iloc[-1], df.iloc[-2]
         
-        # --- DETERMINACIÓN DE FASE ---
-        hist_val = last["Hist"]
-        hist_prev = prev["Hist"]
-        ha_color = last["HA_Color"]
-        
-        phase = "NEUTRO"
-        icon = "⚪"
-        
-        if ha_color == 1 and hist_val > hist_prev:
-            if hist_val < 0:
-                phase = "PULLBACK ALCISTA"
-                icon = "🔵"
-            else:
-                phase = "CONFIRMACION BULL"
-                icon = "🟢"
-        elif ha_color == -1 and hist_val < hist_prev:
-            if hist_val > 0:
-                phase = "PULLBACK BAJISTA"
-                icon = "🟠"
-            else:
-                phase = "CONFIRMACION BEAR"
-                icon = "🔴"
+        phase, icon = "NEUTRO", "⚪"
+        if last["HA_Color"] == 1 and last["Hist"] > prev["Hist"]:
+            phase, icon = ("PULLBACK ALCISTA", "🔵") if last["Hist"] < 0 else ("CONFIRMACION BULL", "🟢")
+        elif last["HA_Color"] == -1 and last["Hist"] < prev["Hist"]:
+            phase, icon = ("PULLBACK BAJISTA", "🟠") if last["Hist"] > 0 else ("CONFIRMACION BEAR", "🔴")
 
         rsi_val = round(last["RSI"], 1)
         rsi_state = "RSI↑" if rsi_val > 55 else "RSI↓" if rsi_val < 45 else "RSI="
         
-        # Cruce MACD
         df["cross"] = np.sign(df["MACD"] - df["Signal"]).diff().ne(0)
         crosses = df[df["cross"] == True]
-        last_cross_time = (crosses["dt"].iloc[-1] - pd.Timedelta(hours=3)).strftime("%H:%M") if not crosses.empty else "--:--"
+        last_cross = (crosses["dt"].iloc[-1] - pd.Timedelta(hours=3)).strftime("%H:%M") if not crosses.empty else "--:--"
 
         return {
             "signal": f"{icon} {phase} | {rsi_state} ({rsi_val})",
             "m0": "SOBRE 0" if last["MACD"] > 0 else "BAJO 0",
-            "h_dir": "ALCISTA" if hist_val > hist_prev else "BAJISTA",
-            "cross_time": last_cross_time,
+            "h_dir": "ALCISTA" if last["Hist"] > prev["Hist"] else "BAJISTA",
+            "cross_time": last_cross,
             "signal_time": (last["dt"] - pd.Timedelta(hours=3)).strftime("%H:%M")
         }
     except: return None
 
 def get_verdict(row):
-    bulls = sum(1 for tf in TIMEFRAMES if "BULL" in str(row.get(f"{tf} H.A./MACD","")) or "ALCISTA" in str(row.get(f"{tf} H.A./MACD","")))
-    bears = sum(1 for tf in TIMEFRAMES if "BEAR" in str(row.get(f"{tf} H.A./MACD","")) or "BAJISTA" in str(row.get(f"{tf} H.A./MACD","")))
+    bulls = sum(1 for tf in TIMEFRAMES if any(x in str(row.get(f"{tf} H.A./MACD","")) for x in ["BULL", "ALCISTA"]))
+    bears = sum(1 for tf in TIMEFRAMES if any(x in str(row.get(f"{tf} H.A./MACD","")) for x in ["BEAR", "BAJISTA"]))
     bias_1d = str(row.get("1D MACD 0", ""))
     
     if bulls >= 5 and "SOBRE 0" in bias_1d: return "🔥 COMPRA FUERTE", "MTF CONFLUENCE BULL"
@@ -127,11 +103,11 @@ def get_verdict(row):
     return "⚖️ RANGO", "NO TREND"
 
 # ─────────────────────────────────────────────
-# ESCANEO
+# ESCANEO ACUMULATIVO
 # ─────────────────────────────────────────────
-def scan_batch(targets):
+def scan_batch(targets, accumulate=True):
     ex = get_exchange()
-    results = []
+    new_results = []
     prog = st.progress(0)
     for idx, sym in enumerate(targets):
         clean = sym.split(":")[0].replace("/USDT", "")
@@ -152,32 +128,36 @@ def scan_batch(targets):
             v, e = get_verdict(row)
             row["VEREDICTO"] = v
             row["ESTRATEGIA"] = e
-            results.append(row)
+            new_results.append(row)
             time.sleep(0.05)
         except: continue
     prog.empty()
-    return results
+
+    if accumulate:
+        # Lógica de Upsert: Actualizar si existe, añadir si no.
+        current_data = {item["Activo"]: item for item in st.session_state["sniper_results"]}
+        for item in new_results:
+            current_data[item["Activo"]] = item
+        return list(current_data.values())
+    else:
+        return new_results
 
 # ─────────────────────────────────────────────
-# UI & STYLER (COLORES UNIVERSALES)
+# UI & STYLER
 # ─────────────────────────────────────────────
-st.title("🎯 SNIPER MATRIX V17.0")
-
 def style_df(df):
     def apply_color(val):
         v = str(val).upper()
-        # 1. ALCISTA / BULL / SOBRE 0 (VERDE)
-        if any(x in v for x in ["CONFIRMACION BULL", "SOBRE 0", "ALCISTA", "COMPRA", "RSI↑"]):
+        if any(x in v for x in ["BULL", "SOBRE 0", "ALCISTA", "COMPRA", "RSI↑"]):
             return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
-        # 2. BAJISTA / BEAR / BAJO 0 (ROJO)
-        if any(x in v for x in ["CONFIRMACION BEAR", "BAJO 0", "BAJISTA", "VENTA", "RSI↓"]):
+        if any(x in v for x in ["BEAR", "BAJO 0", "BAJISTA", "VENTA", "RSI↓"]):
             return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
-        # 3. PULLBACK ALCISTA (CELESTE CLARO)
-        if "PULLBACK ALCISTA" in v or "GIRO PROBABLE" in v:
+        if any(x in v for x in ["PULLBACK ALCISTA", "GIRO PROBABLE", "DETECTED"]):
             return 'background-color: #E1F5FE; color: #01579B; font-weight: bold;'
-        # 4. PULLBACK BAJISTA (NARANJA CLARO)
         if "PULLBACK BAJISTA" in v:
             return 'background-color: #FFF3E0; color: #E65100; font-weight: bold;'
+        if any(x in v for x in ["RANGO", "NO TREND"]):
+            return 'background-color: #F5F5F5; color: #616161; font-weight: normal;'
         return ''
     return df.style.applymap(apply_color)
 
@@ -185,25 +165,32 @@ with st.sidebar:
     st.header("Radar Control")
     all_sym = get_active_pairs()
     if all_sym:
-        b_size = st.selectbox("Batch Size", [10, 20, 30], index=0)
+        b_size = st.selectbox("Batch Size", [10, 20, 30, 50], index=1)
         batches = [all_sym[i:i+b_size] for i in range(0, len(all_sym), b_size)]
         sel = st.selectbox("Select Batch", range(len(batches)))
+        
+        mode_acc = st.checkbox("Acumular Resultados", value=True)
+        
         if st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True):
-            st.session_state["sniper_results"] = scan_batch(batches[sel])
-    
-    if st.button("Limpiar"):
-        st.session_state["sniper_results"] = []
-        st.rerun()
+            st.session_state["sniper_results"] = scan_batch(batches[sel], accumulate=mode_acc)
 
+    st.divider()
+    if st.session_state["sniper_results"]:
+        df_temp = pd.DataFrame(st.session_state["sniper_results"])
+        f_ver = st.multiselect("Filtrar Veredicto:", options=df_temp["VEREDICTO"].unique(), default=df_temp["VEREDICTO"].unique())
+        f_est = st.multiselect("Filtrar Estrategia:", options=df_temp["ESTRATEGIA"].unique(), default=df_temp["ESTRATEGIA"].unique())
+    
+    if st.button("Limpiar Memoria"):
+        st.session_state["sniper_results"] = []; st.rerun()
+
+# RENDER
 if st.session_state["sniper_results"]:
-    df = pd.DataFrame(st.session_state["sniper_results"])
+    df_final = pd.DataFrame(st.session_state["sniper_results"])
+    df_final = df_final[df_final["VEREDICTO"].isin(f_ver) & df_final["ESTRATEGIA"].isin(f_est)]
+    
     prio = ["Activo", "VEREDICTO", "ESTRATEGIA", "Precio"]
-    valid = [c for c in prio if c in df.columns]
-    others = [c for c in df.columns if c not in valid]
-    
-    # Reordenar para ver el veredicto al inicio
-    df_final = df[valid + others]
-    
-    st.dataframe(style_df(df_final), use_container_width=True, height=800)
+    valid = [c for c in prio if c in df_final.columns]
+    others = [c for c in df_final.columns if c not in valid]
+    st.dataframe(style_df(df_final[valid + others]), use_container_width=True, height=800)
 else:
-    st.info("👈 Configure el lote y presione INICIAR ESCANEO.")
+    st.info("👈 Presione INICIAR ESCANEO.")
