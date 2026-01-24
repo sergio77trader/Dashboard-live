@@ -2,149 +2,107 @@ import streamlit as st
 import ccxt
 import pandas as pd
 import pandas_ta as ta
-from datetime import datetime, timedelta
+from datetime import datetime
 
-# ===============================
-# CONFIG
-# ===============================
-st.set_page_config(layout="wide", page_title="SystemaTrader – MACD / RSI Matrix")
+# ---------------- CONFIG ----------------
+st.set_page_config(layout="wide", page_title="HA + MACD + RSI Dashboard")
 
-SYMBOLS = ["BTC/USDT", "ETH/USDT", "BNB/USDT"]
-TIMEFRAMES = {
-    "1m": "1m",
-    "5m": "5m"
-}
+exchange = ccxt.binance({
+    "enableRateLimit": True
+})
 
-RSI_LEN = 14
+symbol = "BTC/USDT"
+timeframes = ["1m", "5m", "15m"]
 
-exchange = ccxt.binance()
+limit = 200
 
-# ===============================
-# UTILS
-# ===============================
-def heikin_ashi(df):
-    ha = df.copy()
-    ha["HA_Close"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
-    ha["HA_Open"] = 0.0
-    ha.iloc[0, ha.columns.get_loc("HA_Open")] = (df.iloc[0]["open"] + df.iloc[0]["close"]) / 2
-
-    for i in range(1, len(df)):
-        ha.iloc[i, ha.columns.get_loc("HA_Open")] = (
-            ha.iloc[i - 1]["HA_Open"] + ha.iloc[i - 1]["HA_Close"]
-        ) / 2
-
-    ha["HA_High"] = ha[["HA_Open", "HA_Close", "high"]].max(axis=1)
-    ha["HA_Low"] = ha[["HA_Open", "HA_Close", "low"]].min(axis=1)
-    return ha
+# ---------------- FUNCTIONS ----------------
+def get_data(symbol, tf):
+    ohlcv = exchange.fetch_ohlcv(symbol, tf, limit=limit)
+    df = pd.DataFrame(
+        ohlcv,
+        columns=["time", "open", "high", "low", "close", "volume"]
+    )
+    df["time"] = pd.to_datetime(df["time"], unit="ms")
+    return df
 
 
-def analyze_ticker_tf(symbol, tf, exchange, current_price):
-    try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=120)
-        df = pd.DataFrame(
-            ohlcv, columns=["time", "open", "high", "low", "close", "volume"]
-        )
-        df["time"] = pd.to_datetime(df["time"], unit="ms")
-        df.set_index("time", inplace=True)
+def analyze_tf(tf):
+    df = get_data(symbol, tf)
 
-        # Heikin Ashi
-        ha = heikin_ashi(df)
+    # --- Heikin Ashi ---
+    ha = ta.ha(df["open"], df["high"], df["low"], df["close"])
+    df["ha_close"] = ha["HA_close"]
+    df["ha_open"] = ha["HA_open"]
 
-        # MACD
-        macd = ta.macd(ha["HA_Close"])
-        ha = pd.concat([ha, macd], axis=1)
+    ha_trend = "🟢 LONG" if df["ha_close"].iloc[-2] > df["ha_open"].iloc[-2] else "🔴 SHORT"
 
-        # RSI
-        ha["RSI"] = ta.rsi(ha["HA_Close"], length=RSI_LEN)
+    # --- MACD ---
+    macd = ta.macd(df["close"])
+    df["macd"] = macd["MACD_12_26_9"]
+    df["signal"] = macd["MACDs_12_26_9"]
+    df["hist"] = macd["MACDh_12_26_9"]
 
-        last = ha.iloc[-1]
-        prev = ha.iloc[-2]
+    hist_state = (
+        "Alcista"
+        if df["hist"].iloc[-2] > df["hist"].iloc[-3]
+        else "Bajista"
+    )
 
-        # Estado HA + MACD
-        if last["HA_Close"] > last["HA_Open"] and last["MACDh_12_26_9"] > 0:
-            state = "LONG"
-        elif last["HA_Close"] < last["HA_Open"] and last["MACDh_12_26_9"] < 0:
-            state = "SHORT"
-        else:
-            state = "NEUTRO"
+    # Cruce MACD última vela cerrada
+    cruce = "—"
+    hora_cruce = "—"
 
-        # RSI
-        rsi_val = round(last["RSI"], 1)
-        rsi_state = "RSI↑" if last["RSI"] > prev["RSI"] else "RSI↓"
+    if (
+        df["macd"].iloc[-3] < df["signal"].iloc[-3]
+        and df["macd"].iloc[-2] > df["signal"].iloc[-2]
+    ):
+        cruce = "Alcista"
+        hora_cruce = df["time"].iloc[-2].strftime("%H:%M")
 
-        # Histograma
-        hist_state = (
-            "ALCISTA"
-            if last["MACDh_12_26_9"] > prev["MACDh_12_26_9"]
-            else "BAJISTA"
-        )
+    elif (
+        df["macd"].iloc[-3] > df["signal"].iloc[-3]
+        and df["macd"].iloc[-2] < df["signal"].iloc[-2]
+    ):
+        cruce = "Bajista"
+        hora_cruce = df["time"].iloc[-2].strftime("%H:%M")
 
-        # Cruce MACD
-        cross_type = "-"
-        cross_time = "-"
+    # --- RSI ---
+    rsi = ta.rsi(df["close"], length=14)
+    rsi_val = round(rsi.iloc[-2], 1)
 
-        if (
-            prev["MACD_12_26_9"] < prev["MACDs_12_26_9"]
-            and last["MACD_12_26_9"] > last["MACDs_12_26_9"]
-        ):
-            cross_type = "CRUCE ALCISTA"
-            cross_time = last.name.strftime("%H:%M")
+    rsi_state = "RSI↑" if rsi_val > 50 else "RSI↓"
 
-        if (
-            prev["MACD_12_26_9"] > prev["MACDs_12_26_9"]
-            and last["MACD_12_26_9"] < last["MACDs_12_26_9"]
-        ):
-            cross_type = "CRUCE BAJISTA"
-            cross_time = last.name.strftime("%H:%M")
+    alerta = f"{ha_trend} | {rsi_state} ({rsi_val})"
 
-        return {
-            "state": state,
-            "rsi_state": rsi_state,
-            "rsi_val": rsi_val,
-            "hist_state": hist_state,
-            "cross_type": cross_type,
-            "cross_time": cross_time,
-            "time": last.name.strftime("%H:%M"),
-        }
+    # --- Estrategia ---
+    if ha_trend.startswith("🟢") and hist_state == "Alcista":
+        estrategia = "COMPRA FUERTE"
+    elif ha_trend.startswith("🔴") and hist_state == "Bajista":
+        estrategia = "VENTA FUERTE"
+    else:
+        estrategia = "ESPERAR"
 
-    except Exception as e:
-        return None
-
-
-# ===============================
-# UI
-# ===============================
-st.title("📊 SystemaTrader – MACD / RSI Multi-TF")
-
-rows = []
-
-for sym in SYMBOLS:
-    ticker = exchange.fetch_ticker(sym)
-    px = ticker["last"]
-
-    row = {
-        "SYMBOL": sym,
-        "PRECIO": round(px, 2),
+    return {
+        "TEMPORALIDAD HA-MACD": f"{tf} HA-MACD",
+        "ALERTA": alerta,
+        "MACD HIST": hist_state,
+        "CRUCE MACD": cruce,
+        "HORA CRUCE": hora_cruce,
+        "ESTRATEGIA": estrategia
     }
 
-    for label, tf in TIMEFRAMES.items():
-        res = analyze_ticker_tf(sym, tf, exchange, px)
+# ---------------- UI ----------------
+st.title("📊 H.A. + MACD + RSI (Última vela cerrada)")
 
-        if res:
-            icon = "🟢" if res["state"] == "LONG" else "🔴" if res["state"] == "SHORT" else "⚪"
-            row[f"{label} HA-MACD"] = f"{icon} {res['state']} | {res['rsi_state']} ({res['rsi_val']})"
-            row[f"{label} ALERTA"] = res["time"]
-            row[f"{label} MACD HIST"] = res["hist_state"]
-            row[f"{label} CRUCE MACD"] = res["cross_type"]
-            row[f"{label} HORA CRUCE"] = res["cross_time"]
-        else:
-            row[f"{label} HA-MACD"] = "-"
-            row[f"{label} ALERTA"] = "-"
-            row[f"{label} MACD HIST"] = "-"
-            row[f"{label} CRUCE MACD"] = "-"
-            row[f"{label} HORA CRUCE"] = "-"
+rows = []
+for tf in timeframes:
+    rows.append(analyze_tf(tf))
 
-    rows.append(row)
+df_final = pd.DataFrame(rows)
 
-df = pd.DataFrame(rows)
-st.dataframe(df, use_container_width=True)
+st.dataframe(
+    df_final,
+    use_container_width=True,
+    hide_index=True
+)
