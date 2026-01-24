@@ -7,9 +7,9 @@ import time
 from datetime import datetime
 
 # ─────────────────────────────────────────────
-# CONFIGURACIÓN INSTITUCIONAL
+# CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V20.0")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V21.0")
 
 st.markdown("""
 <style>
@@ -25,19 +25,28 @@ if "sniper_results" not in st.session_state:
 TIMEFRAMES = {"1m":"1m", "5m":"5m", "15m":"15m", "30m":"30m", "1H":"1h", "4H":"4h", "1D":"1d"}
 
 # ─────────────────────────────────────────────
-# MOTOR DE DATOS
+# MOTOR DE DATOS (FILTRO RELAJADO PARA MÁS ACTIVOS)
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchange():
     return ccxt.kucoinfutures({"enableRateLimit": True, "timeout": 30000})
 
 @st.cache_data(ttl=300)
-def get_active_pairs():
+def get_active_pairs(min_volume=100000): # Bajamos de 1M a 100k para captar +500 activos
     try:
         ex = get_exchange()
         tickers = ex.fetch_tickers()
-        return [s for s, t in tickers.items() if "/USDT:USDT" in s and t.get("quoteVolume", 0) > 1000000]
-    except: return []
+        valid = []
+        for s, t in tickers.items():
+            # Filtro USDT Futures y volumen mínimo (relajado)
+            if "/USDT:USDT" in s and t.get("quoteVolume", 0) >= min_volume:
+                valid.append({"symbol": s, "vol": t["quoteVolume"]})
+        
+        df_v = pd.DataFrame(valid).sort_values("vol", ascending=False)
+        return df_v["symbol"].tolist()
+    except Exception as e:
+        st.error(f"Error de conexión: {e}")
+        return []
 
 def calculate_heikin_ashi(df):
     df = df.copy()
@@ -68,7 +77,6 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         df = calculate_heikin_ashi(df)
 
         last, prev = df.iloc[-1], df.iloc[-2]
-        
         phase, icon = "NEUTRO", "⚪"
         if last["HA_Color"] == 1 and last["Hist"] > prev["Hist"]:
             phase, icon = ("PULLBACK ALCISTA", "🔵") if last["Hist"] < 0 else ("CONFIRMACION BULL", "🟢")
@@ -95,11 +103,9 @@ def get_verdict(row):
     bulls = sum(1 for tf in TIMEFRAMES if any(x in str(row.get(f"{tf} H.A./MACD","")) for x in ["BULL", "ALCISTA"]))
     bears = sum(1 for tf in TIMEFRAMES if any(x in str(row.get(f"{tf} H.A./MACD","")) for x in ["BEAR", "BAJISTA"]))
     bias_1d = str(row.get("1D MACD 0", ""))
-    
     if bulls >= 5 and "SOBRE 0" in bias_1d: return "🔥 COMPRA FUERTE", "MTF CONFLUENCE BULL"
     if bears >= 5 and "BAJO 0" in bias_1d: return "🩸 VENTA FUERTE", "MTF CONFLUENCE BEAR"
     if "PULLBACK ALCISTA" in str(row.get("1m H.A./MACD", "")): return "💎 GIRO PROBABLE", "PULLBACK DETECTED"
-    
     return "⚖️ RANGO", "NO TREND"
 
 # ─────────────────────────────────────────────
@@ -134,13 +140,10 @@ def scan_batch(targets, accumulate=True):
     prog.empty()
 
     if accumulate:
-        # Lógica de Upsert: Actualizar si existe, añadir si no.
         current_data = {item["Activo"]: item for item in st.session_state["sniper_results"]}
-        for item in new_results:
-            current_data[item["Activo"]] = item
+        for item in new_results: current_data[item["Activo"]] = item
         return list(current_data.values())
-    else:
-        return new_results
+    else: return new_results
 
 # ─────────────────────────────────────────────
 # UI & STYLER
@@ -148,26 +151,30 @@ def scan_batch(targets, accumulate=True):
 def style_df(df):
     def apply_color(val):
         v = str(val).upper()
-        if any(x in v for x in ["BULL", "SOBRE 0", "ALCISTA", "COMPRA", "RSI↑"]):
-            return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
-        if any(x in v for x in ["BEAR", "BAJO 0", "BAJISTA", "VENTA", "RSI↓"]):
-            return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
-        if any(x in v for x in ["PULLBACK ALCISTA", "GIRO PROBABLE", "DETECTED"]):
-            return 'background-color: #E1F5FE; color: #01579B; font-weight: bold;'
-        if "PULLBACK BAJISTA" in v:
-            return 'background-color: #FFF3E0; color: #E65100; font-weight: bold;'
-        if any(x in v for x in ["RANGO", "NO TREND"]):
-            return 'background-color: #F5F5F5; color: #616161; font-weight: normal;'
+        if any(x in v for x in ["BULL", "SOBRE 0", "ALCISTA", "COMPRA", "RSI↑"]): return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
+        if any(x in v for x in ["BEAR", "BAJO 0", "BAJISTA", "VENTA", "RSI↓"]): return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
+        if any(x in v for x in ["PULLBACK ALCISTA", "GIRO PROBABLE", "DETECTED"]): return 'background-color: #E1F5FE; color: #01579B; font-weight: bold;'
+        if "PULLBACK BAJISTA" in v: return 'background-color: #FFF3E0; color: #E65100; font-weight: bold;'
+        if any(x in v for x in ["RANGO", "NO TREND"]): return 'background-color: #F5F5F5; color: #616161; font-weight: normal;'
         return ''
     return df.style.applymap(apply_color)
 
 with st.sidebar:
     st.header("Radar Control")
-    all_sym = get_active_pairs()
+    
+    # Selector de volumen dinámico
+    vol_min = st.number_input("Volumen Mínimo (24h)", value=100000, step=50000)
+    
+    all_sym = get_active_pairs(min_volume=vol_min)
+    
     if all_sym:
-        b_size = st.selectbox("Batch Size", [10, 20, 30, 50], index=1)
+        st.success(f"Activos encontrados: {len(all_sym)}")
+        b_size = st.selectbox("Batch Size", [10, 20, 30, 50, 100], index=3)
         batches = [all_sym[i:i+b_size] for i in range(0, len(all_sym), b_size)]
-        sel = st.selectbox("Select Batch", range(len(batches)))
+        
+        # Selector de Lote más descriptivo
+        batch_options = {i: f"Lote {i} ({len(batches[i])} activos)" for i in range(len(batches))}
+        sel = st.selectbox("Select Batch", options=list(batch_options.keys()), format_func=lambda x: batch_options[x])
         
         mode_acc = st.checkbox("Acumular Resultados", value=True)
         
@@ -187,7 +194,6 @@ with st.sidebar:
 if st.session_state["sniper_results"]:
     df_final = pd.DataFrame(st.session_state["sniper_results"])
     df_final = df_final[df_final["VEREDICTO"].isin(f_ver) & df_final["ESTRATEGIA"].isin(f_est)]
-    
     prio = ["Activo", "VEREDICTO", "ESTRATEGIA", "Precio"]
     valid = [c for c in prio if c in df_final.columns]
     others = [c for c in df_final.columns if c not in valid]
