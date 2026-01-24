@@ -64,13 +64,11 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         if not ohlcv or len(ohlcv) < 50:
             return None
 
-        # Precio en tiempo real
         ohlcv[-1][4] = current_price
 
         df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','vol'])
         df['dt'] = pd.to_datetime(df['time'], unit='ms')
 
-        # Indicadores
         macd = ta.macd(df['close'])
         df['Hist'] = macd['MACDh_12_26_9']
         df['RSI'] = ta.rsi(df['close'], length=14)
@@ -130,7 +128,7 @@ def get_recommendation(row):
 
     return "⚖️ RANGO / ESPERAR"
 
-# --- ESCANEO POR LOTE ---
+# --- ESCANEO ---
 def scan_batch(targets):
     ex = get_exchange()
     results = []
@@ -138,7 +136,7 @@ def scan_batch(targets):
 
     for idx, sym in enumerate(targets):
         clean = sym.replace(':USDT','').replace('/USDT','')
-        prog.progress(idx/len(targets), text=f"Analizando {clean} ({idx+1}/{len(targets)})")
+        prog.progress(idx/len(targets), text=f"Analizando {clean}")
 
         try:
             price = ex.fetch_ticker(sym)['last']
@@ -152,10 +150,19 @@ def scan_batch(targets):
             if res:
                 state, date, rsi_state, rsi_val = res
                 icon = "🟢" if state=="LONG" else "🔴" if state=="SHORT" else "⚪"
-                date = (date - pd.Timedelta(hours=3)).strftime('%d/%m %H:%M')
+                date = (date - pd.Timedelta(hours=3)).strftime('%H:%M')
+
+                # columna original
                 row[label] = f"{icon} {state} | {rsi_state} ({rsi_val})\n({date})"
+
+                # NUEVA columna compacta (HA + MACD + RSI | FECHA)
+                row[f"{label}_INFO"] = (
+                    "HA-MACD-RSI | ALERTA\n"
+                    f"{state} {rsi_state} | {date}"
+                )
             else:
                 row[label] = "-"
+                row[f"{label}_INFO"] = "-"
 
         row['Estrategia'] = get_recommendation(row)
         results.append(row)
@@ -164,47 +171,25 @@ def scan_batch(targets):
     prog.empty()
     return results
 
-# --- INTERFAZ ---
+# --- UI ---
 st.title("🎯 SystemaTrader: MNQ Sniper Matrix V4")
 st.caption("Heikin Ashi + MACD + RSI MTF | KuCoin Futures")
 
 with st.sidebar:
     st.header("Configuración")
-
     with st.spinner("Cargando mercado..."):
         all_symbols = get_active_pairs()
 
     if all_symbols:
-        st.success(f"Mercado: {len(all_symbols)} activos")
-        st.divider()
-
         BATCH_SIZE = st.selectbox("Tamaño Lote:", [10, 20, 30, 50], index=1)
         batches = [all_symbols[i:i + BATCH_SIZE] for i in range(0, len(all_symbols), BATCH_SIZE)]
-        batch_opts = [f"Lote {i+1} ({b[0].split('/')[0]}...)" for i, b in enumerate(batches)]
-        sel_batch = st.selectbox("Seleccionar Lote:", range(len(batches)),
-                                 format_func=lambda x: batch_opts[x])
-
-        accumulate = st.checkbox("Acumular Resultados", value=True)
+        sel_batch = st.selectbox("Seleccionar Lote:", range(len(batches)))
 
         if st.button("🚀 ESCANEAR LOTE", type="primary"):
-            target = batches[sel_batch]
-            with st.spinner("Procesando matriz fractal..."):
-                new_data = scan_batch(target)
-
-                if new_data:
-                    if accumulate:
-                        existing = {x['Activo'] for x in st.session_state['sniper_results']}
-                        for item in new_data:
-                            if item['Activo'] not in existing:
-                                st.session_state['sniper_results'].append(item)
-                    else:
-                        st.session_state['sniper_results'] = new_data
+            new_data = scan_batch(batches[sel_batch])
+            st.session_state['sniper_results'] = new_data
     else:
         st.error("Error de conexión.")
-
-    if st.button("Limpiar"):
-        st.session_state['sniper_results'] = []
-        st.rerun()
 
 # --- TABLA ---
 if st.session_state['sniper_results']:
