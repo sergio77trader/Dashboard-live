@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V23.0")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V24.0")
 
 st.markdown("""
 <style>
@@ -136,79 +136,82 @@ def scan_batch(targets, accumulate=True):
     return new_results
 
 # ─────────────────────────────────────────────
+# FUNCION MAPEO DE COLOR PARA FILTRO
+# ─────────────────────────────────────────────
+def get_color_category(val):
+    v = str(val).upper()
+    if any(x in v for x in ["BULL", "SOBRE 0", "ALCISTA", "COMPRA"]): return "VERDE"
+    if any(x in v for x in ["BEAR", "BAJO 0", "BAJISTA", "VENTA"]): return "ROJO"
+    if any(x in v for x in ["PULLBACK ALCISTA", "GIRO PROBABLE", "DETECTED"]): return "AZUL"
+    if "PULLBACK BAJISTA" in v: return "NARANJA"
+    return "BLANCO"
+
+# ─────────────────────────────────────────────
 # UI & STYLER
 # ─────────────────────────────────────────────
 def style_df(df):
     def apply_color(val):
-        v = str(val).upper()
-        if any(x in v for x in ["BULL", "SOBRE 0", "ALCISTA", "COMPRA", "RSI↑"]): return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
-        if any(x in v for x in ["BEAR", "BAJO 0", "BAJISTA", "VENTA", "RSI↓"]): return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
-        if any(x in v for x in ["PULLBACK ALCISTA", "GIRO PROBABLE", "DETECTED"]): return 'background-color: #E1F5FE; color: #01579B; font-weight: bold;'
-        if "PULLBACK BAJISTA" in v: return 'background-color: #FFF3E0; color: #E65100; font-weight: bold;'
-        if any(x in v for x in ["RANGO", "NO TREND"]): return 'background-color: #F5F5F5; color: #616161; font-weight: normal;'
+        cat = get_color_category(val)
+        if cat == "VERDE": return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
+        if cat == "ROJO": return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
+        if cat == "AZUL": return 'background-color: #E1F5FE; color: #01579B; font-weight: bold;'
+        if cat == "NARANJA": return 'background-color: #FFF3E0; color: #E65100; font-weight: bold;'
+        if cat == "BLANCO": return 'background-color: #F5F5F5; color: #616161; font-weight: normal;'
         return ''
     return df.style.applymap(apply_color)
 
 with st.sidebar:
     st.header("Radar Control")
-    mode = st.radio("Modo de Análisis:", ["Mercado (Lotes)", "Watchlist (Personalizada)"])
-    
+    mode = st.radio("Modo:", ["Mercado", "Watchlist"])
     all_sym = get_active_pairs(min_volume=0)
     targets = []
     
-    if mode == "Mercado (Lotes)":
-        vol_min = st.number_input("Volumen Mínimo (24h)", value=100000, step=50000)
+    if mode == "Mercado":
+        vol_min = st.number_input("Volumen Min.", value=100000, step=50000)
         f_sym = [s for s in all_sym if s in get_active_pairs(min_volume=vol_min)]
         st.success(f"Disponibles: {len(f_sym)}")
-        b_size = st.selectbox("Batch Size", [10, 20, 50, 100], index=2)
+        b_size = st.selectbox("Batch", [20, 50, 100], index=1)
         batches = [f_sym[i:i+b_size] for i in range(0, len(f_sym), b_size)]
         sel = st.selectbox("Lote", range(len(batches)), format_func=lambda x: f"Lote {x} ({len(batches[x])} activos)")
         targets = batches[sel] if batches else []
     else:
         targets = st.multiselect("Watchlist:", options=all_sym)
 
-    mode_acc = st.checkbox("Acumular Resultados", value=True)
+    mode_acc = st.checkbox("Acumular", value=True)
     if st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True):
         if targets: st.session_state["sniper_results"] = scan_batch(targets, accumulate=mode_acc)
-        else: st.warning("Sin activos.")
 
     st.divider()
     # ─────────────────────────────────────────────
-    # MOTOR DE FILTROS AVANZADOS (V23.0)
+    # FILTROS POR COLORES (V24.0)
     # ─────────────────────────────────────────────
     if st.session_state["sniper_results"]:
-        st.header("Filtros Avanzados")
-        df_t = pd.DataFrame(st.session_state["sniper_results"])
+        st.header("Filtros por Colores")
+        color_options = ["VERDE", "ROJO", "AZUL", "NARANJA", "BLANCO"]
         
-        # Filtros Core
-        f_v = st.multiselect("Veredicto:", options=df_t["VEREDICTO"].unique(), default=df_t["VEREDICTO"].unique())
-        f_e = st.multiselect("Estrategia:", options=df_t["ESTRATEGIA"].unique(), default=df_t["ESTRATEGIA"].unique())
-        
-        # Filtros por Temporalidad
-        f_signals = {}
-        with st.expander("Filtros por H.A./MACD"):
+        f_colors = {}
+        with st.expander("Filtrar por H.A./MACD"):
             for label in TIMEFRAMES.keys():
                 col_name = f"{label} H.A./MACD"
-                if col_name in df_t.columns:
-                    f_signals[col_name] = st.multiselect(
-                        f"{label} Signal:",
-                        options=df_t[col_name].unique(),
-                        default=df_t[col_name].unique()
-                    )
-    
+                f_colors[col_name] = st.multiselect(f"Color {label}:", options=color_options, default=color_options)
+        
+        st.header("Filtros Core")
+        f_v = st.multiselect("Veredicto:", options=color_options, default=color_options)
+
     if st.button("Limpiar Memoria"):
         st.session_state["sniper_results"] = []; st.rerun()
 
-# RENDERIZADO CON FILTROS APLICADOS
+# RENDERIZADO
 if st.session_state["sniper_results"]:
     df_f = pd.DataFrame(st.session_state["sniper_results"])
     
-    # 1. Aplicar filtros Core
-    df_f = df_f[df_f["VEREDICTO"].isin(f_v) & df_f["ESTRATEGIA"].isin(f_e)]
+    # Aplicar filtros de colores en temporalidades
+    for col_name, selected_colors in f_colors.items():
+        if col_name in df_f.columns:
+            df_f = df_f[df_f[col_name].apply(lambda x: get_color_category(x) in selected_colors)]
     
-    # 2. Aplicar filtros de Temporalidad
-    for col_name, selected_values in f_signals.items():
-        df_f = df_f[df_f[col_name].isin(selected_values)]
+    # Aplicar filtro de color en Veredicto
+    df_f = df_f[df_f["VEREDICTO"].apply(lambda x: get_color_category(x) in f_v)]
     
     prio = ["Activo", "VEREDICTO", "ESTRATEGIA", "Precio"]
     valid = [c for c in prio if c in df_f.columns]
