@@ -7,19 +7,26 @@ import time
 from datetime import datetime
 
 # ─────────────────────────────────────────────
-# CONFIG
+# CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SystemaTrader: HA + MACD Matrix")
+st.set_page_config(layout="wide", page_title="SystemaTrader: MNQ Sniper Matrix")
 
 st.markdown("""
 <style>
-    .stDataFrame { font-size: 0.8rem; }
+[data-testid="stMetricValue"] { font-size: 14px; }
+.stProgress > div > div > div > div { background-color: #2962FF; }
 </style>
 """, unsafe_allow_html=True)
 
-if 'final_results' not in st.session_state:
-    st.session_state['final_results'] = []
+# ─────────────────────────────────────────────
+# MEMORIA
+# ─────────────────────────────────────────────
+if "sniper_results" not in st.session_state:
+    st.session_state["sniper_results"] = []
 
+# ─────────────────────────────────────────────
+# TEMPORALIDADES
+# ─────────────────────────────────────────────
 TIMEFRAMES = {
     "1m": "1m",
     "5m": "5m",
@@ -27,142 +34,232 @@ TIMEFRAMES = {
     "30m": "30m",
     "1H": "1h",
     "4H": "4h",
-    "1D": "1d",
+    "1D": "1d"
 }
 
 # ─────────────────────────────────────────────
-# EXCHANGE (UNA SOLA VEZ)
+# CONEXIÓN
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchange():
-    ex = ccxt.binance({
+    ex = ccxt.kucoinfutures({
         "enableRateLimit": True,
-        "timeout": 30000,
-        "options": {"defaultType": "future"}
+        "timeout": 30000
     })
     ex.load_markets()
     return ex
 
-# ─────────────────────────────────────────────
-# DATA
-# ─────────────────────────────────────────────
-def get_data(symbol, tf, limit=200):
+
+@st.cache_data(ttl=3600)
+def get_active_pairs():
     try:
         ex = get_exchange()
-        ohlcv = ex.fetch_ohlcv(symbol, tf, limit=limit)
-        if not ohlcv or len(ohlcv) < 50:
-            return None
+        tickers = ex.fetch_tickers()
+        valid = []
 
-        df = pd.DataFrame(
-            ohlcv,
-            columns=["time","open","high","low","close","volume"]
+        for s in tickers:
+            if "/USDT:USDT" in s and tickers[s].get("quoteVolume"):
+                valid.append({
+                    "symbol": s,
+                    "vol": tickers[s]["quoteVolume"]
+                })
+
+        return (
+            pd.DataFrame(valid)
+            .sort_values("vol", ascending=False)["symbol"]
+            .tolist()
         )
-        df["dt"] = pd.to_datetime(df["time"], unit="ms")
-        return df
-
     except:
-        return None
+        return []
 
 # ─────────────────────────────────────────────
 # HEIKIN ASHI
 # ─────────────────────────────────────────────
-def heikin_ashi(df):
+def calculate_heikin_ashi(df):
     df = df.copy()
     df["HA_Close"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
+
     ha_open = [df["open"].iloc[0]]
     for i in range(1, len(df)):
         ha_open.append((ha_open[-1] + df["HA_Close"].iloc[i-1]) / 2)
+
     df["HA_Open"] = ha_open
     df["HA_Color"] = np.where(df["HA_Close"] > df["HA_Open"], 1, -1)
     return df
 
 # ─────────────────────────────────────────────
-# ANALISIS POR TF
+# ANÁLISIS POR TEMPORALIDAD
 # ─────────────────────────────────────────────
-def analyze_tf(symbol, tf):
-    df = get_data(symbol, tf)
-    if df is None:
+def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=100)
+        if not ohlcv or len(ohlcv) < 50:
+            return None
+
+        # reemplaza última vela con precio actual
+        ohlcv[-1][4] = current_price
+
+        df = pd.DataFrame(
+            ohlcv,
+            columns=["time", "open", "high", "low", "close", "vol"]
+        )
+        df["dt"] = pd.to_datetime(df["time"], unit="ms")
+
+        macd = ta.macd(df["close"])
+        df["Hist"] = macd["MACDh_12_26_9"]
+        df["RSI"] = ta.rsi(df["close"], length=14)
+
+        df = calculate_heikin_ashi(df)
+
+        position = "NEUTRO"
+        last_date = df["dt"].iloc[-1]
+
+        for i in range(1, len(df)):
+            hist = df["Hist"].iloc[i]
+            prev_hist = df["Hist"].iloc[i-1]
+            ha_color = df["HA_Color"].iloc[i]
+            date = df["dt"].iloc[i]
+
+            if position == "LONG" and hist < prev_hist:
+                position = "NEUTRO"
+            elif position == "SHORT" and hist > prev_hist:
+                position = "NEUTRO"
+
+            if position == "NEUTRO":
+                if ha_color == 1 and hist > prev_hist:
+                    position = "LONG"
+                    last_date = date
+                elif ha_color == -1 and hist < prev_hist:
+                    position = "SHORT"
+                    last_date = date
+
+        rsi_val = round(df["RSI"].iloc[-1], 1)
+        if rsi_val > 55:
+            rsi_state = "RSI↑"
+        elif rsi_val < 45:
+            rsi_state = "RSI↓"
+        else:
+            rsi_state = "RSI="
+
+        return position, last_date, rsi_state, rsi_val
+
+    except:
         return None
 
-    macd = ta.macd(df["close"])
-    df["MACD"] = macd["MACD_12_26_9"]
-    df["SIGNAL"] = macd["MACDs_12_26_9"]
-    df["HIST"] = macd["MACDh_12_26_9"]
+# ─────────────────────────────────────────────
+# RECOMENDACIÓN FINAL
+# ─────────────────────────────────────────────
+def get_recommendation(row):
+    longs = sum("LONG" in str(row.get(f"{tf} HA-MACD", "")) for tf in TIMEFRAMES)
+    shorts = sum("SHORT" in str(row.get(f"{tf} HA-MACD", "")) for tf in TIMEFRAMES)
 
-    df["RSI"] = ta.rsi(df["close"], 14)
-    df = heikin_ashi(df)
+    rsi_htf_bull = (
+        "RSI↑" in str(row.get("4H HA-MACD", "")) or
+        "RSI↑" in str(row.get("1D HA-MACD", ""))
+    )
+    rsi_htf_bear = (
+        "RSI↓" in str(row.get("4H HA-MACD", "")) or
+        "RSI↓" in str(row.get("1D HA-MACD", ""))
+    )
 
-    # ── HA + HIST
-    state = "NEUTRO"
-    last_dt = df["dt"].iloc[-1]
+    if longs >= 5 and rsi_htf_bull:
+        return "🔥 COMPRA FUERTE (RSI CONFIRMADO)"
+    if shorts >= 5 and rsi_htf_bear:
+        return "🩸 VENTA FUERTE (RSI CONFIRMADO)"
 
-    for i in range(1, len(df)):
-        if df["HA_Color"].iloc[i] == 1 and df["HIST"].iloc[i] > df["HIST"].iloc[i-1]:
-            state = "LONG"
-            last_dt = df["dt"].iloc[i]
-        elif df["HA_Color"].iloc[i] == -1 and df["HIST"].iloc[i] < df["HIST"].iloc[i-1]:
-            state = "SHORT"
-            last_dt = df["dt"].iloc[i]
+    if "LONG" in str(row.get("1m HA-MACD", "")) and rsi_htf_bear:
+        return "⚠️ REBOTE (Scalp)"
+    if "SHORT" in str(row.get("1m HA-MACD", "")) and rsi_htf_bull:
+        return "📉 DIP (Entrada)"
 
-    # RSI
-    rsi_val = round(df["RSI"].iloc[-1], 1)
-    rsi_txt = "RSI↑" if rsi_val > 55 else "RSI↓" if rsi_val < 45 else "RSI="
-
-    # ── CRUCE MACD (ULTIMA VELA CERRADA)
-    df["CROSS"] = np.where(df["MACD"] > df["SIGNAL"], 1, -1)
-    cross = df["CROSS"].diff()
-
-    cross_type = "-"
-    cross_time = "-"
-
-    if cross.iloc[-2] != 0:
-        cross_type = "ALCISTA" if df["CROSS"].iloc[-2] == 1 else "BAJISTA"
-        cross_time = (df["dt"].iloc[-2] - pd.Timedelta(hours=3)).strftime("%H:%M")
-
-    return {
-        "state": state,
-        "hour": (last_dt - pd.Timedelta(hours=3)).strftime("%H:%M"),
-        "rsi": f"{rsi_txt} ({rsi_val})",
-        "cross": cross_type,
-        "cross_time": cross_time
-    }
+    return "⚖️ RANGO / ESPERAR"
 
 # ─────────────────────────────────────────────
-# SCAN
+# ESCANEO POR LOTE
 # ─────────────────────────────────────────────
-def scan(symbols):
-    rows = []
-    for sym in symbols:
-        row = {"Activo": sym.replace("USDT","")}
-        for tf, code in TIMEFRAMES.items():
-            r = analyze_tf(sym, code)
-            if r:
-                icon = "🟢" if r["state"] == "LONG" else "🔴" if r["state"] == "SHORT" else "⚪"
-                row[f"{tf} HA-MACD"] = f"{icon} {r['state']} | {r['rsi']}"
-                row[f"{tf} ALERTA"] = r["hour"]
-                row[f"{tf} CRUCE"] = r["cross"]
-                row[f"{tf} HORA CRUCE"] = r["cross_time"]
+def scan_batch(targets):
+    ex = get_exchange()
+    results = []
+    prog = st.progress(0, text="Iniciando radar...")
+
+    for idx, sym in enumerate(targets):
+        clean = sym.replace(":USDT", "").replace("/USDT", "")
+        prog.progress((idx + 1) / len(targets), text=f"Analizando {clean}")
+
+        try:
+            price = ex.fetch_ticker(sym)["last"]
+        except:
+            continue
+
+        row = {"Activo": clean}
+
+        for label, tf in TIMEFRAMES.items():
+            res = analyze_ticker_tf(sym, tf, ex, price)
+            if res:
+                state, date, rsi_state, rsi_val = res
+                icon = "🟢" if state == "LONG" else "🔴" if state == "SHORT" else "⚪"
+                hora = (date - pd.Timedelta(hours=3)).strftime("%H:%M")
+
+                row[f"{label} HA-MACD"] = f"{icon} {state} | {rsi_state} ({rsi_val})"
+                row[f"{label} ALERTA"] = hora
             else:
-                row[f"{tf} HA-MACD"] = "-"
-                row[f"{tf} ALERTA"] = "-"
-                row[f"{tf} CRUCE"] = "-"
-                row[f"{tf} HORA CRUCE"] = "-"
-        rows.append(row)
+                row[f"{label} HA-MACD"] = "-"
+                row[f"{label} ALERTA"] = "-"
+
+        row["Estrategia"] = get_recommendation(row)
+        results.append(row)
         time.sleep(0.1)
-    return rows
+
+    prog.empty()
+    return results
 
 # ─────────────────────────────────────────────
-# UI
+# INTERFAZ
 # ─────────────────────────────────────────────
-st.title("📊 HA + MACD + RSI Matrix")
+st.title("🎯 SystemaTrader: MNQ Sniper Matrix V4")
+st.caption("Heikin Ashi + MACD + RSI MTF | KuCoin Futures")
 
-symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT"]
+with st.sidebar:
+    st.header("Configuración")
 
-if st.button("ESCANEAR"):
-    st.session_state["final_results"] = scan(symbols)
+    with st.spinner("Cargando mercado..."):
+        all_symbols = get_active_pairs()
 
-if st.session_state["final_results"]:
-    df = pd.DataFrame(st.session_state["final_results"])
-    st.dataframe(df, use_container_width=True)
+    if all_symbols:
+        st.success(f"Mercado: {len(all_symbols)} activos")
+        st.divider()
+
+        batch_size = st.selectbox("Tamaño Lote:", [10, 20, 30, 50], index=1)
+        batches = [
+            all_symbols[i:i + batch_size]
+            for i in range(0, len(all_symbols), batch_size)
+        ]
+
+        sel = st.selectbox("Seleccionar Lote:", range(len(batches)))
+        accumulate = st.checkbox("Acumular Resultados", value=True)
+
+        if st.button("🚀 ESCANEAR LOTE", type="primary"):
+            new_data = scan_batch(batches[sel])
+
+            if accumulate:
+                existing = {x["Activo"] for x in st.session_state["sniper_results"]}
+                for item in new_data:
+                    if item["Activo"] not in existing:
+                        st.session_state["sniper_results"].append(item)
+            else:
+                st.session_state["sniper_results"] = new_data
+    else:
+        st.error("Error de conexión.")
+
+if st.button("Limpiar"):
+    st.session_state["sniper_results"] = []
+    st.rerun()
+
+# ─────────────────────────────────────────────
+# TABLA
+# ─────────────────────────────────────────────
+if st.session_state["sniper_results"]:
+    df = pd.DataFrame(st.session_state["sniper_results"])
+    st.dataframe(df, use_container_width=True, height=800)
 else:
-    st.info("Presioná ESCANEAR")
+    st.info("👈 Seleccioná un lote para comenzar el escaneo.")
