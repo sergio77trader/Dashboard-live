@@ -88,35 +88,15 @@ def calculate_heikin_ashi(df):
     return df
 
 # ─────────────────────────────────────────────
-# MACD ANALYSIS
-# ─────────────────────────────────────────────
-def analyze_macd(df):
-    hist = df["Hist"]
-
-    last_cross_dir = "Sin cruce"
-    last_cross_time = df["dt"].iloc[-1]
-
-    for i in range(1, len(hist)):
-        if hist.iloc[i-1] < 0 and hist.iloc[i] > 0:
-            last_cross_dir = "Alcista"
-            last_cross_time = df["dt"].iloc[i]
-        elif hist.iloc[i-1] > 0 and hist.iloc[i] < 0:
-            last_cross_dir = "Bajista"
-            last_cross_time = df["dt"].iloc[i]
-
-    momentum = "Acelerando ↑" if hist.iloc[-1] > hist.iloc[-2] else "Perdiendo ↓"
-
-    return last_cross_dir, momentum, last_cross_time
-
-# ─────────────────────────────────────────────
 # ANÁLISIS POR TEMPORALIDAD
 # ─────────────────────────────────────────────
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=120)
-        if not ohlcv or len(ohlcv) < 60:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=100)
+        if not ohlcv or len(ohlcv) < 50:
             return None
 
+        # reemplaza última vela con precio actual
         ohlcv[-1][4] = current_price
 
         df = pd.DataFrame(
@@ -131,7 +111,27 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
 
         df = calculate_heikin_ashi(df)
 
-        macd_dir, momentum, cross_time = analyze_macd(df)
+        position = "NEUTRO"
+        last_date = df["dt"].iloc[-1]
+
+        for i in range(1, len(df)):
+            hist = df["Hist"].iloc[i]
+            prev_hist = df["Hist"].iloc[i-1]
+            ha_color = df["HA_Color"].iloc[i]
+            date = df["dt"].iloc[i]
+
+            if position == "LONG" and hist < prev_hist:
+                position = "NEUTRO"
+            elif position == "SHORT" and hist > prev_hist:
+                position = "NEUTRO"
+
+            if position == "NEUTRO":
+                if ha_color == 1 and hist > prev_hist:
+                    position = "LONG"
+                    last_date = date
+                elif ha_color == -1 and hist < prev_hist:
+                    position = "SHORT"
+                    last_date = date
 
         rsi_val = round(df["RSI"].iloc[-1], 1)
         if rsi_val > 55:
@@ -141,34 +141,41 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         else:
             rsi_state = "RSI="
 
-        return macd_dir, momentum, cross_time, rsi_state, rsi_val
+        return position, last_date, rsi_state, rsi_val
 
     except:
         return None
 
 # ─────────────────────────────────────────────
-# ESTRATEGIA
+# RECOMENDACIÓN FINAL
 # ─────────────────────────────────────────────
-def get_strategy(row):
-    bull = sum("Alcista" in str(row.get(f"{tf} MACD", "")) for tf in TIMEFRAMES)
-    bear = sum("Bajista" in str(row.get(f"{tf} MACD", "")) for tf in TIMEFRAMES)
+def get_recommendation(row):
+    longs = sum("LONG" in str(row.get(f"{tf} HA-MACD", "")) for tf in TIMEFRAMES)
+    shorts = sum("SHORT" in str(row.get(f"{tf} HA-MACD", "")) for tf in TIMEFRAMES)
 
-    if bull >= 5:
-        return "📈 BIAS ALCISTA"
-    if bear >= 5:
-        return "📉 BIAS BAJISTA"
+    rsi_htf_bull = (
+        "RSI↑" in str(row.get("4H HA-MACD", "")) or
+        "RSI↑" in str(row.get("1D HA-MACD", ""))
+    )
+    rsi_htf_bear = (
+        "RSI↓" in str(row.get("4H HA-MACD", "")) or
+        "RSI↓" in str(row.get("1D HA-MACD", ""))
+    )
 
-    return "⚖️ NEUTRO"
+    if longs >= 5 and rsi_htf_bull:
+        return "🔥 COMPRA FUERTE (RSI CONFIRMADO)"
+    if shorts >= 5 and rsi_htf_bear:
+        return "🩸 VENTA FUERTE (RSI CONFIRMADO)"
 
-def get_veredicto(row):
-    if "BIAS ALCISTA" in row["Estrategia"] and "Acelerando" in str(row.get("1m MOMENTUM", "")):
-        return "🚀 LONG CONFIRMADO"
-    if "BIAS BAJISTA" in row["Estrategia"] and "Acelerando" in str(row.get("1m MOMENTUM", "")):
-        return "🩸 SHORT CONFIRMADO"
-    return "🟡 ESPERAR"
+    if "LONG" in str(row.get("1m HA-MACD", "")) and rsi_htf_bear:
+        return "⚠️ REBOTE (Scalp)"
+    if "SHORT" in str(row.get("1m HA-MACD", "")) and rsi_htf_bull:
+        return "📉 DIP (Entrada)"
+
+    return "⚖️ RANGO / ESPERAR"
 
 # ─────────────────────────────────────────────
-# ESCANEO
+# ESCANEO POR LOTE
 # ─────────────────────────────────────────────
 def scan_batch(targets):
     ex = get_exchange()
@@ -189,22 +196,17 @@ def scan_batch(targets):
         for label, tf in TIMEFRAMES.items():
             res = analyze_ticker_tf(sym, tf, ex, price)
             if res:
-                macd_dir, momentum, cross_time, rsi_state, rsi_val = res
-                hora = (cross_time - pd.Timedelta(hours=3)).strftime("%H:%M")
+                state, date, rsi_state, rsi_val = res
+                icon = "🟢" if state == "LONG" else "🔴" if state == "SHORT" else "⚪"
+                hora = (date - pd.Timedelta(hours=3)).strftime("%H:%M")
 
-                row[f"{label} MACD"] = macd_dir
-                row[f"{label} MOMENTUM"] = momentum
-                row[f"{label} CRUCE"] = hora
-                row[f"{label} RSI"] = f"{rsi_state} ({rsi_val})"
+                row[f"{label} HA-MACD"] = f"{icon} {state} | {rsi_state} ({rsi_val})"
+                row[f"{label} ALERTA"] = hora
             else:
-                row[f"{label} MACD"] = "-"
-                row[f"{label} MOMENTUM"] = "-"
-                row[f"{label} CRUCE"] = "-"
-                row[f"{label} RSI"] = "-"
+                row[f"{label} HA-MACD"] = "-"
+                row[f"{label} ALERTA"] = "-"
 
-        row["Estrategia"] = get_strategy(row)
-        row["VEREDICTO"] = get_veredicto(row)
-
+        row["Estrategia"] = get_recommendation(row)
         results.append(row)
         time.sleep(0.1)
 
@@ -214,8 +216,8 @@ def scan_batch(targets):
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("🎯 SystemaTrader: MNQ Sniper Matrix V5")
-st.caption("MACD 0 + Momentum + RSI | KuCoin Futures")
+st.title("🎯 SystemaTrader: MNQ Sniper Matrix V4")
+st.caption("Heikin Ashi + MACD + RSI MTF | KuCoin Futures")
 
 with st.sidebar:
     st.header("Configuración")
@@ -224,6 +226,9 @@ with st.sidebar:
         all_symbols = get_active_pairs()
 
     if all_symbols:
+        st.success(f"Mercado: {len(all_symbols)} activos")
+        st.divider()
+
         batch_size = st.selectbox("Tamaño Lote:", [10, 20, 30, 50], index=1)
         batches = [
             all_symbols[i:i + batch_size]
@@ -231,11 +236,24 @@ with st.sidebar:
         ]
 
         sel = st.selectbox("Seleccionar Lote:", range(len(batches)))
+        accumulate = st.checkbox("Acumular Resultados", value=True)
 
-        if st.button("🚀 ESCANEAR"):
-            st.session_state["sniper_results"] = scan_batch(batches[sel])
+        if st.button("🚀 ESCANEAR LOTE", type="primary"):
+            new_data = scan_batch(batches[sel])
+
+            if accumulate:
+                existing = {x["Activo"] for x in st.session_state["sniper_results"]}
+                for item in new_data:
+                    if item["Activo"] not in existing:
+                        st.session_state["sniper_results"].append(item)
+            else:
+                st.session_state["sniper_results"] = new_data
     else:
         st.error("Error de conexión.")
+
+if st.button("Limpiar"):
+    st.session_state["sniper_results"] = []
+    st.rerun()
 
 # ─────────────────────────────────────────────
 # TABLA
@@ -244,4 +262,4 @@ if st.session_state["sniper_results"]:
     df = pd.DataFrame(st.session_state["sniper_results"])
     st.dataframe(df, use_container_width=True, height=800)
 else:
-    st.info("👈 Seleccioná un lote para comenzar.")
+    st.info("👈 Seleccioná un lote para comenzar el escaneo.")
