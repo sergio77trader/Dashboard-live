@@ -15,8 +15,6 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.success("APP CARGADA OK")
-
 # --- MEMORIA ---
 if 'sniper_results' not in st.session_state:
     st.session_state['sniper_results'] = []
@@ -112,20 +110,20 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
 
 # --- RECOMENDACIÓN FINAL ---
 def get_recommendation(row):
-    longs = sum("LONG" in str(row.get(tf,'')) for tf in TIMEFRAMES)
-    shorts = sum("SHORT" in str(row.get(tf,'')) for tf in TIMEFRAMES)
+    longs = sum("LONG" in str(row.get(f"{tf} HA-MACD",'')) for tf in TIMEFRAMES)
+    shorts = sum("SHORT" in str(row.get(f"{tf} HA-MACD",'')) for tf in TIMEFRAMES)
 
-    rsi_htf_bull = "RSI↑" in str(row.get('4H','')) or "RSI↑" in str(row.get('1D',''))
-    rsi_htf_bear = "RSI↓" in str(row.get('4H','')) or "RSI↓" in str(row.get('1D',''))
+    rsi_htf_bull = "RSI↑" in str(row.get('4H HA-MACD','')) or "RSI↑" in str(row.get('1D HA-MACD',''))
+    rsi_htf_bear = "RSI↓" in str(row.get('4H HA-MACD','')) or "RSI↓" in str(row.get('1D HA-MACD',''))
 
     if longs >= 5 and rsi_htf_bull:
         return "🔥 COMPRA FUERTE (RSI CONFIRMADO)"
     if shorts >= 5 and rsi_htf_bear:
         return "🩸 VENTA FUERTE (RSI CONFIRMADO)"
 
-    if "LONG" in str(row.get('1m','')) and rsi_htf_bear:
+    if "LONG" in str(row.get('1m HA-MACD','')) and rsi_htf_bear:
         return "⚠️ REBOTE (Scalp)"
-    if "SHORT" in str(row.get('1m','')) and rsi_htf_bull:
+    if "SHORT" in str(row.get('1m HA-MACD','')) and rsi_htf_bull:
         return "📉 DIP (Entrada)"
 
     return "⚖️ RANGO / ESPERAR"
@@ -141,10 +139,7 @@ def scan_batch(targets):
         prog.progress(idx/len(targets), text=f"Analizando {clean} ({idx+1}/{len(targets)})")
 
         try:
-            ticker = ex.fetch_ticker(sym)
-            price = ticker.get('last') or ticker.get('markPrice')
-            if not price:
-                raise ValueError("Sin precio")
+            price = ex.fetch_ticker(sym)['last']
         except:
             continue
 
@@ -155,10 +150,13 @@ def scan_batch(targets):
             if res:
                 state, date, rsi_state, rsi_val = res
                 icon = "🟢" if state=="LONG" else "🔴" if state=="SHORT" else "⚪"
-                date = (date - pd.Timedelta(hours=3)).strftime('%d/%m %H:%M')
-                row[label] = f"{icon} {state} | {rsi_state} ({rsi_val})\n({date})"
+                hora = (date - pd.Timedelta(hours=3)).strftime('%H:%M')
+
+                row[f"{label} HA-MACD"] = f"{icon} {state} | {rsi_state} ({rsi_val})"
+                row[f"{label} ALERTA"] = hora
             else:
-                row[label] = "-"
+                row[f"{label} HA-MACD"] = "-"
+                row[f"{label} ALERTA"] = "-"
 
         row['Estrategia'] = get_recommendation(row)
         results.append(row)
@@ -202,8 +200,8 @@ with st.sidebar:
                                 st.session_state['sniper_results'].append(item)
                     else:
                         st.session_state['sniper_results'] = new_data
-                else:
-                    st.warning("⚠️ El scan terminó sin resultados válidos")
+    else:
+        st.error("Error de conexión.")
 
     if st.button("Limpiar"):
         st.session_state['sniper_results'] = []
@@ -215,5 +213,3 @@ if st.session_state['sniper_results']:
     st.dataframe(df, use_container_width=True, height=800)
 else:
     st.info("👈 Seleccioná un lote para comenzar el escaneo.")
-
-st.success("FIN DEL SCRIPT ALCANZADO")
