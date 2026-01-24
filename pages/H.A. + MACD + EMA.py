@@ -7,15 +7,15 @@ import time
 from datetime import datetime
 
 # ─────────────────────────────────────────────
-# CONFIGURACIÓN
+# CONFIGURACIÓN DE PÁGINA
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V15.0")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER MATRIX V16.0")
 
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 14px; }
     .stDataFrame { font-size: 12px; }
-    h1 { color: #2962FF; }
+    h1 { color: #2962FF; font-weight: 800; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -25,7 +25,7 @@ if "sniper_results" not in st.session_state:
 TIMEFRAMES = {"1m":"1m", "5m":"5m", "15m":"15m", "30m":"30m", "1H":"1h", "4H":"4h", "1D":"1d"}
 
 # ─────────────────────────────────────────────
-# MOTOR DE CONEXIÓN
+# MOTOR DE DATOS
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchange():
@@ -50,7 +50,7 @@ def calculate_heikin_ashi(df):
     return df
 
 # ─────────────────────────────────────────────
-# ANÁLISIS DE FASES (PULLBACKS & MOMENTUM)
+# ANÁLISIS TÉCNICO V16.0 (FASES + TIMESTAMPS)
 # ─────────────────────────────────────────────
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
@@ -70,7 +70,7 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         last = df.iloc[-1]
         prev = df.iloc[-2]
         
-        # --- LÓGICA DE FASES SNIPER ---
+        # --- DETERMINACIÓN DE FASE ---
         hist_val = last["Hist"]
         hist_prev = prev["Hist"]
         ha_color = last["HA_Color"]
@@ -78,55 +78,51 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         phase = "NEUTRO"
         icon = "⚪"
         
-        # Bullish Logic
         if ha_color == 1 and hist_val > hist_prev:
             if hist_val < 0:
-                phase = "PULLBACK ALCISTA" # Hist subiendo pero sigue abajo de 0
+                phase = "PULLBACK ALCISTA"
                 icon = "🔵"
             else:
-                phase = "MOMENTUM BULL" # Hist subiendo y ya sobre 0
+                phase = "CONFIRMACION BULL"
                 icon = "🟢"
-        
-        # Bearish Logic
         elif ha_color == -1 and hist_val < hist_prev:
             if hist_val > 0:
-                phase = "PULLBACK BAJISTA" # Hist bajando pero sigue arriba de 0
+                phase = "PULLBACK BAJISTA"
                 icon = "🟠"
             else:
-                phase = "MOMENTUM BEAR" # Hist bajando y ya bajo 0
+                phase = "CONFIRMACION BEAR"
                 icon = "🔴"
 
         rsi_val = round(last["RSI"], 1)
         rsi_state = "RSI↑" if rsi_val > 55 else "RSI↓" if rsi_val < 45 else "RSI="
         
+        # Último cruce MACD (Timestamp)
         df["cross"] = np.sign(df["MACD"] - df["Signal"]).diff().ne(0)
         crosses = df[df["cross"] == True]
-        last_cross = (crosses["dt"].iloc[-1] - pd.Timedelta(hours=3)).strftime("%H:%M") if not crosses.empty else "--:--"
+        last_cross_time = (crosses["dt"].iloc[-1] - pd.Timedelta(hours=3)).strftime("%H:%M") if not crosses.empty else "--:--"
 
         return {
-            "main": f"{icon} {phase} | {rsi_state} ({rsi_val})",
+            "signal": f"{icon} {phase} | {rsi_state} ({rsi_val})",
             "m0": "SOBRE 0" if last["MACD"] > 0 else "BAJO 0",
             "h_dir": "Alcista" if hist_val > hist_prev else "Bajista",
-            "cross": last_cross
+            "cross_time": last_cross_time,
+            "signal_time": (last["dt"] - pd.Timedelta(hours=3)).strftime("%H:%M")
         }
     except: return None
 
 # ─────────────────────────────────────────────
-# LÓGICA DE VEREDICTO
+# RECOMENDACIÓN FINAL
 # ─────────────────────────────────────────────
 def get_verdict(row):
-    # Contar confluencias
-    bull_signals = sum(1 for tf in TIMEFRAMES if "ALCISTA" in str(row.get(f"{tf} Sniper","")) or "BULL" in str(row.get(f"{tf} Sniper","")))
-    bear_signals = sum(1 for tf in TIMEFRAMES if "BAJISTA" in str(row.get(f"{tf} Sniper","")) or "BEAR" in str(row.get(f"{tf} Sniper","")))
-    
-    # 1D Bias
+    bulls = sum(1 for tf in TIMEFRAMES if "BULL" in str(row.get(f"{tf} H.A./MACD","")) or "ALCISTA" in str(row.get(f"{tf} H.A./MACD","")))
+    bears = sum(1 for tf in TIMEFRAMES if "BEAR" in str(row.get(f"{tf} H.A./MACD","")) or "BAJISTA" in str(row.get(f"{tf} H.A./MACD","")))
     bias_1d = str(row.get("1D MACD 0", ""))
     
-    if bull_signals >= 5 and "SOBRE 0" in bias_1d: return "🔥 COMPRA FUERTE", "TENDENCIA + MOMENTUM"
-    if bear_signals >= 5 and "BAJO 0" in bias_1d: return "🩸 VENTA FUERTE", "TENDENCIA + MOMENTUM"
-    if "PULLBACK ALCISTA" in str(row.get("1m Sniper", "")): return "💎 ENTRADA TEMPRANA", "POSIBLE GIRO"
+    if bulls >= 5 and "SOBRE 0" in bias_1d: return "🔥 COMPRA FUERTE", "MTF CONFLUENCE BULL"
+    if bears >= 5 and "BAJO 0" in bias_1d: return "🩸 VENTA FUERTE", "MTF CONFLUENCE BEAR"
+    if "PULLBACK ALCISTA" in str(row.get("1m H.A./MACD", "")): return "💎 GIRO PROBABLE", "PULLBACK DETECTED"
     
-    return "⚖️ RANGO / ESPERAR", "SIN CONFLUENCIA"
+    return "⚖️ RANGO", "NO TREND"
 
 # ─────────────────────────────────────────────
 # ESCANEO
@@ -137,19 +133,20 @@ def scan_batch(targets):
     prog = st.progress(0)
     for idx, sym in enumerate(targets):
         clean = sym.split(":")[0].replace("/USDT", "")
-        prog.progress((idx+1)/len(targets), text=f"Analizando {clean}")
+        prog.progress((idx+1)/len(targets), text=f"Analizando {clean}...")
         try:
             p = ex.fetch_ticker(sym)["last"]
             row = {"Activo": clean, "Precio": f"{p:,.4f}"}
             for label, tf in TIMEFRAMES.items():
                 res = analyze_ticker_tf(sym, tf, ex, p)
                 if res:
-                    row[f"{label} Sniper"] = res["main"]
+                    row[f"{label} H.A./MACD"] = res["signal"]
+                    row[f"{label} Hora Señal"] = res["signal_time"]
                     row[f"{label} MACD 0"] = res["m0"]
                     row[f"{label} Hist."] = res["h_dir"]
-                    row[f"{label} Cruce"] = res["cross"]
+                    row[f"{label} Cruce MACD"] = res["cross_time"]
                 else:
-                    for c in ["Sniper", "MACD 0", "Hist.", "Cruce"]: row[f"{label} {c}"] = "-"
+                    for c in ["H.A./MACD", "Hora Señal", "MACD 0", "Hist.", "Cruce MACD"]: row[f"{label} {c}"] = "-"
             v, e = get_verdict(row)
             row["VEREDICTO"] = v
             row["ESTRATEGIA"] = e
@@ -160,29 +157,29 @@ def scan_batch(targets):
     return results
 
 # ─────────────────────────────────────────────
-# UI
+# UI & ESTILOS
 # ─────────────────────────────────────────────
-st.title("🎯 SNIPER MATRIX V15.0")
+st.title("🎯 SNIPER MATRIX V16.0")
 with st.sidebar:
-    st.header("Configuración")
+    st.header("Radar Settings")
     all_sym = get_active_pairs()
     if all_sym:
-        b_size = st.selectbox("Lote", [10, 20, 30], index=0)
+        b_size = st.selectbox("Batch Size", [10, 20, 30], index=0)
         batches = [all_sym[i:i+b_size] for i in range(0, len(all_sym), b_size)]
-        sel = st.selectbox("Lote", range(len(batches)))
-        if st.button("🚀 ESCANEAR", type="primary"):
+        sel = st.selectbox("Select Batch", range(len(batches)))
+        if st.button("🚀 START SCAN", type="primary"):
             st.session_state["sniper_results"] = scan_batch(batches[sel])
-    if st.button("Limpiar"):
+    if st.button("Limpiar Memoria"):
         st.session_state["sniper_results"] = []
         st.rerun()
 
 def style_df(df):
     def color(val):
         v = str(val).upper()
-        if "MOMENTUM BULL" in v or "SOBRE 0" in v or "COMPRA" in v: return 'background-color: #d4edda; color: #155724;'
-        if "MOMENTUM BEAR" in v or "BAJO 0" in v or "VENTA" in v: return 'background-color: #f8d7da; color: #721c24;'
-        if "PULLBACK ALCISTA" in v: return 'background-color: #e3f2fd; color: #0d47a1;' # Azul suave para giros
-        if "PULLBACK BAJISTA" in v: return 'background-color: #fff3e0; color: #e65100;' # Naranja suave
+        if "CONFIRMACION BULL" in v or "SOBRE 0" in v or "COMPRA" in v: return 'background-color: #C8E6C9; color: #1B5E20;' # Verde
+        if "CONFIRMACION BEAR" in v or "BAJO 0" in v or "VENTA" in v: return 'background-color: #FFCDD2; color: #B71C1C;' # Rojo
+        if "PULLBACK ALCISTA" in v: return 'background-color: #E1F5FE; color: #01579B;' # Celeste Claro
+        if "PULLBACK BAJISTA" in v: return 'background-color: #FFF3E0; color: #E65100;' # Naranja
         return ''
     return df.style.applymap(color)
 
