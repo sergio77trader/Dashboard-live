@@ -9,13 +9,14 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN DE PÁGINA
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER MATRIX V16.0")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER MATRIX V17.0")
 
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 14px; }
-    .stDataFrame { font-size: 12px; }
+    .stDataFrame { font-size: 12px; border: 1px solid #333; }
     h1 { color: #2962FF; font-weight: 800; }
+    .stProgress > div > div > div > div { background-color: #2962FF; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -25,7 +26,7 @@ if "sniper_results" not in st.session_state:
 TIMEFRAMES = {"1m":"1m", "5m":"5m", "15m":"15m", "30m":"30m", "1H":"1h", "4H":"4h", "1D":"1d"}
 
 # ─────────────────────────────────────────────
-# MOTOR DE DATOS
+# MOTOR DE CONEXIÓN
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchange():
@@ -36,7 +37,11 @@ def get_active_pairs():
     try:
         ex = get_exchange()
         tickers = ex.fetch_tickers()
-        return [s for s, t in tickers.items() if "/USDT:USDT" in s and t.get("quoteVolume", 0) > 1000000]
+        valid = []
+        for s, t in tickers.items():
+            if "/USDT:USDT" in s and t.get("quoteVolume", 0) > 1000000:
+                valid.append({"symbol": s, "vol": t["quoteVolume"]})
+        return pd.DataFrame(valid).sort_values("vol", ascending=False)["symbol"].tolist()
     except: return []
 
 def calculate_heikin_ashi(df):
@@ -50,7 +55,7 @@ def calculate_heikin_ashi(df):
     return df
 
 # ─────────────────────────────────────────────
-# ANÁLISIS TÉCNICO V16.0 (FASES + TIMESTAMPS)
+# ANÁLISIS TÉCNICO V17.0
 # ─────────────────────────────────────────────
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
@@ -96,7 +101,7 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         rsi_val = round(last["RSI"], 1)
         rsi_state = "RSI↑" if rsi_val > 55 else "RSI↓" if rsi_val < 45 else "RSI="
         
-        # Último cruce MACD (Timestamp)
+        # Cruce MACD
         df["cross"] = np.sign(df["MACD"] - df["Signal"]).diff().ne(0)
         crosses = df[df["cross"] == True]
         last_cross_time = (crosses["dt"].iloc[-1] - pd.Timedelta(hours=3)).strftime("%H:%M") if not crosses.empty else "--:--"
@@ -104,15 +109,12 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         return {
             "signal": f"{icon} {phase} | {rsi_state} ({rsi_val})",
             "m0": "SOBRE 0" if last["MACD"] > 0 else "BAJO 0",
-            "h_dir": "Alcista" if hist_val > hist_prev else "Bajista",
+            "h_dir": "ALCISTA" if hist_val > hist_prev else "BAJISTA",
             "cross_time": last_cross_time,
             "signal_time": (last["dt"] - pd.Timedelta(hours=3)).strftime("%H:%M")
         }
     except: return None
 
-# ─────────────────────────────────────────────
-# RECOMENDACIÓN FINAL
-# ─────────────────────────────────────────────
 def get_verdict(row):
     bulls = sum(1 for tf in TIMEFRAMES if "BULL" in str(row.get(f"{tf} H.A./MACD","")) or "ALCISTA" in str(row.get(f"{tf} H.A./MACD","")))
     bears = sum(1 for tf in TIMEFRAMES if "BEAR" in str(row.get(f"{tf} H.A./MACD","")) or "BAJISTA" in str(row.get(f"{tf} H.A./MACD","")))
@@ -157,35 +159,51 @@ def scan_batch(targets):
     return results
 
 # ─────────────────────────────────────────────
-# UI & ESTILOS
+# UI & STYLER (COLORES UNIVERSALES)
 # ─────────────────────────────────────────────
-st.title("🎯 SNIPER MATRIX V16.0")
+st.title("🎯 SNIPER MATRIX V17.0")
+
+def style_df(df):
+    def apply_color(val):
+        v = str(val).upper()
+        # 1. ALCISTA / BULL / SOBRE 0 (VERDE)
+        if any(x in v for x in ["CONFIRMACION BULL", "SOBRE 0", "ALCISTA", "COMPRA", "RSI↑"]):
+            return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
+        # 2. BAJISTA / BEAR / BAJO 0 (ROJO)
+        if any(x in v for x in ["CONFIRMACION BEAR", "BAJO 0", "BAJISTA", "VENTA", "RSI↓"]):
+            return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
+        # 3. PULLBACK ALCISTA (CELESTE CLARO)
+        if "PULLBACK ALCISTA" in v or "GIRO PROBABLE" in v:
+            return 'background-color: #E1F5FE; color: #01579B; font-weight: bold;'
+        # 4. PULLBACK BAJISTA (NARANJA CLARO)
+        if "PULLBACK BAJISTA" in v:
+            return 'background-color: #FFF3E0; color: #E65100; font-weight: bold;'
+        return ''
+    return df.style.applymap(apply_color)
+
 with st.sidebar:
-    st.header("Radar Settings")
+    st.header("Radar Control")
     all_sym = get_active_pairs()
     if all_sym:
         b_size = st.selectbox("Batch Size", [10, 20, 30], index=0)
         batches = [all_sym[i:i+b_size] for i in range(0, len(all_sym), b_size)]
         sel = st.selectbox("Select Batch", range(len(batches)))
-        if st.button("🚀 START SCAN", type="primary"):
+        if st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True):
             st.session_state["sniper_results"] = scan_batch(batches[sel])
-    if st.button("Limpiar Memoria"):
+    
+    if st.button("Limpiar"):
         st.session_state["sniper_results"] = []
         st.rerun()
-
-def style_df(df):
-    def color(val):
-        v = str(val).upper()
-        if "CONFIRMACION BULL" in v or "SOBRE 0" in v or "COMPRA" in v: return 'background-color: #C8E6C9; color: #1B5E20;' # Verde
-        if "CONFIRMACION BEAR" in v or "BAJO 0" in v or "VENTA" in v: return 'background-color: #FFCDD2; color: #B71C1C;' # Rojo
-        if "PULLBACK ALCISTA" in v: return 'background-color: #E1F5FE; color: #01579B;' # Celeste Claro
-        if "PULLBACK BAJISTA" in v: return 'background-color: #FFF3E0; color: #E65100;' # Naranja
-        return ''
-    return df.style.applymap(color)
 
 if st.session_state["sniper_results"]:
     df = pd.DataFrame(st.session_state["sniper_results"])
     prio = ["Activo", "VEREDICTO", "ESTRATEGIA", "Precio"]
     valid = [c for c in prio if c in df.columns]
     others = [c for c in df.columns if c not in valid]
-    st.dataframe(style_df(df[valid + others]), use_container_width=True, height=800)
+    
+    # Reordenar para ver el veredicto al inicio
+    df_final = df[valid + others]
+    
+    st.dataframe(style_df(df_final), use_container_width=True, height=800)
+else:
+    st.info("👈 Configure el lote y presione INICIAR ESCANEO.")
