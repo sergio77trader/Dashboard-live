@@ -6,11 +6,6 @@ import numpy as np
 import time
 from datetime import datetime
 
-# =========================
-# DEBUG INICIAL
-# =========================
-st.write("✅ APP CARGADA OK")
-
 # --- CONFIGURACIÓN ---
 st.set_page_config(layout="wide", page_title="SystemaTrader: MNQ Sniper Matrix")
 st.markdown("""
@@ -19,6 +14,8 @@ st.markdown("""
     .stProgress > div > div > div > div { background-color: #2962FF; }
 </style>
 """, unsafe_allow_html=True)
+
+st.success("APP CARGADA OK")
 
 # --- MEMORIA ---
 if 'sniper_results' not in st.session_state:
@@ -47,11 +44,8 @@ def get_active_pairs():
         for s in tickers:
             if '/USDT:USDT' in s and tickers[s].get('quoteVolume'):
                 valid.append({'symbol': s, 'vol': tickers[s]['quoteVolume']})
-        df = pd.DataFrame(valid)
-        st.write(f"🔍 Pares detectados: {len(df)}")
-        return df.sort_values('vol', ascending=False)['symbol'].tolist()
-    except Exception as e:
-        st.error(f"❌ Error mercado: {e}")
+        return pd.DataFrame(valid).sort_values('vol', ascending=False)['symbol'].tolist()
+    except:
         return []
 
 # --- HEIKIN ASHI ---
@@ -73,6 +67,7 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
             return None
 
         ohlcv[-1][4] = current_price
+
         df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','vol'])
         df['dt'] = pd.to_datetime(df['time'], unit='ms')
 
@@ -112,8 +107,7 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
 
         return position, last_date, rsi_state, round(rsi_val, 1)
 
-    except Exception as e:
-        st.write(f"⚠️ Error {symbol} {tf_code}: {e}")
+    except:
         return None
 
 # --- RECOMENDACIÓN FINAL ---
@@ -121,26 +115,40 @@ def get_recommendation(row):
     longs = sum("LONG" in str(row.get(tf,'')) for tf in TIMEFRAMES)
     shorts = sum("SHORT" in str(row.get(tf,'')) for tf in TIMEFRAMES)
 
-    if longs >= 5:
-        return "🔥 COMPRA FUERTE"
-    if shorts >= 5:
-        return "🩸 VENTA FUERTE"
+    rsi_htf_bull = "RSI↑" in str(row.get('4H','')) or "RSI↑" in str(row.get('1D',''))
+    rsi_htf_bear = "RSI↓" in str(row.get('4H','')) or "RSI↓" in str(row.get('1D',''))
+
+    if longs >= 5 and rsi_htf_bull:
+        return "🔥 COMPRA FUERTE (RSI CONFIRMADO)"
+    if shorts >= 5 and rsi_htf_bear:
+        return "🩸 VENTA FUERTE (RSI CONFIRMADO)"
+
+    if "LONG" in str(row.get('1m','')) and rsi_htf_bear:
+        return "⚠️ REBOTE (Scalp)"
+    if "SHORT" in str(row.get('1m','')) and rsi_htf_bull:
+        return "📉 DIP (Entrada)"
 
     return "⚖️ RANGO / ESPERAR"
 
 # --- ESCANEO POR LOTE ---
 def scan_batch(targets):
-    st.write("🧠 SCAN INICIADO")
     ex = get_exchange()
     results = []
+    prog = st.progress(0, text="Iniciando radar...")
 
-    for sym in targets:
+    for idx, sym in enumerate(targets):
+        clean = sym.replace(':USDT','').replace('/USDT','')
+        prog.progress(idx/len(targets), text=f"Analizando {clean} ({idx+1}/{len(targets)})")
+
         try:
-            price = ex.fetch_ticker(sym)['last']
+            ticker = ex.fetch_ticker(sym)
+            price = ticker.get('last') or ticker.get('markPrice')
+            if not price:
+                raise ValueError("Sin precio")
         except:
             continue
 
-        row = {'Activo': sym.replace(':USDT','').replace('/USDT','')}
+        row = {'Activo': clean}
 
         for label, tf in TIMEFRAMES.items():
             res = analyze_ticker_tf(sym, tf, ex, price)
@@ -154,46 +162,58 @@ def scan_batch(targets):
 
         row['Estrategia'] = get_recommendation(row)
         results.append(row)
+        time.sleep(0.1)
 
-    st.write(f"📦 Filas generadas: {len(results)}")
+    prog.empty()
     return results
 
-# =========================
-# INTERFAZ
-# =========================
+# --- INTERFAZ ---
 st.title("🎯 SystemaTrader: MNQ Sniper Matrix V4")
 st.caption("Heikin Ashi + MACD + RSI MTF | KuCoin Futures")
 
 with st.sidebar:
     st.header("Configuración")
 
-    all_symbols = get_active_pairs()
+    with st.spinner("Cargando mercado..."):
+        all_symbols = get_active_pairs()
 
     if all_symbols:
+        st.success(f"Mercado: {len(all_symbols)} activos")
+        st.divider()
+
         BATCH_SIZE = st.selectbox("Tamaño Lote:", [10, 20, 30, 50], index=1)
         batches = [all_symbols[i:i + BATCH_SIZE] for i in range(0, len(all_symbols), BATCH_SIZE)]
-        sel_batch = st.selectbox("Seleccionar Lote:", range(len(batches)))
+        batch_opts = [f"Lote {i+1} ({b[0].split('/')[0]}...)" for i, b in enumerate(batches)]
+        sel_batch = st.selectbox("Seleccionar Lote:", range(len(batches)),
+                                 format_func=lambda x: batch_opts[x])
 
         accumulate = st.checkbox("Acumular Resultados", value=True)
 
-        if st.button("🚀 ESCANEAR LOTE"):
-            data = scan_batch(batches[sel_batch])
-            if accumulate:
-                st.session_state['sniper_results'].extend(data)
-            else:
-                st.session_state['sniper_results'] = data
+        if st.button("🚀 ESCANEAR LOTE", type="primary"):
+            target = batches[sel_batch]
+            with st.spinner("Procesando matriz fractal..."):
+                new_data = scan_batch(target)
+
+                if new_data:
+                    if accumulate:
+                        existing = {x['Activo'] for x in st.session_state['sniper_results']}
+                        for item in new_data:
+                            if item['Activo'] not in existing:
+                                st.session_state['sniper_results'].append(item)
+                    else:
+                        st.session_state['sniper_results'] = new_data
+                else:
+                    st.warning("⚠️ El scan terminó sin resultados válidos")
 
     if st.button("Limpiar"):
         st.session_state['sniper_results'] = []
         st.rerun()
 
 # --- TABLA ---
-st.write("📊 RENDER TABLA")
-
 if st.session_state['sniper_results']:
     df = pd.DataFrame(st.session_state['sniper_results'])
     st.dataframe(df, use_container_width=True, height=800)
 else:
     st.info("👈 Seleccioná un lote para comenzar el escaneo.")
 
-st.success("✅ FIN DEL SCRIPT ALCANZADO")
+st.success("FIN DEL SCRIPT ALCANZADO")
