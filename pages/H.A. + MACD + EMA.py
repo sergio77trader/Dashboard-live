@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V22.0")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V23.0")
 
 st.markdown("""
 <style>
@@ -153,42 +153,66 @@ with st.sidebar:
     st.header("Radar Control")
     mode = st.radio("Modo de Análisis:", ["Mercado (Lotes)", "Watchlist (Personalizada)"])
     
-    all_sym = get_active_pairs(min_volume=0) # Cargamos todos para la lista
-    
+    all_sym = get_active_pairs(min_volume=0)
     targets = []
+    
     if mode == "Mercado (Lotes)":
         vol_min = st.number_input("Volumen Mínimo (24h)", value=100000, step=50000)
-        filtered_sym = [s for s in all_sym if s in get_active_pairs(min_volume=vol_min)]
-        st.success(f"Disponibles: {len(filtered_sym)}")
+        f_sym = [s for s in all_sym if s in get_active_pairs(min_volume=vol_min)]
+        st.success(f"Disponibles: {len(f_sym)}")
         b_size = st.selectbox("Batch Size", [10, 20, 50, 100], index=2)
-        batches = [filtered_sym[i:i+b_size] for i in range(0, len(filtered_sym), b_size)]
-        sel = st.selectbox("Seleccionar Lote", range(len(batches)), format_func=lambda x: f"Lote {x} ({len(batches[x])} activos)")
+        batches = [f_sym[i:i+b_size] for i in range(0, len(f_sym), b_size)]
+        sel = st.selectbox("Lote", range(len(batches)), format_func=lambda x: f"Lote {x} ({len(batches[x])} activos)")
         targets = batches[sel] if batches else []
     else:
-        st.subheader("Tu Watchlist")
-        selected_assets = st.multiselect("Seleccionar o Escribir Activos:", options=all_sym)
-        # Formatear si el usuario escribió mal
-        targets = selected_assets
+        targets = st.multiselect("Watchlist:", options=all_sym)
 
     mode_acc = st.checkbox("Acumular Resultados", value=True)
     if st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True):
-        if targets:
-            st.session_state["sniper_results"] = scan_batch(targets, accumulate=mode_acc)
-        else:
-            st.warning("No hay activos seleccionados.")
+        if targets: st.session_state["sniper_results"] = scan_batch(targets, accumulate=mode_acc)
+        else: st.warning("Sin activos.")
 
     st.divider()
+    # ─────────────────────────────────────────────
+    # MOTOR DE FILTROS AVANZADOS (V23.0)
+    # ─────────────────────────────────────────────
     if st.session_state["sniper_results"]:
+        st.header("Filtros Avanzados")
         df_t = pd.DataFrame(st.session_state["sniper_results"])
+        
+        # Filtros Core
         f_v = st.multiselect("Veredicto:", options=df_t["VEREDICTO"].unique(), default=df_t["VEREDICTO"].unique())
         f_e = st.multiselect("Estrategia:", options=df_t["ESTRATEGIA"].unique(), default=df_t["ESTRATEGIA"].unique())
+        
+        # Filtros por Temporalidad
+        f_signals = {}
+        with st.expander("Filtros por H.A./MACD"):
+            for label in TIMEFRAMES.keys():
+                col_name = f"{label} H.A./MACD"
+                if col_name in df_t.columns:
+                    f_signals[col_name] = st.multiselect(
+                        f"{label} Signal:",
+                        options=df_t[col_name].unique(),
+                        default=df_t[col_name].unique()
+                    )
+    
     if st.button("Limpiar Memoria"):
         st.session_state["sniper_results"] = []; st.rerun()
 
+# RENDERIZADO CON FILTROS APLICADOS
 if st.session_state["sniper_results"]:
     df_f = pd.DataFrame(st.session_state["sniper_results"])
+    
+    # 1. Aplicar filtros Core
     df_f = df_f[df_f["VEREDICTO"].isin(f_v) & df_f["ESTRATEGIA"].isin(f_e)]
+    
+    # 2. Aplicar filtros de Temporalidad
+    for col_name, selected_values in f_signals.items():
+        df_f = df_f[df_f[col_name].isin(selected_values)]
+    
     prio = ["Activo", "VEREDICTO", "ESTRATEGIA", "Precio"]
     valid = [c for c in prio if c in df_f.columns]
     others = [c for c in df_f.columns if c not in valid]
     st.dataframe(style_df(df_f[valid + others]), use_container_width=True, height=800)
+else:
+    st.info("👈 Presione INICIAR ESCANEO.")
