@@ -6,6 +6,11 @@ import numpy as np
 import time
 from datetime import datetime
 
+# =========================
+# DEBUG INICIAL
+# =========================
+st.write("✅ APP CARGADA OK")
+
 # --- CONFIGURACIÓN ---
 st.set_page_config(layout="wide", page_title="SystemaTrader: MNQ Sniper Matrix")
 st.markdown("""
@@ -42,8 +47,11 @@ def get_active_pairs():
         for s in tickers:
             if '/USDT:USDT' in s and tickers[s].get('quoteVolume'):
                 valid.append({'symbol': s, 'vol': tickers[s]['quoteVolume']})
-        return pd.DataFrame(valid).sort_values('vol', ascending=False)['symbol'].tolist()
-    except:
+        df = pd.DataFrame(valid)
+        st.write(f"🔍 Pares detectados: {len(df)}")
+        return df.sort_values('vol', ascending=False)['symbol'].tolist()
+    except Exception as e:
+        st.error(f"❌ Error mercado: {e}")
         return []
 
 # --- HEIKIN ASHI ---
@@ -60,30 +68,31 @@ def calculate_heikin_ashi(df):
 # --- ANALISIS POR TEMPORALIDAD ---
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=120)
-        if not ohlcv or len(ohlcv) < 60:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=100)
+        if not ohlcv or len(ohlcv) < 50:
             return None
 
         ohlcv[-1][4] = current_price
-
         df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','vol'])
         df['dt'] = pd.to_datetime(df['time'], unit='ms')
 
         macd = ta.macd(df['close'])
-        df['MACD'] = macd['MACD_12_26_9']
-        df['SIGNAL'] = macd['MACDs_12_26_9']
-        df['HIST'] = macd['MACDh_12_26_9']
-
+        df['Hist'] = macd['MACDh_12_26_9']
         df['RSI'] = ta.rsi(df['close'], length=14)
         df = calculate_heikin_ashi(df)
 
         position = "NEUTRO"
-        last_date = df['dt'].iloc[-2]
+        last_date = df['dt'].iloc[-1]
 
         for i in range(1, len(df)):
-            hist, prev_hist = df['HIST'].iloc[i], df['HIST'].iloc[i-1]
+            hist, prev_hist = df['Hist'].iloc[i], df['Hist'].iloc[i-1]
             ha_color = df['HA_Color'].iloc[i]
             date = df['dt'].iloc[i]
+
+            if position == "LONG" and hist < prev_hist:
+                position = "NEUTRO"
+            elif position == "SHORT" and hist > prev_hist:
+                position = "NEUTRO"
 
             if position == "NEUTRO":
                 if ha_color == 1 and hist > prev_hist:
@@ -93,107 +102,98 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
                     position = "SHORT"
                     last_date = date
 
-        # RSI
         rsi_val = df['RSI'].iloc[-1]
-        rsi_state = "RSI↑" if rsi_val > 55 else "RSI↓" if rsi_val < 45 else "RSI="
+        if rsi_val > 55:
+            rsi_state = "RSI↑"
+        elif rsi_val < 45:
+            rsi_state = "RSI↓"
+        else:
+            rsi_state = "RSI="
 
-        # --- NUEVO: MACD HIST (última vela cerrada)
-        hist_now = df['HIST'].iloc[-2]
-        hist_prev = df['HIST'].iloc[-3]
-        hist_state = "Alcista" if hist_now > hist_prev else "Bajista"
+        return position, last_date, rsi_state, round(rsi_val, 1)
 
-        # --- NUEVO: CRUCE MACD (última vela cerrada)
-        macd_now = df['MACD'].iloc[-2]
-        macd_prev = df['MACD'].iloc[-3]
-        sig_now = df['SIGNAL'].iloc[-2]
-        sig_prev = df['SIGNAL'].iloc[-3]
-
-        cruce = "-"
-        hora_cruce = "-"
-
-        if macd_prev < sig_prev and macd_now > sig_now:
-            cruce = "Alcista"
-            hora_cruce = (df['dt'].iloc[-2] - pd.Timedelta(hours=3)).strftime('%H:%M')
-        elif macd_prev > sig_prev and macd_now < sig_now:
-            cruce = "Bajista"
-            hora_cruce = (df['dt'].iloc[-2] - pd.Timedelta(hours=3)).strftime('%H:%M')
-
-        return position, last_date, rsi_state, round(rsi_val,1), hist_state, cruce, hora_cruce
-
-    except:
+    except Exception as e:
+        st.write(f"⚠️ Error {symbol} {tf_code}: {e}")
         return None
 
-# --- RECOMENDACIÓN MACD ---
-def macd_recommendation(row):
-    alcistas = sum(row.get(f"MACD HIST {tf}") == "Alcista" for tf in TIMEFRAMES)
-    bajistas = sum(row.get(f"MACD HIST {tf}") == "Bajista" for tf in TIMEFRAMES)
-
-    cruces_alc = any(row.get(f"CRUCE MACD {tf}") == "Alcista" for tf in ['1m','5m','15m'])
-    cruces_baj = any(row.get(f"CRUCE MACD {tf}") == "Bajista" for tf in ['1m','5m','15m'])
-
-    if alcistas >= 5 and cruces_alc:
-        return "🔥 Momentum Alcista Fuerte"
-    if bajistas >= 5 and cruces_baj:
-        return "🩸 Momentum Bajista Fuerte"
-
-    return "⚖️ MACD Mixto / Esperar"
-
 # --- RECOMENDACIÓN FINAL ---
-def final_recommendation(row):
-    est = row.get("Estrategia","")
-    macd = row.get("Recomendación MACD","")
+def get_recommendation(row):
+    longs = sum("LONG" in str(row.get(tf,'')) for tf in TIMEFRAMES)
+    shorts = sum("SHORT" in str(row.get(tf,'')) for tf in TIMEFRAMES)
 
-    if "COMPRA FUERTE" in est and "Alcista Fuerte" in macd:
-        return "🚀 COMPRA MUY FUERTE"
-    if "VENTA FUERTE" in est and "Bajista Fuerte" in macd:
-        return "💀 VENTA MUY FUERTE"
-    if "COMPRA" in est and "Mixto" in macd:
-        return "⚠️ COMPRA CON CUIDADO"
-    if "VENTA" in est and "Mixto" in macd:
-        return "⚠️ VENTA CON CUIDADO"
+    if longs >= 5:
+        return "🔥 COMPRA FUERTE"
+    if shorts >= 5:
+        return "🩸 VENTA FUERTE"
 
-    return "🧊 ESPERAR"
+    return "⚖️ RANGO / ESPERAR"
 
-# --- ESCANEO ---
+# --- ESCANEO POR LOTE ---
 def scan_batch(targets):
+    st.write("🧠 SCAN INICIADO")
     ex = get_exchange()
     results = []
-    prog = st.progress(0)
 
-    for idx, sym in enumerate(targets):
-        clean = sym.replace(':USDT','').replace('/USDT','')
-        prog.progress(idx/len(targets))
-
+    for sym in targets:
         try:
             price = ex.fetch_ticker(sym)['last']
         except:
             continue
 
-        row = {'Activo': clean}
+        row = {'Activo': sym.replace(':USDT','').replace('/USDT','')}
 
         for label, tf in TIMEFRAMES.items():
             res = analyze_ticker_tf(sym, tf, ex, price)
             if res:
-                state, date, rsi_state, rsi_val, hist_state, cruce, hora_cruce = res
+                state, date, rsi_state, rsi_val = res
                 icon = "🟢" if state=="LONG" else "🔴" if state=="SHORT" else "⚪"
-
-                row[f"{label} HA-MACD"] = f"{icon} {state} | {rsi_state} ({rsi_val})"
-                row[f"{label} ALERTA"] = (date - pd.Timedelta(hours=3)).strftime('%H:%M')
-                row[f"MACD HIST {label}"] = hist_state
-                row[f"CRUCE MACD {label}"] = cruce
-                row[f"HORA CRUCE {label}"] = hora_cruce
+                date = (date - pd.Timedelta(hours=3)).strftime('%d/%m %H:%M')
+                row[label] = f"{icon} {state} | {rsi_state} ({rsi_val})\n({date})"
             else:
-                row[f"{label} HA-MACD"] = "-"
-                row[f"{label} ALERTA"] = "-"
-                row[f"MACD HIST {label}"] = "-"
-                row[f"CRUCE MACD {label}"] = "-"
-                row[f"HORA CRUCE {label}"] = "-"
+                row[label] = "-"
 
-        row["Recomendación MACD"] = macd_recommendation(row)
-        row["Recomendación Final"] = final_recommendation(row)
-
+        row['Estrategia'] = get_recommendation(row)
         results.append(row)
-        time.sleep(0.1)
 
-    prog.empty()
+    st.write(f"📦 Filas generadas: {len(results)}")
     return results
+
+# =========================
+# INTERFAZ
+# =========================
+st.title("🎯 SystemaTrader: MNQ Sniper Matrix V4")
+st.caption("Heikin Ashi + MACD + RSI MTF | KuCoin Futures")
+
+with st.sidebar:
+    st.header("Configuración")
+
+    all_symbols = get_active_pairs()
+
+    if all_symbols:
+        BATCH_SIZE = st.selectbox("Tamaño Lote:", [10, 20, 30, 50], index=1)
+        batches = [all_symbols[i:i + BATCH_SIZE] for i in range(0, len(all_symbols), BATCH_SIZE)]
+        sel_batch = st.selectbox("Seleccionar Lote:", range(len(batches)))
+
+        accumulate = st.checkbox("Acumular Resultados", value=True)
+
+        if st.button("🚀 ESCANEAR LOTE"):
+            data = scan_batch(batches[sel_batch])
+            if accumulate:
+                st.session_state['sniper_results'].extend(data)
+            else:
+                st.session_state['sniper_results'] = data
+
+    if st.button("Limpiar"):
+        st.session_state['sniper_results'] = []
+        st.rerun()
+
+# --- TABLA ---
+st.write("📊 RENDER TABLA")
+
+if st.session_state['sniper_results']:
+    df = pd.DataFrame(st.session_state['sniper_results'])
+    st.dataframe(df, use_container_width=True, height=800)
+else:
+    st.info("👈 Seleccioná un lote para comenzar el escaneo.")
+
+st.success("✅ FIN DEL SCRIPT ALCANZADO")
