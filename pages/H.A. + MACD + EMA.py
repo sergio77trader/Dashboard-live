@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V24.1")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V24.0")
 
 st.markdown("""
 <style>
@@ -22,13 +22,10 @@ st.markdown("""
 if "sniper_results" not in st.session_state:
     st.session_state["sniper_results"] = []
 
-TIMEFRAMES = {
-    "1m":"1m", "5m":"5m", "15m":"15m",
-    "30m":"30m", "1H":"1h", "4H":"4h", "1D":"1d"
-}
+TIMEFRAMES = {"1m":"1m", "5m":"5m", "15m":"15m", "30m":"30m", "1H":"1h", "4H":"4h", "1D":"1d"}
 
 # ─────────────────────────────────────────────
-# EXCHANGE
+# MOTOR DE DATOS
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchange():
@@ -45,11 +42,7 @@ def get_active_pairs(min_volume=100000):
         for s, t in tickers.items():
             if "/USDT:USDT" in s and t.get("quoteVolume", 0) >= min_volume:
                 valid.append({"symbol": s, "vol": t["quoteVolume"]})
-        return (
-            pd.DataFrame(valid)
-            .sort_values("vol", ascending=False)["symbol"]
-            .tolist()
-        )
+        return pd.DataFrame(valid).sort_values("vol", ascending=False)["symbol"].tolist()
     except:
         return []
 
@@ -67,7 +60,7 @@ def calculate_heikin_ashi(df):
     return df
 
 # ─────────────────────────────────────────────
-# ANALISIS (LOGICA SCRIPT 1)
+# ANALISIS (LOGICA COPIADA DEL SCRIPT 1)
 # ─────────────────────────────────────────────
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
@@ -90,6 +83,7 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
 
         df = calculate_heikin_ashi(df)
 
+        # 🔁 LOGICA SECUENCIAL (SCRIPT 1)
         position = "NEUTRO"
         last_date = df["dt"].iloc[-1]
 
@@ -117,84 +111,24 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         rsi_val = round(df["RSI"].iloc[-1], 1)
         rsi_state = "RSI↑" if rsi_val > 55 else "RSI↓" if rsi_val < 45 else "RSI="
 
-        hora_alerta = (last_date - pd.Timedelta(hours=3)).strftime("%H:%M")
+        signal = f"{icon} {position} | {rsi_state} ({rsi_val})"
+        hora_signal = (last_date - pd.Timedelta(hours=3)).strftime("%H:%M")
+
+        # ⛔ TODO LO DEMAS SE DEJA IGUAL
+        h_dir = "ALCISTA" if df["Hist"].iloc[-1] > df["Hist"].iloc[-2] else "BAJISTA"
+        m0 = "SOBRE 0" if df["MACD"].iloc[-1] > 0 else "BAJO 0"
+
+        df["cross"] = np.sign(df["MACD"] - df["Signal"]).diff().ne(0)
+        crosses = df[df["cross"]]
+        cross_time = (crosses["dt"].iloc[-1] - pd.Timedelta(hours=3)).strftime("%H:%M") if not crosses.empty else "--:--"
 
         return {
-            "signal": f"{icon} {position} | {rsi_state} ({rsi_val})",
-            "signal_time": hora_alerta
+            "signal": signal,
+            "signal_time": hora_signal,
+            "m0": m0,
+            "h_dir": h_dir,
+            "cross_time": cross_time
         }
 
     except:
         return None
-
-# ─────────────────────────────────────────────
-# ESCANEO
-# ─────────────────────────────────────────────
-def scan_batch(targets, accumulate=True):
-    ex = get_exchange()
-    new_results = []
-    prog = st.progress(0)
-
-    for idx, sym in enumerate(targets):
-        clean = sym.split(":")[0].replace("/USDT", "")
-        prog.progress((idx+1)/len(targets), text=f"Analizando {clean}")
-
-        try:
-            price = ex.fetch_ticker(sym)["last"]
-            row = {"Activo": clean, "Precio": f"{price:,.4f}"}
-
-            for label, tf in TIMEFRAMES.items():
-                res = analyze_ticker_tf(sym, tf, ex, price)
-                if res:
-                    row[f"{label} H.A./MACD"] = res["signal"]
-                    row[f"{label} Hora Señal"] = res["signal_time"]
-                else:
-                    row[f"{label} H.A./MACD"] = "-"
-                    row[f"{label} Hora Señal"] = "-"
-
-            new_results.append(row)
-            time.sleep(0.05)
-
-        except:
-            continue
-
-    prog.empty()
-
-    if accumulate:
-        current = {x["Activo"]: x for x in st.session_state["sniper_results"]}
-        for r in new_results:
-            current[r["Activo"]] = r
-        return list(current.values())
-
-    return new_results
-
-# ─────────────────────────────────────────────
-# UI
-# ─────────────────────────────────────────────
-with st.sidebar:
-    st.header("Radar Control")
-
-    all_sym = get_active_pairs()
-    b_size = st.selectbox("Batch", [20, 50, 100], index=1)
-    batches = [all_sym[i:i+b_size] for i in range(0, len(all_sym), b_size)]
-    sel = st.selectbox("Lote", range(len(batches)))
-    accumulate = st.checkbox("Acumular", value=True)
-
-    if st.button("🚀 INICIAR ESCANEO", type="primary"):
-        if batches:
-            st.session_state["sniper_results"] = scan_batch(
-                batches[sel], accumulate=accumulate
-            )
-
-    if st.button("Limpiar Memoria"):
-        st.session_state["sniper_results"] = []
-        st.rerun()
-
-# ─────────────────────────────────────────────
-# TABLA
-# ─────────────────────────────────────────────
-if st.session_state["sniper_results"]:
-    df = pd.DataFrame(st.session_state["sniper_results"])
-    st.dataframe(df, use_container_width=True, height=800)
-else:
-    st.info("👈 Presioná INICIAR ESCANEO")
