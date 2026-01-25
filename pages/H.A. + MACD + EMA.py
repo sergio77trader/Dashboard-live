@@ -55,7 +55,7 @@ def calculate_heikin_ashi(df):
     return df
 
 # ─────────────────────────────────────────────
-# ANÁLISIS TÉCNICO (SOLO HA + MACD MODIFICADO)
+# ANÁLISIS TÉCNICO
 # ─────────────────────────────────────────────
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
@@ -74,42 +74,45 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
 
         df = calculate_heikin_ashi(df)
 
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
+        last, prev = df.iloc[-1], df.iloc[-2]
 
-        phase = "NEUTRO"
-        icon = "⚪"
-
-        # 🟦 ALERTA ALCISTA
-        if prev["HA_Color"] == -1 and last["HA_Color"] == 1 and last["Hist"] < prev["Hist"]:
-            phase, icon = "PULLBACK ALCISTA 🔔", "🔵"
-
-        # 🟢 CONFIRMACIÓN ALCISTA
-        elif last["HA_Color"] == 1 and last["Hist"] > prev["Hist"]:
-            phase, icon = "CONFIRMACION BULL", "🟢"
-
-        # 🟧 ALERTA BAJISTA
-        elif prev["HA_Color"] == 1 and last["HA_Color"] == -1 and last["Hist"] > prev["Hist"]:
-            phase, icon = "PULLBACK BAJISTA 🔔", "🟠"
-
-        # 🔴 CONFIRMACIÓN BAJISTA
+        phase, icon = "NEUTRO", "⚪"
+        if last["HA_Color"] == 1 and last["Hist"] > prev["Hist"]:
+            phase, icon = ("PULLBACK ALCISTA", "🔵") if last["Hist"] < 0 else ("CONFIRMACION BULL", "🟢")
         elif last["HA_Color"] == -1 and last["Hist"] < prev["Hist"]:
-            phase, icon = "CONFIRMACION BEAR", "🔴"
+            phase, icon = ("PULLBACK BAJISTA", "🟠") if last["Hist"] > 0 else ("CONFIRMACION BEAR", "🔴")
 
-        signal_time = (last["dt"] - pd.Timedelta(hours=3)).strftime("%H:%M")
+        df["cross"] = np.sign(df["MACD"] - df["Signal"]).diff().ne(0)
+        crosses = df[df["cross"]]
+
+        last_cross = (
+            (crosses["dt"].iloc[-1] - pd.Timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
+            if not crosses.empty else "--"
+        )
+
+        signal_time = (last["dt"] - pd.Timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
 
         return {
             "signal": f"{icon} {phase}",
-            "signal_time": signal_time,
             "m0": "SOBRE 0" if last["MACD"] > 0 else "BAJO 0",
             "h_dir": "ALCISTA" if last["Hist"] > prev["Hist"] else "BAJISTA",
-            "cross_time": "--:--"
+            "cross_time": last_cross,
+            "signal_time": signal_time
         }
 
     except:
         return None
 
-# ─────────────────────────────────────────────
-# EL RESTO DEL SCRIPT QUEDA EXACTAMENTE IGUAL
-# (scan_batch, filtros, UI, render)
-# ─────────────────────────────────────────────
+def get_verdict(row):
+    bulls = sum(1 for tf in TIMEFRAMES if any(x in str(row.get(f"{tf} H.A./MACD","")) for x in ["BULL", "ALCISTA"]))
+    bears = sum(1 for tf in TIMEFRAMES if any(x in str(row.get(f"{tf} H.A./MACD","")) for x in ["BEAR", "BAJISTA"]))
+    bias_1d = str(row.get("1D MACD 0", ""))
+
+    if bulls >= 5 and "SOBRE 0" in bias_1d:
+        return "🔥 COMPRA FUERTE", "MTF CONFLUENCE BULL"
+    if bears >= 5 and "BAJO 0" in bias_1d:
+        return "🩸 VENTA FUERTE", "MTF CONFLUENCE BEAR"
+    if "PULLBACK ALCISTA" in str(row.get("1m H.A./MACD", "")):
+        return "💎 GIRO PROBABLE", "PULLBACK DETECTED"
+
+    return "⚖️ RANGO", "NO TREND"
