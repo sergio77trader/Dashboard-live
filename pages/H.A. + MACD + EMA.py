@@ -7,15 +7,16 @@ import time
 from datetime import datetime
 
 # ─────────────────────────────────────────────
-# CONFIGURACIÓN
+# CONFIGURACIÓN DEL SISTEMA
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V25.0")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V25.1")
 
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 14px; }
     .stDataFrame { font-size: 12px; border: 1px solid #333; }
     h1 { color: #2962FF; font-weight: 800; }
+    .stExpander { background-color: #1E1E1E; border: 1px solid #2962FF; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -26,6 +27,34 @@ TIMEFRAMES = {
     "1m":"1m", "5m":"5m", "15m":"15m",
     "30m":"30m", "1H":"1h", "4H":"4h", "1D":"1d"
 }
+
+# ─────────────────────────────────────────────
+# DOCUMENTACIÓN OCULTA (TU MANUAL)
+# ─────────────────────────────────────────────
+with st.expander("📖 MANUAL OPERATIVO: ARQUITECTURA DE COLUMNAS Y LÓGICA"):
+    st.markdown("""
+    ### 🛡️ Diccionario de Datos SNIPER MATRIX
+    
+    #### 1. Columnas Ejecutivas (El "Qué" y el "Por qué")
+    *   **VEREDICTO:** Es la orden final.
+        *   🔥 **COMPRA/VENTA FUERTE:** Confluencia masiva (5+ temporalidades alineadas) a favor del sesgo Diario (1D).
+        *   💎 **GIRO/REBOTE:** Anomalía detectada. Ocurre cuando el momentum rápido (1m, 5m, 15m) se alinea en contra del 1D. Es una oportunidad de entrada temprana.
+        *   ⚖️ **RANGO:** Sin dirección clara. El capital institucional está fuera. **NO OPERAR.**
+    *   **ESTRATEGIA:** La justificación técnica del veredicto (ej. MTF BULLISH SYNC o FAST RECOVERY).
+    *   **MACD REC.:** Recomendación de Momentum. Analiza la pendiente del MACD en 15m, 1H y 4H. Indica si el precio tiene "gasolina" (Acelerando) o si se está agotando.
+
+    #### 2. Columnas por Temporalidad (El "Gatillo")
+    *   **[TF] H.A./MACD:** Estado del trigger. Combina el color de la vela Heikin Ashi y la dirección del histograma MACD. Incluye el **RSI** como filtro de fuerza.
+    *   **[TF] Hora Señal:** La hora exacta en la que se generó la señal actual. Vital para medir la "frescura" del movimiento.
+    *   **[TF] MACD 0:** El sesgo estructural de ese tiempo. SOBRE 0 (Bullish Bias) / BAJO 0 (Bearish Bias).
+    *   **[TF] Hist.:** La dirección de la fuerza. SUBIENDO (Momentum a favor) / BAJANDO (Momentum en contra).
+    *   **[TF] Cruce MACD:** La hora exacta en la que la línea MACD cruzó la línea de Señal. Es el "Vórtice" del cambio de tendencia.
+
+    #### 🎨 Mapa de Colores (Legibilidad Térmica)
+    *   🟩 **Verde Claro:** Alineación Alcista (LONG / SOBRE 0 / SUBIENDO).
+    *   🟥 **Rojo Claro:** Alineación Bajista (SHORT / BAJO 0 / BAJANDO).
+    *   🟨 **Amarillo:** Zona de alerta por Giro o Rebote inminente.
+    """)
 
 # ─────────────────────────────────────────────
 # MOTOR DE DATOS
@@ -49,7 +78,7 @@ def get_active_pairs(min_volume=100000):
     except: return []
 
 # ─────────────────────────────────────────────
-# HEIKIN ASHI
+# HEIKIN ASHI Y ANÁLISIS
 # ─────────────────────────────────────────────
 def calculate_heikin_ashi(df):
     df = df.copy()
@@ -61,9 +90,6 @@ def calculate_heikin_ashi(df):
     df["HA_Color"] = np.where(df["HA_Close"] > df["HA_Open"], 1, -1)
     return df
 
-# ─────────────────────────────────────────────
-# ANÁLISIS TÉCNICO PROFUNDO
-# ─────────────────────────────────────────────
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=100)
@@ -71,12 +97,9 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         ohlcv[-1][4] = current_price
         df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "vol"])
         df["dt"] = pd.to_datetime(df["time"], unit="ms")
-
         macd = ta.macd(df["close"])
-        df["Hist"]   = macd["MACDh_12_26_9"]
-        df["MACD"]   = macd["MACD_12_26_9"]
-        df["Signal"] = macd["MACDs_12_26_9"]
-        df["RSI"]    = ta.rsi(df["close"], length=14)
+        df["Hist"], df["MACD"], df["Signal"] = macd["MACDh_12_26_9"], macd["MACD_12_26_9"], macd["MACDs_12_26_9"]
+        df["RSI"] = ta.rsi(df["close"], length=14)
         df = calculate_heikin_ashi(df)
 
         position = "NEUTRO"
@@ -84,20 +107,15 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         for i in range(1, len(df)):
             hist, prev_hist = df["Hist"].iloc[i], df["Hist"].iloc[i - 1]
             ha_color, date = df["HA_Color"].iloc[i], df["dt"].iloc[i]
-
             if position == "LONG" and hist < prev_hist: position = "NEUTRO"
             elif position == "SHORT" and hist > prev_hist: position = "NEUTRO"
-            
             if position == "NEUTRO":
-                if ha_color == 1 and hist > prev_hist:
-                    position, last_date = "LONG", date
-                elif ha_color == -1 and hist < prev_hist:
-                    position, last_date = "SHORT", date
+                if ha_color == 1 and hist > prev_hist: position, last_date = "LONG", date
+                elif ha_color == -1 and hist < prev_hist: position, last_date = "SHORT", date
 
         icon = "🟢" if position == "LONG" else "🔴" if position == "SHORT" else "⚪"
         rsi_val = round(df["RSI"].iloc[-1], 1)
         rsi_state = "RSI↑" if rsi_val > 55 else "RSI↓" if rsi_val < 45 else "RSI="
-
         df["cross"] = np.sign(df["MACD"] - df["Signal"]).diff().ne(0)
         crosses = df[df["cross"]]
         cross_time = (crosses["dt"].iloc[-1] - pd.Timedelta(hours=3)).strftime("%H:%M") if not crosses.empty else "--:--"
@@ -107,33 +125,28 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
             "signal_time": (last_date - pd.Timedelta(hours=3)).strftime("%H:%M"),
             "m0": "SOBRE 0" if df["MACD"].iloc[-1] > 0 else "BAJO 0",
             "h_dir": "SUBIENDO" if df["Hist"].iloc[-1] > df["Hist"].iloc[-2] else "BAJANDO",
-            "cross_time": cross_time,
-            "raw_pos": position
+            "cross_time": cross_time
         }
     except: return None
 
 # ─────────────────────────────────────────────
-# VEREDICTO INSTITUCIONAL
+# LÓGICA DE DECISIÓN
 # ─────────────────────────────────────────────
 def get_verdict(row):
     bulls = sum(1 for tf in TIMEFRAMES if "LONG" in str(row.get(f"{tf} H.A./MACD","")))
     bears = sum(1 for tf in TIMEFRAMES if "SHORT" in str(row.get(f"{tf} H.A./MACD","")))
     bias_1d = str(row.get("1D MACD 0", ""))
-
-    # LÓGICA DE GIRO SYSTEMATRADER: Alineación de micro-fractales (1m+5m+15m)
+    
     micro_bull = "LONG" in str(row.get("1m H.A./MACD","")) and "LONG" in str(row.get("5m H.A./MACD","")) and "LONG" in str(row.get("15m H.A./MACD",""))
     micro_bear = "SHORT" in str(row.get("1m H.A./MACD","")) and "SHORT" in str(row.get("5m H.A./MACD","")) and "SHORT" in str(row.get("15m H.A./MACD",""))
 
     if bulls >= 5 and "SOBRE 0" in bias_1d: return "🔥 COMPRA FUERTE", "MTF BULLISH SYNC"
     if bears >= 5 and "BAJO 0" in bias_1d: return "🩸 VENTA FUERTE", "MTF BEARISH SYNC"
-    
     if micro_bull and "BAJO 0" in bias_1d: return "💎 GIRO/REBOTE", "FAST RECOVERY"
     if micro_bear and "SOBRE 0" in bias_1d: return "📉 RETROCESO", "CORRECTION START"
-
     return "⚖️ RANGO", "NO TREND"
 
 def get_macd_recommendation(row):
-    # Analizamos la tendencia del histograma en TFs clave
     subiendo = sum(1 for tf in ["15m", "1H", "4H"] if "SUBIENDO" in str(row.get(f"{tf} Hist.", "")))
     if subiendo >= 2: return "📈 MOMENTUM ALCISTA"
     if subiendo <= 1: return "📉 MOMENTUM BAJISTA"
@@ -175,17 +188,14 @@ def scan_batch(targets, accumulate=True):
         return list(current.values())
     return new_results
 
-# ─────────────────────────────────────────────
-# ESTILADO Y TABLA
-# ─────────────────────────────────────────────
 def style_matrix(df):
     def apply_color(val):
         v = str(val).upper()
         if any(x in v for x in ["LONG", "SOBRE 0", "SUBIENDO", "COMPRA", "ALCISTA"]):
-            return 'background-color: #d4edda; color: #155724;' # Verde claro
+            return 'background-color: #d4edda; color: #155724;'
         if any(x in v for x in ["SHORT", "BAJO 0", "BAJANDO", "VENTA", "BAJISTA"]):
-            return 'background-color: #f8d7da; color: #721c24;' # Rojo claro
-        if "GIRO" in v: return 'background-color: #fff3cd; color: #856404;' # Amarillo/Giro
+            return 'background-color: #f8d7da; color: #721c24;'
+        if "GIRO" in v: return 'background-color: #fff3cd; color: #856404;'
         return ''
     return df.style.applymap(apply_color)
 
@@ -203,7 +213,6 @@ with st.sidebar:
 
 if st.session_state["sniper_results"]:
     df = pd.DataFrame(st.session_state["sniper_results"])
-    # Reordenar: Recomendaciones al inicio
     cols = ["Activo", "VEREDICTO", "ESTRATEGIA", "MACD REC.", "Precio"]
     remaining = [c for c in df.columns if c not in cols]
     st.dataframe(style_matrix(df[cols + remaining]), use_container_width=True, height=800)
