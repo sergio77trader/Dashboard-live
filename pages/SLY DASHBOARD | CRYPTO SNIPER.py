@@ -7,9 +7,9 @@ import time
 from datetime import datetime
 
 # ─────────────────────────────────────────────
-# CONFIGURACIÓN DE INTERFAZ
+# CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY DASHBOARD | CRYPTO SNIPER V28.1")
+st.set_page_config(layout="wide", page_title="SLY DASHBOARD | PRECISION SYNC V28.2")
 
 st.markdown("""
 <style>
@@ -27,7 +27,7 @@ TIMEFRAMES = {
 }
 
 # ─────────────────────────────────────────────
-# MOTOR DE CONEXIÓN KUCOIN
+# MOTOR DE CONEXIÓN
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchange():
@@ -38,15 +38,14 @@ def get_active_pairs():
     try:
         ex = get_exchange()
         tickers = ex.fetch_tickers()
-        # Filtramos solo por USDT y volumen para limpiar la lista
         return [s for s, t in tickers.items() if "/USDT:USDT" in s and t.get("quoteVolume", 0) > 10000]
     except: return []
 
 # ─────────────────────────────────────────────
-# CÁLCULOS TÉCNICOS SLY (OPTIMIZADOS)
+# NÚCLEO LÓGICO SLY (VERSION DE ALTA PRECISIÓN)
 # ─────────────────────────────────────────────
 def calculate_sly_logic(df, use_ema=True):
-    # Heikin Ashi (Replicando Pine Script)
+    # A. Heikin Ashi (Cálculo exacto Pine)
     ha_close = (df['open'] + df['high'] + df['low'] + df['close']) / 4
     ha_open = np.zeros(len(df))
     ha_open[0] = (df['open'].iloc[0] + df['close'].iloc[0]) / 2
@@ -54,56 +53,59 @@ def calculate_sly_logic(df, use_ema=True):
         ha_open[i] = (ha_open[i-1] + ha_close.iloc[i-1]) / 2
     ha_color = np.where(ha_close > ha_open, 1, -1)
 
-    # MACD (12, 26, 9)
+    # B. MACD
     macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
-    if macd is None or 'MACDh_12_26_9' not in macd: return 0, None
     hist = macd['MACDh_12_26_9']
     
-    # EMA 200
+    # C. EMA 200
     ema200 = ta.ema(df['close'], length=200)
-    if ema200 is None: return 0, None
 
-    # Máquina de Estados (Estado SLY)
+    # D. Máquina de Estados (State Machine)
     estado = 0
     entry_time = None
     
-    for i in range(1, len(df)):
+    # Empezamos el análisis después de que la EMA 200 es estable (Warm-up)
+    for i in range(200, len(df)):
         h = hist.iloc[i]
         h_prev = hist.iloc[i-1]
         price = df['close'].iloc[i]
         e200 = ema200.iloc[i]
         
-        if pd.isna(e200) or pd.isna(h): continue
+        prev_estado = estado
 
-        # Salida de estado
-        if estado == 1 and h < h_prev: estado = 0
-        elif estado == -1 and h > h_prev: estado = 0
+        # Lógica de Salida (SLY)
+        if estado == 1 and h < h_prev:
+            estado = 0
+        elif estado == -1 and h > h_prev:
+            estado = 0
             
-        # Entrada a estado (Solo si estado es 0)
+        # Lógica de Entrada (Solo si estamos en 0)
         if estado == 0:
             f_ema_long = (price > e200) if use_ema else True
             f_ema_short = (price < e200) if use_ema else True
             
             if (ha_color[i] == 1) and (h > h_prev) and f_ema_long:
                 estado = 1
-                entry_time = df['dt'].iloc[i]
             elif (ha_color[i] == -1) and (h < h_prev) and f_ema_short:
                 estado = -1
-                entry_time = df['dt'].iloc[i]
+        
+        # Capturar el horario de la NUEVA entrada (is_new_entry)
+        if estado != 0 and estado != prev_estado:
+            entry_time = df['dt'].iloc[i]
 
     return estado, entry_time
 
 # ─────────────────────────────────────────────
-# ANÁLISIS DE MERCADO
+# PROCESAMIENTO
 # ─────────────────────────────────────────────
 def analyze_ticker(symbol, exchange, utc_offset):
     row_data = {"Activo": symbol.split(":")[0].replace("/USDT", "")}
     
     for label, tf_code in TIMEFRAMES.items():
         try:
-            # Límite ajustado a 200 (máximo compatible con todos los TFs de KuCoin)
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=200)
-            if len(ohlcv) < 50: # Si hay menos de 50 velas, el activo es muy nuevo
+            # Aumentamos a 1000 velas para precisión total en EMA y HA
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=1000)
+            if len(ohlcv) < 205:
                 row_data[f"{label} Señal"] = "POCO HIST."
                 row_data[f"{label} Horario"] = "-"
                 continue
@@ -122,16 +124,16 @@ def analyze_ticker(symbol, exchange, utc_offset):
             else:
                 row_data[f"{label} Señal"] = "FUERA ⚪"
                 row_data[f"{label} Horario"] = "-"
-        except Exception:
-            row_data[f"{label} Señal"] = "ERROR API"
+        except:
+            row_data[f"{label} Señal"] = "ERROR"
             row_data[f"{label} Horario"] = "-"
             
     return row_data
 
 # ─────────────────────────────────────────────
-# INTERFAZ PRINCIPAL
+# INTERFAZ
 # ─────────────────────────────────────────────
-st.title("🎯 SLY DASHBOARD: CRYPTO SNIPER V28.1")
+st.title("🎯 SLY DASHBOARD V28.2 (Precision Sync)")
 
 with st.sidebar:
     st.header("Configuración")
@@ -139,20 +141,18 @@ with st.sidebar:
     
     all_pairs = get_active_pairs()
     if all_pairs:
-        st.info(f"Activos detectados: {len(all_pairs)}")
-        batch_size = st.selectbox("Cantidad por escaneo", [10, 20, 30, 50], index=1)
+        batch_size = st.selectbox("Cantidad por lote", [10, 20, 30, 50], index=1)
         batches = [all_pairs[i:i + batch_size] for i in range(0, len(all_pairs), batch_size)]
         sel_batch = st.selectbox("Seleccionar Lote", range(len(batches)), format_func=lambda x: f"Lote {x} ({len(batches[x])} activos)")
         
-        if st.button("🚀 INICIAR RADAR", type="primary", use_container_width=True):
+        if st.button("🚀 ESCANEAR ACTIVOS", type="primary", use_container_width=True):
             ex = get_exchange()
             results = []
             prog = st.progress(0)
             
             for idx, sym in enumerate(batches[sel_batch]):
-                prog.progress((idx + 1) / len(batches[sel_batch]), text=f"Analizando {sym}")
-                res = analyze_ticker(sym, ex, utc_h)
-                results.append(res)
+                prog.progress((idx + 1) / len(batches[sel_batch]), text=f"Calculando {sym}...")
+                results.append(analyze_ticker(sym, ex, utc_h))
                 time.sleep(0.05)
                 
             st.session_state["sniper_results"] = results
@@ -162,17 +162,14 @@ with st.sidebar:
         st.session_state["sniper_results"] = []
         st.rerun()
 
-# ─────────────────────────────────────────────
-# RENDERIZADO DE TABLA
-# ─────────────────────────────────────────────
 if st.session_state["sniper_results"]:
-    df_final = pd.DataFrame(st.session_state["sniper_results"])
+    df_f = pd.DataFrame(st.session_state["sniper_results"])
     
     def style_rows(val):
-        if "LONG" in str(val): return 'background-color: #d1f2eb; color: #1b5e20; font-weight: bold'
-        if "SHORT" in str(val): return 'background-color: #fdedec; color: #b71c1c; font-weight: bold'
+        if "LONG" in str(val): return 'background-color: #d4edda; color: #155724; font-weight: bold'
+        if "SHORT" in str(val): return 'background-color: #f8d7da; color: #721c24; font-weight: bold'
         return ''
 
-    st.dataframe(df_final.style.applymap(style_rows), use_container_width=True, height=800)
+    st.dataframe(df_f.style.applymap(style_rows), use_container_width=True, height=800)
 else:
-    st.info("👈 Selecciona un lote de activos y presiona 'INICIAR RADAR'.")
+    st.info("👈 Presiona 'ESCANEAR ACTIVOS' para sincronizar con SLY Dashboard.")
