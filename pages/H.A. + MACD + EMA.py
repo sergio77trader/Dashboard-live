@@ -13,37 +13,34 @@ st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V24.0")
 
 st.markdown("""
 <style>
-    [data-testid="stMetricValue"] { font-size: 14px; }
-    .stDataFrame { font-size: 12px; border: 1px solid #333; }
-    h1 { color: #2962FF; font-weight: 800; }
+    .stDataFrame { font-size: 12px; }
 </style>
 """, unsafe_allow_html=True)
 
 if "sniper_results" not in st.session_state:
     st.session_state["sniper_results"] = []
 
-TIMEFRAMES = {"1m":"1m", "5m":"5m", "15m":"15m", "30m":"30m", "1H":"1h", "4H":"4h", "1D":"1d"}
+TIMEFRAMES = {
+    "1m":"1m","5m":"5m","15m":"15m",
+    "30m":"30m","1H":"1h","4H":"4h","1D":"1d"
+}
 
 # ─────────────────────────────────────────────
-# MOTOR DE DATOS
+# EXCHANGE
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchange():
-    return ccxt.kucoinfutures({"enableRateLimit": True, "timeout": 30000})
+    return ccxt.kucoinfutures({"enableRateLimit": True})
 
 @st.cache_data(ttl=300)
-def get_active_pairs(min_volume=100000):
-    try:
-        ex = get_exchange()
-        tickers = ex.fetch_tickers()
-        valid = []
-        for s, t in tickers.items():
-            if "/USDT:USDT" in s and t.get("quoteVolume", 0) >= min_volume:
-                valid.append({"symbol": s, "vol": t["quoteVolume"]})
-        return pd.DataFrame(valid).sort_values("vol", ascending=False)["symbol"].tolist()
-    except:
-        return []
+def get_active_pairs():
+    ex = get_exchange()
+    t = ex.fetch_tickers()
+    return [s for s in t if "/USDT:USDT" in s]
 
+# ─────────────────────────────────────────────
+# HEIKIN ASHI
+# ─────────────────────────────────────────────
 def calculate_heikin_ashi(df):
     df = df.copy()
     df["HA_Close"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
@@ -55,64 +52,77 @@ def calculate_heikin_ashi(df):
     return df
 
 # ─────────────────────────────────────────────
-# ANÁLISIS TÉCNICO
+# ANALISIS
 # ─────────────────────────────────────────────
-def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
-    try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=100)
-        if not ohlcv or len(ohlcv) < 50:
-            return None
+def analyze_ticker_tf(symbol, tf, ex, price):
+    ohlcv = ex.fetch_ohlcv(symbol, tf, limit=100)
+    df = pd.DataFrame(ohlcv, columns=["time","open","high","low","close","vol"])
+    df["dt"] = pd.to_datetime(df["time"], unit="ms")
+    df.iloc[-1,4] = price
 
-        ohlcv[-1][4] = current_price
-        df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "vol"])
-        df["dt"] = pd.to_datetime(df["time"], unit="ms")
+    macd = ta.macd(df["close"])
+    df["Hist"] = macd["MACDh_12_26_9"]
+    df["MACD"] = macd["MACD_12_26_9"]
+    df["Signal"] = macd["MACDs_12_26_9"]
 
-        macd = ta.macd(df["close"])
-        df["Hist"] = macd["MACDh_12_26_9"]
-        df["MACD"] = macd["MACD_12_26_9"]
-        df["Signal"] = macd["MACDs_12_26_9"]
+    df = calculate_heikin_ashi(df)
+    last, prev = df.iloc[-1], df.iloc[-2]
 
-        df = calculate_heikin_ashi(df)
+    phase, icon = "NEUTRO","⚪"
+    if last["HA_Color"] == 1 and last["Hist"] > prev["Hist"]:
+        phase, icon = ("CONFIRMACION BULL","🟢")
+    elif last["HA_Color"] == -1 and last["Hist"] < prev["Hist"]:
+        phase, icon = ("CONFIRMACION BEAR","🔴")
 
-        last, prev = df.iloc[-1], df.iloc[-2]
+    df["cross"] = np.sign(df["MACD"] - df["Signal"]).diff().ne(0)
+    crosses = df[df["cross"]]
 
-        phase, icon = "NEUTRO", "⚪"
-        if last["HA_Color"] == 1 and last["Hist"] > prev["Hist"]:
-            phase, icon = ("PULLBACK ALCISTA", "🔵") if last["Hist"] < 0 else ("CONFIRMACION BULL", "🟢")
-        elif last["HA_Color"] == -1 and last["Hist"] < prev["Hist"]:
-            phase, icon = ("PULLBACK BAJISTA", "🟠") if last["Hist"] > 0 else ("CONFIRMACION BEAR", "🔴")
+    cross_time = (
+        (crosses["dt"].iloc[-1] - pd.Timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
+        if not crosses.empty else "--"
+    )
 
-        df["cross"] = np.sign(df["MACD"] - df["Signal"]).diff().ne(0)
-        crosses = df[df["cross"]]
+    signal_time = (last["dt"] - pd.Timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
 
-        last_cross = (
-            (crosses["dt"].iloc[-1] - pd.Timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
-            if not crosses.empty else "--"
-        )
+    return {
+        "signal": f"{icon} {phase}",   # ← HA-MACD limpio
+        "m0": "SOBRE 0" if last["MACD"] > 0 else "BAJO 0",
+        "hist": "ALCISTA" if last["Hist"] > prev["Hist"] else "BAJISTA",
+        "cross": cross_time,
+        "time": signal_time            # ← hora visible
+    }
 
-        signal_time = (last["dt"] - pd.Timedelta(hours=3)).strftime("%Y-%m-%d %H:%M")
+# ─────────────────────────────────────────────
+# SCAN
+# ─────────────────────────────────────────────
+def scan(symbols):
+    ex = get_exchange()
+    out = []
+    for s in symbols:
+        p = ex.fetch_ticker(s)["last"]
+        row = {"Activo": s.replace("/USDT:USDT",""), "Precio": round(p,4)}
+        for lbl,tf in TIMEFRAMES.items():
+            r = analyze_ticker_tf(s, tf, ex, p)
+            row[f"{lbl} H.A./MACD"] = r["signal"]
+            row[f"{lbl} Hora Señal"] = r["time"]
+            row[f"{lbl} MACD 0"] = r["m0"]
+            row[f"{lbl} Hist."] = r["hist"]
+            row[f"{lbl} Cruce MACD"] = r["cross"]
+        out.append(row)
+    return out
 
-        return {
-            "signal": f"{icon} {phase}",
-            "m0": "SOBRE 0" if last["MACD"] > 0 else "BAJO 0",
-            "h_dir": "ALCISTA" if last["Hist"] > prev["Hist"] else "BAJISTA",
-            "cross_time": last_cross,
-            "signal_time": signal_time
-        }
+# ─────────────────────────────────────────────
+# UI
+# ─────────────────────────────────────────────
+st.title("SYSTEMATRADER | SNIPER V24.0")
 
-    except:
-        return None
+symbols = get_active_pairs()
 
-def get_verdict(row):
-    bulls = sum(1 for tf in TIMEFRAMES if any(x in str(row.get(f"{tf} H.A./MACD","")) for x in ["BULL", "ALCISTA"]))
-    bears = sum(1 for tf in TIMEFRAMES if any(x in str(row.get(f"{tf} H.A./MACD","")) for x in ["BEAR", "BAJISTA"]))
-    bias_1d = str(row.get("1D MACD 0", ""))
+if st.button("🚀 INICIAR ESCANEO"):
+    st.session_state["sniper_results"] = scan(symbols[:20])
 
-    if bulls >= 5 and "SOBRE 0" in bias_1d:
-        return "🔥 COMPRA FUERTE", "MTF CONFLUENCE BULL"
-    if bears >= 5 and "BAJO 0" in bias_1d:
-        return "🩸 VENTA FUERTE", "MTF CONFLUENCE BEAR"
-    if "PULLBACK ALCISTA" in str(row.get("1m H.A./MACD", "")):
-        return "💎 GIRO PROBABLE", "PULLBACK DETECTED"
-
-    return "⚖️ RANGO", "NO TREND"
+if st.session_state["sniper_results"]:
+    df = pd.DataFrame(st.session_state["sniper_results"])
+    st.dataframe(df, use_container_width=True)
+else:
+    st.info("Presione INICIAR ESCANEO")
