@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V25.0 (SLY STATE MACHINE)")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V25.0 SLY")
 
 st.markdown("""
 <style>
@@ -43,9 +43,7 @@ def get_active_pairs(min_volume=100000):
         return pd.DataFrame(valid).sort_values("vol", ascending=False)["symbol"].tolist()
     except: return []
 
-# ─────────────────────────────────────────────
-# HEIKIN ASHI RECURSIVO (LÓGICA PINE)
-# ─────────────────────────────────────────────
+# Heikin Ashi Recursivo (Igual a Pine Script)
 def calculate_heikin_ashi(df):
     df = df.copy()
     ha_close = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
@@ -53,17 +51,17 @@ def calculate_heikin_ashi(df):
     ha_open[0] = (df["open"].iloc[0] + df["close"].iloc[0]) / 2
     for i in range(1, len(df)):
         ha_open[i] = (ha_open[i-1] + ha_close.iloc[i-1]) / 2
-    
     df["HA_Close"] = ha_close
     df["HA_Open"] = ha_open
     df["HA_Color"] = np.where(df["HA_Close"] > df["HA_Open"], 1, -1)
     return df
 
 # ─────────────────────────────────────────────
-# ANÁLISIS TÉCNICO (MÁQUINA DE ESTADOS SLY)
+# ANÁLISIS TÉCNICO (LÓGICA SLY DASHBOARD)
 # ─────────────────────────────────────────────
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price, utc_offset=-3):
     try:
+        # Descarga de 250 velas para asegurar EMA 200 estable
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=250)
         if not ohlcv or len(ohlcv) < 201: return None
         
@@ -71,7 +69,7 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price, utc_offset=-3):
         df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "vol"])
         df["dt"] = pd.to_datetime(df["time"], unit="ms")
         
-        # 1. Indicadores Base
+        # 1. Indicadores
         df["ema200"] = ta.ema(df["close"], length=200)
         macd = ta.macd(df["close"], fast=12, slow=26, signal=9)
         df["Hist"] = macd["MACDh_12_26_9"]
@@ -79,11 +77,14 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price, utc_offset=-3):
         df["Signal"] = macd["MACDs_12_26_9"]
         df = calculate_heikin_ashi(df)
 
-        # --- 2. SIMULACIÓN DE MÁQUINA DE ESTADOS (ESTADO SLY) ---
+        # 2. Máquina de Estados (Loop SLY)
         estado = 0
         entry_time = None
         
-        # Recorremos el historial para determinar el estado actual
+        # Parámetros del Script Original
+        use_ema = True
+        use_zero = False # Ajustable según tu Pine
+
         for i in range(1, len(df)):
             hist = df["Hist"].iloc[i]
             prev_hist = df["Hist"].iloc[i-1]
@@ -91,16 +92,21 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price, utc_offset=-3):
             ema200 = df["ema200"].iloc[i]
             close = df["close"].iloc[i]
             
-            # Salidas Dinámicas (Si MACD se da vuelta)
+            # Lógica de Salida
             if estado == 1 and hist < prev_hist:
                 estado = 0
             elif estado == -1 and hist > prev_hist:
                 estado = 0
-            
-            # Entradas (Solo si estamos FUERA)
+                
+            # Lógica de Entrada
             if estado == 0:
-                long_cond = (ha_color == 1) and (hist > prev_hist) and (close > ema200)
-                short_cond = (ha_color == -1) and (hist < prev_hist) and (close < ema200)
+                f_ema_long = (close > ema200) if use_ema else True
+                f_ema_short = (close < ema200) if use_ema else True
+                f_zero_long = (hist < 0) if use_zero else True
+                f_zero_short = (hist > 0) if use_zero else True
+                
+                long_cond = (ha_color == 1) and (hist > prev_hist) and f_ema_long and f_zero_long
+                short_cond = (ha_color == -1) and (hist < prev_hist) and f_ema_short and f_zero_short
                 
                 if long_cond:
                     estado = 1
@@ -109,15 +115,10 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price, utc_offset=-3):
                     estado = -1
                     entry_time = df["dt"].iloc[i]
 
-        # --- 3. RESULTADOS FINALES ---
+        # 3. Formateo de Resultados
         txt_sig = "FUERA ⚪"
-        icon = "⚪"
-        if estado == 1:
-            txt_sig = "LONG 🟢"
-            icon = "🟢"
-        elif estado == -1:
-            txt_sig = "SHORT 🔴"
-            icon = "🔴"
+        if estado == 1: txt_sig = "LONG 🟢"
+        elif estado == -1: txt_sig = "SHORT 🔴"
             
         signal_h = (entry_time + pd.Timedelta(hours=utc_offset)).strftime("%H:%M") if entry_time else "--:--"
         
@@ -139,8 +140,9 @@ def get_verdict(row):
     bulls = sum(1 for tf in TIMEFRAMES if "LONG" in str(row.get(f"{tf} H.A./MACD","")))
     bears = sum(1 for tf in TIMEFRAMES if "SHORT" in str(row.get(f"{tf} H.A./MACD","")))
     bias_1d = str(row.get("1D MACD 0", ""))
-    if bulls >= 4 and "SOBRE 0" in bias_1d: return "🔥 COMPRA FUERTE", "MTF CONFLUENCE BULL"
-    if bears >= 4 and "BAJO 0" in bias_1d: return "🩸 VENTA FUERTE", "MTF CONFLUENCE BEAR"
+    
+    if bulls >= 4 and "SOBRE 0" in bias_1d: return "🔥 COMPRA FUERTE", "MTF SLY BULL"
+    if bears >= 4 and "BAJO 0" in bias_1d: return "🩸 VENTA FUERTE", "MTF SLY BEAR"
     return "⚖️ RANGO", "NO TREND"
 
 # ─────────────────────────────────────────────
@@ -180,13 +182,12 @@ def scan_batch(targets, accumulate=True, utc_h=-3):
     return new_results
 
 # ─────────────────────────────────────────────
-# UI & STYLER POR COLORES
+# UI & STYLER
 # ─────────────────────────────────────────────
 def get_color_category(val):
     v = str(val).upper()
     if "🟢" in v or "LONG" in v or "SOBRE 0" in v or "ALCISTA" in v: return "VERDE"
     if "🔴" in v or "SHORT" in v or "BAJO 0" in v or "BAJISTA" in v: return "ROJO"
-    if "🔵" in v or "PULLBACK" in v: return "AZUL"
     return "BLANCO"
 
 def style_df(df):
@@ -194,7 +195,6 @@ def style_df(df):
         cat = get_color_category(val)
         if cat == "VERDE": return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
         if cat == "ROJO": return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
-        if cat == "AZUL": return 'background-color: #E1F5FE; color: #01579B; font-weight: bold;'
         if cat == "BLANCO": return 'background-color: #F5F5F5; color: #616161;'
         return ''
     return df.style.applymap(apply_color)
@@ -209,8 +209,8 @@ with st.sidebar:
     if mode == "Mercado":
         vol_min = st.number_input("Volumen Min.", value=100000, step=50000)
         f_sym = [s for s in all_sym if s in get_active_pairs(min_volume=vol_min)]
-        st.success(f"Activos: {len(f_sym)}")
-        b_size = st.selectbox("Batch", [20, 50, 100], index=1)
+        st.success(f"Disponibles: {len(f_sym)}")
+        b_size = st.selectbox("Batch Size", [20, 50, 100], index=1)
         batches = [f_sym[i:i+b_size] for i in range(0, len(f_sym), b_size)]
         sel = st.selectbox("Lote", range(len(batches)), format_func=lambda x: f"Lote {x} ({len(batches[x])} activos)")
         targets = batches[sel] if batches else []
@@ -223,10 +223,9 @@ with st.sidebar:
 
     if st.session_state["sniper_results"]:
         st.divider()
-        st.header("Filtros de Color")
         color_opts = ["VERDE", "ROJO", "BLANCO"]
         f_colors = {}
-        with st.expander("Filtrar TFs"):
+        with st.expander("Filtros por H.A./MACD"):
             for label in TIMEFRAMES.keys():
                 col_name = f"{label} H.A./MACD"
                 f_colors[col_name] = st.multiselect(f"Color {label}:", options=color_opts, default=color_opts)
@@ -238,7 +237,6 @@ with st.sidebar:
 # RENDERIZADO
 if st.session_state["sniper_results"]:
     df_f = pd.DataFrame(st.session_state["sniper_results"])
-    # Aplicar filtros
     for col_n, sel_c in f_colors.items():
         if col_n in df_f.columns:
             df_f = df_f[df_f[col_n].apply(lambda x: get_color_category(x) in sel_c)]
@@ -249,4 +247,4 @@ if st.session_state["sniper_results"]:
     others = [c for c in df_f.columns if c not in valid]
     st.dataframe(style_df(df_f[valid + others]), use_container_width=True, height=800)
 else:
-    st.info("👈 Inicie escaneo.")
+    st.info("👈 Configure e inicie el escaneo.")
