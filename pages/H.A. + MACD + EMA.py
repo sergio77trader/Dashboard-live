@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V25.1")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V26.0")
 
 st.markdown("""
 <style>
@@ -32,7 +32,7 @@ def get_exchange():
     return ccxt.kucoinfutures({"enableRateLimit": True, "timeout": 30000})
 
 @st.cache_data(ttl=300)
-def get_active_pairs(min_volume=100000):
+def get_active_pairs(min_volume=50000): # Bajamos filtro para ver más activos
     try:
         ex = get_exchange()
         tickers = ex.fetch_tickers()
@@ -47,6 +47,7 @@ def calculate_heikin_ashi(df):
     df = df.copy()
     ha_close = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
     ha_open = np.zeros(len(df))
+    # Inicialización exacta como Pine Script
     ha_open[0] = (df["open"].iloc[0] + df["close"].iloc[0]) / 2
     for i in range(1, len(df)):
         ha_open[i] = (ha_open[i-1] + ha_close.iloc[i-1]) / 2
@@ -56,12 +57,12 @@ def calculate_heikin_ashi(df):
     return df
 
 # ─────────────────────────────────────────────
-# ANÁLISIS TÉCNICO (SINCRO PINE SLY)
+# ANÁLISIS TÉCNICO (MÁQUINA DE ESTADOS REFORZADA)
 # ─────────────────────────────────────────────
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price, utc_offset=-3):
     try:
-        # Descarga dinámica de velas (mínimo 200 para EMA)
-        limit = 250 if tf_code not in ["1D", "4H"] else 100
+        # Pedimos 500 velas para que la EMA 200 tenga 300 velas de cálculo sólido
+        limit = 500
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=limit)
         if not ohlcv or len(ohlcv) < 50: return None
         
@@ -69,8 +70,8 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price, utc_offset=-3):
         df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "vol"])
         df["dt"] = pd.to_datetime(df["time"], unit="ms")
         
-        # Indicadores
-        df["ema200"] = ta.ema(df["close"], length=200) if len(df) >= 200 else ta.ema(df["close"], length=50)
+        # 1. Indicadores (Lógica Estricta)
+        df["ema200"] = ta.ema(df["close"], length=200)
         macd = ta.macd(df["close"], fast=12, slow=26, signal=9)
         df["Hist"] = macd["MACDh_12_26_9"]
         df["MACD"] = macd["MACD_12_26_9"]
@@ -78,42 +79,49 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price, utc_offset=-3):
         df["RSI"] = ta.rsi(df["close"], length=14)
         df = calculate_heikin_ashi(df)
 
-        # MÁQUINA DE ESTADOS SLY
+        # 2. Simulación de Estados SLY
         estado = 0
         entry_time = None
         
-        for i in range(1, len(df)):
-            h = df["Hist"].iloc[i]
-            ph = df["Hist"].iloc[i-1]
-            ha_c = df["HA_Color"].iloc[i]
-            e200 = df["ema200"].iloc[i]
-            c = df["close"].iloc[i]
+        # Empezamos desde la vela 200 para asegurar que EMA200 existe
+        start_idx = 200 if len(df) > 200 else 1
+        
+        for i in range(start_idx, len(df)):
+            hist = df["Hist"].iloc[i]
+            prev_hist = df["Hist"].iloc[i-1]
+            ha_color = df["HA_Color"].iloc[i]
+            ema200 = df["ema200"].iloc[i]
+            close = df["close"].iloc[i]
             
-            # Salidas
-            if estado == 1 and h < ph: estado = 0
-            elif estado == -1 and h > ph: estado = 0
+            # Si EMA es NaN, no podemos operar (Sincronía con TV)
+            if np.isnan(ema200): continue
+
+            # Salidas Dinámicas
+            if estado == 1 and hist < prev_hist: estado = 0
+            elif estado == -1 and hist > prev_hist: estado = 0
             
             # Entradas
             if estado == 0:
-                if ha_c == 1 and h > ph and c > e200:
+                if ha_color == 1 and hist > prev_hist and close > ema200:
                     estado = 1
                     entry_time = df["dt"].iloc[i]
-                elif ha_c == -1 and h < ph and c < e200:
+                elif ha_color == -1 and hist < prev_hist and close < ema200:
                     estado = -1
                     entry_time = df["dt"].iloc[i]
 
-        # Formateo de Salida
+        # 3. Datos de Salida
+        last_macd = df["MACD"].iloc[-1]
+        last_hist = df["Hist"].iloc[-1]
+        prev_hist = df["Hist"].iloc[-2]
         rsi_val = round(df["RSI"].iloc[-1], 1)
-        rsi_state = "RSI↑" if rsi_val > 55 else "RSI↓" if rsi_val < 45 else "RSI="
         
         txt_sig = "FUERA ⚪"
-        if estado == 1: txt_sig = f"LONG 🟢 | {rsi_state} ({rsi_val})"
-        elif estado == -1: txt_sig = f"SHORT 🔴 | {rsi_state} ({rsi_val})"
-        else: txt_sig = f"FUERA ⚪ | {rsi_state} ({rsi_val})"
+        if estado == 1: txt_sig = f"LONG 🟢 | RSI {rsi_val}"
+        elif estado == -1: txt_sig = f"SHORT 🔴 | RSI {rsi_val}"
+        else: txt_sig = f"FUERA ⚪ | RSI {rsi_val}"
             
         signal_h = (entry_time + pd.Timedelta(hours=utc_offset)).strftime("%H:%M") if entry_time else "--:--"
         
-        # Cruce MACD
         df["cross"] = np.sign(df["MACD"] - df["Signal"]).diff().ne(0)
         crosses = df[df["cross"] == True]
         last_cross = (crosses["dt"].iloc[-1] + pd.Timedelta(hours=utc_offset)).strftime("%H:%M") if not crosses.empty else "--:--"
@@ -121,21 +129,22 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price, utc_offset=-3):
         return {
             "signal": txt_sig,
             "signal_time": signal_h,
-            "m0": "SOBRE 0" if df["MACD"].iloc[-1] > 0 else "BAJO 0",
-            "h_dir": "ALCISTA" if df["Hist"].iloc[-1] > df["Hist"].iloc[-2] else "BAJISTA",
+            "m0": "SOBRE 0" if last_macd > 0 else "BAJO 0",
+            "h_dir": "ALCISTA" if last_hist > prev_hist else "BAJISTA",
             "cross_time": last_cross
         }
-    except: return None
+    except Exception as e:
+        return None
 
 def get_verdict(row):
     bulls = sum(1 for tf in TIMEFRAMES if "LONG" in str(row.get(f"{tf} H.A./MACD","")))
     bears = sum(1 for tf in TIMEFRAMES if "SHORT" in str(row.get(f"{tf} H.A./MACD","")))
-    if bulls >= 4: return "🔥 COMPRA FUERTE", "MTF SLY BULL"
-    if bears >= 4: return "🩸 VENTA FUERTE", "MTF SLY BEAR"
+    if bulls >= 4: return "🔥 COMPRA FUERTE", "MTF BULLISH"
+    if bears >= 4: return "🩸 VENTA FUERTE", "MTF BEARISH"
     return "⚖️ RANGO", "NO TREND"
 
 # ─────────────────────────────────────────────
-# MOTOR DE ESCANEO
+# ESCANEO
 # ─────────────────────────────────────────────
 def scan_batch(targets, accumulate=True, utc_h=-3):
     ex = get_exchange()
@@ -156,12 +165,12 @@ def scan_batch(targets, accumulate=True, utc_h=-3):
                     row[f"{label} Hist."] = res["h_dir"]
                     row[f"{label} Cruce MACD"] = res["cross_time"]
                 else:
-                    for c in ["H.A./MACD", "Hora Señal", "MACD 0", "Hist.", "Cruce MACD"]: row[f"{label} {c}"] = "-"
+                    for c in ["H.A./MACD", "Hora Señal", "MACD 0", "Hist.", "Cruce MACD"]: row[f"{label} {c}"] = "S/D"
             v, e = get_verdict(row)
             row["VEREDICTO"] = v
             row["ESTRATEGIA"] = e
             new_results.append(row)
-            time.sleep(0.05)
+            time.sleep(0.1) # Mayor estabilidad para KuCoin
         except: continue
     prog.empty()
     if accumulate:
@@ -171,12 +180,12 @@ def scan_batch(targets, accumulate=True, utc_h=-3):
     return new_results
 
 # ─────────────────────────────────────────────
-# UI & STYLER
+# UI
 # ─────────────────────────────────────────────
 def get_color_category(val):
     v = str(val).upper()
-    if "🟢" in v or "LONG" in v or "SOBRE 0" in v or "ALCISTA" in v: return "VERDE"
-    if "🔴" in v or "SHORT" in v or "BAJO 0" in v or "BAJISTA" in v: return "ROJO"
+    if "🟢" in v or "LONG" in v or "SOBRE" in v or "ALCISTA" in v: return "VERDE"
+    if "🔴" in v or "SHORT" in v or "BAJO" in v or "BAJISTA" in v: return "ROJO"
     return "BLANCO"
 
 def style_df(df):
@@ -188,49 +197,31 @@ def style_df(df):
     return df.style.applymap(apply_color)
 
 with st.sidebar:
-    st.header("Radar Control SLY")
-    utc_h = st.number_input("Diferencia Horaria (UTC)", value=-3)
+    st.header("Radar SLY V26")
+    utc_h = st.number_input("UTC", value=-3)
     mode = st.radio("Modo:", ["Mercado", "Watchlist"])
-    all_sym = get_active_pairs(min_volume=0)
+    all_sym = get_active_pairs()
     
-    targets = []
     if mode == "Mercado":
-        vol_min = st.number_input("Volumen Min.", value=100000, step=50000)
+        vol_min = st.number_input("Volumen Min.", value=50000)
         f_sym = [s for s in all_sym if s in get_active_pairs(min_volume=vol_min)]
         st.success(f"Activos: {len(f_sym)}")
-        b_size = st.selectbox("Batch", [20, 50, 100], index=1)
-        batches = [f_sym[i:i+b_size] for i in range(0, len(f_sym), b_size)]
-        sel = st.selectbox("Lote", range(len(batches)), format_func=lambda x: f"Lote {x} ({len(batches[x])} activos)")
-        targets = batches[sel] if batches else []
+        sel_batch = st.selectbox("Lote (50)", range(0, len(f_sym), 50), format_func=lambda x: f"Activos {x} al {x+50}")
+        targets = f_sym[sel_batch : sel_batch+50]
     else:
         targets = st.multiselect("Watchlist:", options=all_sym)
 
-    mode_acc = st.checkbox("Acumular", value=True)
     if st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True):
-        if targets: st.session_state["sniper_results"] = scan_batch(targets, mode_acc, utc_h)
-
-    if st.session_state["sniper_results"]:
-        st.divider()
-        color_opts = ["VERDE", "ROJO", "BLANCO"]
-        f_colors = {}
-        with st.expander("Filtros"):
-            for label in TIMEFRAMES.keys():
-                col_name = f"{label} H.A./MACD"
-                f_colors[col_name] = st.multiselect(f"Color {label}:", options=color_opts, default=color_opts)
+        st.session_state["sniper_results"] = scan_batch(targets, True, utc_h)
     
     if st.button("Limpiar Memoria"):
         st.session_state["sniper_results"] = []; st.rerun()
 
-# RENDER
 if st.session_state["sniper_results"]:
     df_f = pd.DataFrame(st.session_state["sniper_results"])
-    for col_n, sel_c in f_colors.items():
-        if col_n in df_f.columns:
-            df_f = df_f[df_f[col_n].apply(lambda x: get_color_category(x) in sel_c)]
-    
     prio = ["Activo", "VEREDICTO", "ESTRATEGIA", "Precio"]
     valid = [c for c in prio if c in df_f.columns]
     others = [c for c in df_f.columns if c not in valid]
     st.dataframe(style_df(df_f[valid + others]), use_container_width=True, height=800)
 else:
-    st.info("👈 Inicie el escaneo para ver datos.")
+    st.info("👈 Seleccione activos y ejecute escaneo.")
