@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V25.0 SLY")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V25.1")
 
 st.markdown("""
 <style>
@@ -43,7 +43,6 @@ def get_active_pairs(min_volume=100000):
         return pd.DataFrame(valid).sort_values("vol", ascending=False)["symbol"].tolist()
     except: return []
 
-# Heikin Ashi Recursivo (Igual a Pine Script)
 def calculate_heikin_ashi(df):
     df = df.copy()
     ha_close = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
@@ -57,68 +56,60 @@ def calculate_heikin_ashi(df):
     return df
 
 # ─────────────────────────────────────────────
-# ANÁLISIS TÉCNICO (LÓGICA SLY DASHBOARD)
+# ANÁLISIS TÉCNICO (SINCRO PINE SLY)
 # ─────────────────────────────────────────────
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price, utc_offset=-3):
     try:
-        # Descarga de 250 velas para asegurar EMA 200 estable
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=250)
-        if not ohlcv or len(ohlcv) < 201: return None
+        # Descarga dinámica de velas (mínimo 200 para EMA)
+        limit = 250 if tf_code not in ["1D", "4H"] else 100
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=limit)
+        if not ohlcv or len(ohlcv) < 50: return None
         
         ohlcv[-1][4] = current_price
         df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "vol"])
         df["dt"] = pd.to_datetime(df["time"], unit="ms")
         
-        # 1. Indicadores
-        df["ema200"] = ta.ema(df["close"], length=200)
+        # Indicadores
+        df["ema200"] = ta.ema(df["close"], length=200) if len(df) >= 200 else ta.ema(df["close"], length=50)
         macd = ta.macd(df["close"], fast=12, slow=26, signal=9)
         df["Hist"] = macd["MACDh_12_26_9"]
         df["MACD"] = macd["MACD_12_26_9"]
         df["Signal"] = macd["MACDs_12_26_9"]
+        df["RSI"] = ta.rsi(df["close"], length=14)
         df = calculate_heikin_ashi(df)
 
-        # 2. Máquina de Estados (Loop SLY)
+        # MÁQUINA DE ESTADOS SLY
         estado = 0
         entry_time = None
         
-        # Parámetros del Script Original
-        use_ema = True
-        use_zero = False # Ajustable según tu Pine
-
         for i in range(1, len(df)):
-            hist = df["Hist"].iloc[i]
-            prev_hist = df["Hist"].iloc[i-1]
-            ha_color = df["HA_Color"].iloc[i]
-            ema200 = df["ema200"].iloc[i]
-            close = df["close"].iloc[i]
+            h = df["Hist"].iloc[i]
+            ph = df["Hist"].iloc[i-1]
+            ha_c = df["HA_Color"].iloc[i]
+            e200 = df["ema200"].iloc[i]
+            c = df["close"].iloc[i]
             
-            # Lógica de Salida
-            if estado == 1 and hist < prev_hist:
-                estado = 0
-            elif estado == -1 and hist > prev_hist:
-                estado = 0
-                
-            # Lógica de Entrada
+            # Salidas
+            if estado == 1 and h < ph: estado = 0
+            elif estado == -1 and h > ph: estado = 0
+            
+            # Entradas
             if estado == 0:
-                f_ema_long = (close > ema200) if use_ema else True
-                f_ema_short = (close < ema200) if use_ema else True
-                f_zero_long = (hist < 0) if use_zero else True
-                f_zero_short = (hist > 0) if use_zero else True
-                
-                long_cond = (ha_color == 1) and (hist > prev_hist) and f_ema_long and f_zero_long
-                short_cond = (ha_color == -1) and (hist < prev_hist) and f_ema_short and f_zero_short
-                
-                if long_cond:
+                if ha_c == 1 and h > ph and c > e200:
                     estado = 1
                     entry_time = df["dt"].iloc[i]
-                elif short_cond:
+                elif ha_c == -1 and h < ph and c < e200:
                     estado = -1
                     entry_time = df["dt"].iloc[i]
 
-        # 3. Formateo de Resultados
+        # Formateo de Salida
+        rsi_val = round(df["RSI"].iloc[-1], 1)
+        rsi_state = "RSI↑" if rsi_val > 55 else "RSI↓" if rsi_val < 45 else "RSI="
+        
         txt_sig = "FUERA ⚪"
-        if estado == 1: txt_sig = "LONG 🟢"
-        elif estado == -1: txt_sig = "SHORT 🔴"
+        if estado == 1: txt_sig = f"LONG 🟢 | {rsi_state} ({rsi_val})"
+        elif estado == -1: txt_sig = f"SHORT 🔴 | {rsi_state} ({rsi_val})"
+        else: txt_sig = f"FUERA ⚪ | {rsi_state} ({rsi_val})"
             
         signal_h = (entry_time + pd.Timedelta(hours=utc_offset)).strftime("%H:%M") if entry_time else "--:--"
         
@@ -139,10 +130,8 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price, utc_offset=-3):
 def get_verdict(row):
     bulls = sum(1 for tf in TIMEFRAMES if "LONG" in str(row.get(f"{tf} H.A./MACD","")))
     bears = sum(1 for tf in TIMEFRAMES if "SHORT" in str(row.get(f"{tf} H.A./MACD","")))
-    bias_1d = str(row.get("1D MACD 0", ""))
-    
-    if bulls >= 4 and "SOBRE 0" in bias_1d: return "🔥 COMPRA FUERTE", "MTF SLY BULL"
-    if bears >= 4 and "BAJO 0" in bias_1d: return "🩸 VENTA FUERTE", "MTF SLY BEAR"
+    if bulls >= 4: return "🔥 COMPRA FUERTE", "MTF SLY BULL"
+    if bears >= 4: return "🩸 VENTA FUERTE", "MTF SLY BEAR"
     return "⚖️ RANGO", "NO TREND"
 
 # ─────────────────────────────────────────────
@@ -195,7 +184,6 @@ def style_df(df):
         cat = get_color_category(val)
         if cat == "VERDE": return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
         if cat == "ROJO": return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
-        if cat == "BLANCO": return 'background-color: #F5F5F5; color: #616161;'
         return ''
     return df.style.applymap(apply_color)
 
@@ -204,13 +192,13 @@ with st.sidebar:
     utc_h = st.number_input("Diferencia Horaria (UTC)", value=-3)
     mode = st.radio("Modo:", ["Mercado", "Watchlist"])
     all_sym = get_active_pairs(min_volume=0)
-    targets = []
     
+    targets = []
     if mode == "Mercado":
         vol_min = st.number_input("Volumen Min.", value=100000, step=50000)
         f_sym = [s for s in all_sym if s in get_active_pairs(min_volume=vol_min)]
-        st.success(f"Disponibles: {len(f_sym)}")
-        b_size = st.selectbox("Batch Size", [20, 50, 100], index=1)
+        st.success(f"Activos: {len(f_sym)}")
+        b_size = st.selectbox("Batch", [20, 50, 100], index=1)
         batches = [f_sym[i:i+b_size] for i in range(0, len(f_sym), b_size)]
         sel = st.selectbox("Lote", range(len(batches)), format_func=lambda x: f"Lote {x} ({len(batches[x])} activos)")
         targets = batches[sel] if batches else []
@@ -225,26 +213,24 @@ with st.sidebar:
         st.divider()
         color_opts = ["VERDE", "ROJO", "BLANCO"]
         f_colors = {}
-        with st.expander("Filtros por H.A./MACD"):
+        with st.expander("Filtros"):
             for label in TIMEFRAMES.keys():
                 col_name = f"{label} H.A./MACD"
                 f_colors[col_name] = st.multiselect(f"Color {label}:", options=color_opts, default=color_opts)
-        f_v = st.multiselect("Veredicto:", options=color_opts, default=color_opts)
-
+    
     if st.button("Limpiar Memoria"):
         st.session_state["sniper_results"] = []; st.rerun()
 
-# RENDERIZADO
+# RENDER
 if st.session_state["sniper_results"]:
     df_f = pd.DataFrame(st.session_state["sniper_results"])
     for col_n, sel_c in f_colors.items():
         if col_n in df_f.columns:
             df_f = df_f[df_f[col_n].apply(lambda x: get_color_category(x) in sel_c)]
-    df_f = df_f[df_f["VEREDICTO"].apply(lambda x: get_color_category(x) in f_v)]
     
     prio = ["Activo", "VEREDICTO", "ESTRATEGIA", "Precio"]
     valid = [c for c in prio if c in df_f.columns]
     others = [c for c in df_f.columns if c not in valid]
     st.dataframe(style_df(df_f[valid + others]), use_container_width=True, height=800)
 else:
-    st.info("👈 Configure e inicie el escaneo.")
+    st.info("👈 Inicie el escaneo para ver datos.")
