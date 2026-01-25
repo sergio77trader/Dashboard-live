@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY DASHBOARD | PRECISION SYNC V28.2")
+st.set_page_config(layout="wide", page_title="SLY DASHBOARD | STABLE PRECISION V28.3")
 
 st.markdown("""
 <style>
@@ -42,10 +42,10 @@ def get_active_pairs():
     except: return []
 
 # ─────────────────────────────────────────────
-# NÚCLEO LÓGICO SLY (VERSION DE ALTA PRECISIÓN)
+# NÚCLEO LÓGICO SLY (ESTADO PERSISTENTE)
 # ─────────────────────────────────────────────
 def calculate_sly_logic(df, use_ema=True):
-    # A. Heikin Ashi (Cálculo exacto Pine)
+    # HA Exacto
     ha_close = (df['open'] + df['high'] + df['low'] + df['close']) / 4
     ha_open = np.zeros(len(df))
     ha_open[0] = (df['open'].iloc[0] + df['close'].iloc[0]) / 2
@@ -53,18 +53,15 @@ def calculate_sly_logic(df, use_ema=True):
         ha_open[i] = (ha_open[i-1] + ha_close.iloc[i-1]) / 2
     ha_color = np.where(ha_close > ha_open, 1, -1)
 
-    # B. MACD
+    # MACD e EMA 200
     macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
     hist = macd['MACDh_12_26_9']
-    
-    # C. EMA 200
     ema200 = ta.ema(df['close'], length=200)
 
-    # D. Máquina de Estados (State Machine)
     estado = 0
     entry_time = None
     
-    # Empezamos el análisis después de que la EMA 200 es estable (Warm-up)
+    # Análisis desde que EMA 200 es válida
     for i in range(200, len(df)):
         h = hist.iloc[i]
         h_prev = hist.iloc[i-1]
@@ -73,13 +70,11 @@ def calculate_sly_logic(df, use_ema=True):
         
         prev_estado = estado
 
-        # Lógica de Salida (SLY)
-        if estado == 1 and h < h_prev:
-            estado = 0
-        elif estado == -1 and h > h_prev:
-            estado = 0
+        # Salida
+        if estado == 1 and h < h_prev: estado = 0
+        elif estado == -1 and h > h_prev: estado = 0
             
-        # Lógica de Entrada (Solo si estamos en 0)
+        # Entrada
         if estado == 0:
             f_ema_long = (price > e200) if use_ema else True
             f_ema_short = (price < e200) if use_ema else True
@@ -89,23 +84,24 @@ def calculate_sly_logic(df, use_ema=True):
             elif (ha_color[i] == -1) and (h < h_prev) and f_ema_short:
                 estado = -1
         
-        # Capturar el horario de la NUEVA entrada (is_new_entry)
+        # Captura de Horario is_new_entry
         if estado != 0 and estado != prev_estado:
             entry_time = df['dt'].iloc[i]
 
     return estado, entry_time
 
 # ─────────────────────────────────────────────
-# PROCESAMIENTO
+# ANÁLISIS POR ACTIVO
 # ─────────────────────────────────────────────
 def analyze_ticker(symbol, exchange, utc_offset):
     row_data = {"Activo": symbol.split(":")[0].replace("/USDT", "")}
     
     for label, tf_code in TIMEFRAMES.items():
         try:
-            # Aumentamos a 1000 velas para precisión total en EMA y HA
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=1000)
-            if len(ohlcv) < 205:
+            # Límite de 500 velas (Máximo compatible con KuCoin Futures)
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=500)
+            
+            if len(ohlcv) < 200:
                 row_data[f"{label} Señal"] = "POCO HIST."
                 row_data[f"{label} Horario"] = "-"
                 continue
@@ -125,7 +121,7 @@ def analyze_ticker(symbol, exchange, utc_offset):
                 row_data[f"{label} Señal"] = "FUERA ⚪"
                 row_data[f"{label} Horario"] = "-"
         except:
-            row_data[f"{label} Señal"] = "ERROR"
+            row_data[f"{label} Señal"] = "ERROR API"
             row_data[f"{label} Horario"] = "-"
             
     return row_data
@@ -133,7 +129,7 @@ def analyze_ticker(symbol, exchange, utc_offset):
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("🎯 SLY DASHBOARD V28.2 (Precision Sync)")
+st.title("🎯 SLY DASHBOARD V28.3 (Stable Precision)")
 
 with st.sidebar:
     st.header("Configuración")
@@ -151,14 +147,14 @@ with st.sidebar:
             prog = st.progress(0)
             
             for idx, sym in enumerate(batches[sel_batch]):
-                prog.progress((idx + 1) / len(batches[sel_batch]), text=f"Calculando {sym}...")
+                prog.progress((idx + 1) / len(batches[sel_batch]), text=f"Analizando {sym}")
                 results.append(analyze_ticker(sym, ex, utc_h))
                 time.sleep(0.05)
                 
             st.session_state["sniper_results"] = results
             prog.empty()
 
-    if st.button("Limpiar Pantalla"):
+    if st.button("Limpiar Memoria"):
         st.session_state["sniper_results"] = []
         st.rerun()
 
@@ -172,4 +168,4 @@ if st.session_state["sniper_results"]:
 
     st.dataframe(df_f.style.applymap(style_rows), use_container_width=True, height=800)
 else:
-    st.info("👈 Presiona 'ESCANEAR ACTIVOS' para sincronizar con SLY Dashboard.")
+    st.info("👈 Presiona 'ESCANEAR ACTIVOS' para iniciar la sincronización.")
