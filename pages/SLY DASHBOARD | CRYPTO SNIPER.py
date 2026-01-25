@@ -9,13 +9,12 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY DASHBOARD | ULTRA-PRECISION V28.4")
+st.set_page_config(layout="wide", page_title="SLY DASHBOARD | V29.0 FINAL SYNC")
 
 st.markdown("""
 <style>
     .stDataFrame { font-size: 12px; }
     h1 { color: #2962FF; font-weight: 800; }
-    [data-testid="stSidebar"] { width: 300px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -27,7 +26,7 @@ TIMEFRAMES = {
 }
 
 # ─────────────────────────────────────────────
-# MOTOR DE CONEXIÓN
+# MOTOR DE DATOS
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchange():
@@ -42,10 +41,10 @@ def get_active_pairs():
     except: return []
 
 # ─────────────────────────────────────────────
-# NÚCLEO LÓGICO SLY (MÁQUINA DE ESTADOS PURA)
+# NÚCLEO LÓGICO SLY (ESTADO PERSISTENTE)
 # ─────────────────────────────────────────────
 def calculate_sly_logic(df, use_ema=True):
-    # 1. Heikin Ashi Exacto
+    # 1. Heikin Ashi Exacto (Pine Style)
     ha_close = (df['open'] + df['high'] + df['low'] + df['close']) / 4
     ha_open = np.zeros(len(df))
     ha_open[0] = (df['open'].iloc[0] + df['close'].iloc[0]) / 2
@@ -53,7 +52,7 @@ def calculate_sly_logic(df, use_ema=True):
         ha_open[i] = (ha_open[i-1] + ha_close.iloc[i-1]) / 2
     ha_color = np.where(ha_close > ha_open, 1, -1)
 
-    # 2. Indicadores
+    # 2. Indicadores (Cálculo sobre serie larga)
     macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
     hist = macd['MACDh_12_26_9']
     ema200 = ta.ema(df['close'], length=200)
@@ -62,16 +61,14 @@ def calculate_sly_logic(df, use_ema=True):
     estado = 0
     entry_time = None
     
-    # Recorremos desde la segunda vela para tener hist[i-1]
-    for i in range(1, len(df)):
+    # Empezamos el análisis después de 300 velas para estabilidad de EMA/MACD
+    start_bar = min(300, len(df) - 1)
+    
+    for i in range(start_bar, len(df)):
         h = hist.iloc[i]
         h_prev = hist.iloc[i-1]
         price = df['close'].iloc[i]
-        
-        # Filtro EMA (Si no hay data suficiente para EMA 200, se ignora el filtro)
         e200 = ema200.iloc[i]
-        f_ema_long = (price > e200) if (use_ema and not pd.isna(e200)) else True
-        f_ema_short = (price < e200) if (use_ema and not pd.isna(e200)) else True
         
         prev_estado = estado
 
@@ -81,14 +78,17 @@ def calculate_sly_logic(df, use_ema=True):
         elif estado == -1 and h > h_prev:
             estado = 0
             
-        # Lógica de Entrada
+        # Lógica de Entrada (Flip posible en la misma vela)
         if estado == 0:
+            f_ema_long = (price > e200) if (use_ema and not pd.isna(e200)) else True
+            f_ema_short = (price < e200) if (use_ema and not pd.isna(e200)) else True
+            
             if (ha_color[i] == 1) and (h > h_prev) and f_ema_long:
                 estado = 1
             elif (ha_color[i] == -1) and (h < h_prev) and f_ema_short:
                 estado = -1
         
-        # Captura de Horario (Primera vela del cambio de estado)
+        # Captura de Horario (Vela del cambio de estado)
         if estado != 0 and estado != prev_estado:
             entry_time = df['dt'].iloc[i]
 
@@ -102,11 +102,11 @@ def analyze_ticker(symbol, exchange, utc_offset):
     
     for label, tf_code in TIMEFRAMES.items():
         try:
-            # Pedimos el máximo de 500 velas
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=500)
+            # Máximo de 1000 velas para convergencia total con TradingView
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=1000)
             
-            if len(ohlcv) < 20: # Bajamos requisito para activos nuevos
-                row_data[f"{label} Señal"] = "S/D"
+            if len(ohlcv) < 205:
+                row_data[f"{label} Señal"] = "POCO HIST."
                 row_data[f"{label} Horario"] = "-"
                 continue
                 
@@ -117,7 +117,7 @@ def analyze_ticker(symbol, exchange, utc_offset):
             
             if state == 1:
                 row_data[f"{label} Señal"] = "LONG 🟢"
-                row_data[f"{label} Horario"] = (e_time + pd.Timedelta(hours=utc_offset)).strftime("%H:%M")
+                row_data[f"{label} Horario"] = (e_time + pd.Timedelta(hours=utc_offset)).strftime("%d/%m %H:%M")
             elif state == -1:
                 row_data[f"{label} Señal"] = "SHORT 🔴"
                 row_data[f"{label} Horario"] = (e_time + pd.Timedelta(hours=utc_offset)).strftime("%H:%M")
@@ -133,7 +133,7 @@ def analyze_ticker(symbol, exchange, utc_offset):
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("🎯 SLY DASHBOARD V28.4 (Ultra-Precision)")
+st.title("🎯 SLY DASHBOARD V29.0 (Final Sync)")
 
 with st.sidebar:
     st.header("Configuración")
@@ -141,7 +141,7 @@ with st.sidebar:
     
     all_pairs = get_active_pairs()
     if all_pairs:
-        batch_size = st.selectbox("Cantidad por lote", [10, 20, 50, 100], index=1)
+        batch_size = st.selectbox("Cantidad por lote", [10, 20, 50], index=1)
         batches = [all_pairs[i:i + batch_size] for i in range(0, len(all_pairs), batch_size)]
         sel_batch = st.selectbox("Seleccionar Lote", range(len(batches)), format_func=lambda x: f"Lote {x} ({len(batches[x])} activos)")
         
@@ -172,4 +172,4 @@ if st.session_state["sniper_results"]:
 
     st.dataframe(df_f.style.applymap(style_rows), use_container_width=True, height=800)
 else:
-    st.info("👈 Inicia el escaneo. Si una señal en TradingView no aparece, es porque el histograma actual ha girado.")
+    st.info("👈 Inicia el escaneo. Se cargará el historial completo para coincidir con TradingView.")
