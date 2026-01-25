@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN DE INTERFAZ
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY DASHBOARD | CRYPTO SNIPER")
+st.set_page_config(layout="wide", page_title="SLY DASHBOARD | CRYPTO SNIPER V28.1")
 
 st.markdown("""
 <style>
@@ -38,14 +38,15 @@ def get_active_pairs():
     try:
         ex = get_exchange()
         tickers = ex.fetch_tickers()
-        return [s for s, t in tickers.items() if "/USDT:USDT" in s and t.get("quoteVolume", 0) > 50000]
+        # Filtramos solo por USDT y volumen para limpiar la lista
+        return [s for s, t in tickers.items() if "/USDT:USDT" in s and t.get("quoteVolume", 0) > 10000]
     except: return []
 
 # ─────────────────────────────────────────────
-# CÁLCULOS TÉCNICOS SLY (PINE REPLICA)
+# CÁLCULOS TÉCNICOS SLY (OPTIMIZADOS)
 # ─────────────────────────────────────────────
 def calculate_sly_logic(df, use_ema=True):
-    # A. Heikin Ashi Recursivo
+    # Heikin Ashi (Replicando Pine Script)
     ha_close = (df['open'] + df['high'] + df['low'] + df['close']) / 4
     ha_open = np.zeros(len(df))
     ha_open[0] = (df['open'].iloc[0] + df['close'].iloc[0]) / 2
@@ -53,42 +54,40 @@ def calculate_sly_logic(df, use_ema=True):
         ha_open[i] = (ha_open[i-1] + ha_close.iloc[i-1]) / 2
     ha_color = np.where(ha_close > ha_open, 1, -1)
 
-    # B. MACD (12, 26, 9)
+    # MACD (12, 26, 9)
     macd = ta.macd(df['close'], fast=12, slow=26, signal=9)
+    if macd is None or 'MACDh_12_26_9' not in macd: return 0, None
     hist = macd['MACDh_12_26_9']
     
-    # C. EMA 200
+    # EMA 200
     ema200 = ta.ema(df['close'], length=200)
+    if ema200 is None: return 0, None
 
-    # D. Máquina de Estados (Estado SLY)
+    # Máquina de Estados (Estado SLY)
     estado = 0
     entry_time = None
     
-    # Simulación de velas (Top-Down)
     for i in range(1, len(df)):
         h = hist.iloc[i]
         h_prev = hist.iloc[i-1]
         price = df['close'].iloc[i]
         e200 = ema200.iloc[i]
         
-        if np.isnan(e200) or np.isnan(h): continue
+        if pd.isna(e200) or pd.isna(h): continue
 
-        # Salidas
+        # Salida de estado
         if estado == 1 and h < h_prev: estado = 0
-        if estado == -1 and h > h_prev: estado = 0
+        elif estado == -1 and h > h_prev: estado = 0
             
-        # Entradas
+        # Entrada a estado (Solo si estado es 0)
         if estado == 0:
             f_ema_long = (price > e200) if use_ema else True
             f_ema_short = (price < e200) if use_ema else True
             
-            long_cond = (ha_color[i] == 1) and (h > h_prev) and f_ema_long
-            short_cond = (ha_color[i] == -1) and (h < h_prev) and f_ema_short
-            
-            if long_cond:
+            if (ha_color[i] == 1) and (h > h_prev) and f_ema_long:
                 estado = 1
                 entry_time = df['dt'].iloc[i]
-            elif short_cond:
+            elif (ha_color[i] == -1) and (h < h_prev) and f_ema_short:
                 estado = -1
                 entry_time = df['dt'].iloc[i]
 
@@ -102,10 +101,10 @@ def analyze_ticker(symbol, exchange, utc_offset):
     
     for label, tf_code in TIMEFRAMES.items():
         try:
-            # Pedimos 400 velas para que la EMA 200 sea estable
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=400)
-            if len(ohlcv) < 201: 
-                row_data[f"{label} Señal"] = "FALTA DATA"
+            # Límite ajustado a 200 (máximo compatible con todos los TFs de KuCoin)
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=200)
+            if len(ohlcv) < 50: # Si hay menos de 50 velas, el activo es muy nuevo
+                row_data[f"{label} Señal"] = "POCO HIST."
                 row_data[f"{label} Horario"] = "-"
                 continue
                 
@@ -114,18 +113,17 @@ def analyze_ticker(symbol, exchange, utc_offset):
             
             state, e_time = calculate_sly_logic(df)
             
-            # Formateo visual
             if state == 1:
                 row_data[f"{label} Señal"] = "LONG 🟢"
-                row_data[f"{label} Horario"] = (e_time + pd.Timedelta(hours=utc_offset)).strftime("%d/%m %H:%M")
+                row_data[f"{label} Horario"] = (e_time + pd.Timedelta(hours=utc_offset)).strftime("%H:%M")
             elif state == -1:
                 row_data[f"{label} Señal"] = "SHORT 🔴"
-                row_data[f"{label} Horario"] = (e_time + pd.Timedelta(hours=utc_offset)).strftime("%d/%m %H:%M")
+                row_data[f"{label} Horario"] = (e_time + pd.Timedelta(hours=utc_offset)).strftime("%H:%M")
             else:
                 row_data[f"{label} Señal"] = "FUERA ⚪"
                 row_data[f"{label} Horario"] = "-"
-        except:
-            row_data[f"{label} Señal"] = "ERROR"
+        except Exception:
+            row_data[f"{label} Señal"] = "ERROR API"
             row_data[f"{label} Horario"] = "-"
             
     return row_data
@@ -133,7 +131,7 @@ def analyze_ticker(symbol, exchange, utc_offset):
 # ─────────────────────────────────────────────
 # INTERFAZ PRINCIPAL
 # ─────────────────────────────────────────────
-st.title("🎯 Dashboard SLY: Crypto Sniper")
+st.title("🎯 SLY DASHBOARD: CRYPTO SNIPER V28.1")
 
 with st.sidebar:
     st.header("Configuración")
@@ -141,12 +139,12 @@ with st.sidebar:
     
     all_pairs = get_active_pairs()
     if all_pairs:
-        st.success(f"Mercado KuCoin: {len(all_pairs)} pares")
-        batch_size = st.selectbox("Tamaño de Escaneo", [10, 20, 50, 100], index=1)
+        st.info(f"Activos detectados: {len(all_pairs)}")
+        batch_size = st.selectbox("Cantidad por escaneo", [10, 20, 30, 50], index=1)
         batches = [all_pairs[i:i + batch_size] for i in range(0, len(all_pairs), batch_size)]
-        sel_batch = st.selectbox("Seleccionar Lote", range(len(batches)))
+        sel_batch = st.selectbox("Seleccionar Lote", range(len(batches)), format_func=lambda x: f"Lote {x} ({len(batches[x])} activos)")
         
-        if st.button("🚀 ESCANEAR ACTIVOS", type="primary", use_container_width=True):
+        if st.button("🚀 INICIAR RADAR", type="primary", use_container_width=True):
             ex = get_exchange()
             results = []
             prog = st.progress(0)
@@ -155,12 +153,12 @@ with st.sidebar:
                 prog.progress((idx + 1) / len(batches[sel_batch]), text=f"Analizando {sym}")
                 res = analyze_ticker(sym, ex, utc_h)
                 results.append(res)
-                time.sleep(0.1) # Evitar Rate Limit
+                time.sleep(0.05)
                 
             st.session_state["sniper_results"] = results
             prog.empty()
 
-    if st.button("Limpiar Tabla"):
+    if st.button("Limpiar Pantalla"):
         st.session_state["sniper_results"] = []
         st.rerun()
 
@@ -170,13 +168,11 @@ with st.sidebar:
 if st.session_state["sniper_results"]:
     df_final = pd.DataFrame(st.session_state["sniper_results"])
     
-    # Estilo de colores
-    def color_signals(val):
+    def style_rows(val):
         if "LONG" in str(val): return 'background-color: #d1f2eb; color: #1b5e20; font-weight: bold'
         if "SHORT" in str(val): return 'background-color: #fdedec; color: #b71c1c; font-weight: bold'
-        if "FUERA" in str(val): return 'color: #7f8c8d'
         return ''
 
-    st.dataframe(df_final.style.applymap(color_signals), use_container_width=True, height=800)
+    st.dataframe(df_final.style.applymap(style_rows), use_container_width=True, height=800)
 else:
-    st.info("👈 Selecciona un lote de criptomonedas y presiona 'Escanear' para ver las señales SLY.")
+    st.info("👈 Selecciona un lote de activos y presiona 'INICIAR RADAR'.")
