@@ -55,7 +55,7 @@ def calculate_heikin_ashi(df):
     return df
 
 # ─────────────────────────────────────────────
-# ANÁLISIS TÉCNICO (MODIFICADO SOLO HA + MACD)
+# ANÁLISIS TÉCNICO (SOLO HA + MACD MODIFICADO)
 # ─────────────────────────────────────────────
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
@@ -80,17 +80,17 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         phase = "NEUTRO"
         icon = "⚪"
 
-        # 🟦 ALERTA ALCISTA (ROJO → VERDE + HIST ↓)
+        # 🟦 ALERTA ALCISTA
         if prev["HA_Color"] == -1 and last["HA_Color"] == 1 and last["Hist"] < prev["Hist"]:
-            phase, icon = "PULLBACK ALCISTA", "🔵"
+            phase, icon = "PULLBACK ALCISTA 🔔", "🔵"
 
         # 🟢 CONFIRMACIÓN ALCISTA
         elif last["HA_Color"] == 1 and last["Hist"] > prev["Hist"]:
             phase, icon = "CONFIRMACION BULL", "🟢"
 
-        # 🟧 ALERTA BAJISTA (VERDE → ROJO + HIST ↑)
+        # 🟧 ALERTA BAJISTA
         elif prev["HA_Color"] == 1 and last["HA_Color"] == -1 and last["Hist"] > prev["Hist"]:
-            phase, icon = "PULLBACK BAJISTA", "🟠"
+            phase, icon = "PULLBACK BAJISTA 🔔", "🟠"
 
         # 🔴 CONFIRMACIÓN BAJISTA
         elif last["HA_Color"] == -1 and last["Hist"] < prev["Hist"]:
