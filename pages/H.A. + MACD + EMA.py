@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V27.0 SLY-PRO")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V24.0")
 
 st.markdown("""
 <style>
@@ -32,184 +32,190 @@ def get_exchange():
     return ccxt.kucoinfutures({"enableRateLimit": True, "timeout": 30000})
 
 @st.cache_data(ttl=300)
-def get_active_pairs(min_volume=50000):
+def get_active_pairs(min_volume=100000):
     try:
         ex = get_exchange()
         tickers = ex.fetch_tickers()
-        valid = [s for s, t in tickers.items() if "/USDT:USDT" in s and t.get("quoteVolume", 0) >= min_volume]
-        return valid
+        valid = []
+        for s, t in tickers.items():
+            if "/USDT:USDT" in s and t.get("quoteVolume", 0) >= min_volume:
+                valid.append({"symbol": s, "vol": t["quoteVolume"]})
+        return pd.DataFrame(valid).sort_values("vol", ascending=False)["symbol"].tolist()
     except: return []
 
-# ─────────────────────────────────────────────
-# NÚCLEO LÓGICO SLY (TRADUCCIÓN LITERAL PINE)
-# ─────────────────────────────────────────────
-def run_sly_engine(df, use_ema=True, use_zero=False):
-    # 1. Preparar Indicadores
-    ema200 = ta.ema(df["close"], length=200)
-    macd = ta.macd(df["close"], fast=12, slow=26, signal=9)
-    hist = macd["MACDh_12_26_9"]
-    macd_line = macd["MACD_12_26_9"]
-    signal_line = macd["MACDs_12_26_9"]
-    
-    # 2. Heikin Ashi Recursivo
-    ha_open = np.zeros(len(df))
-    ha_close = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
-    # Inicialización de haOpen (na(haOpen[1]) ? (open + close) / 2)
-    ha_open[0] = (df["open"].iloc[0] + df["close"].iloc[0]) / 2
+def calculate_heikin_ashi(df):
+    df = df.copy()
+    df["HA_Close"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
+    ha_open = [df["open"].iloc[0]]
     for i in range(1, len(df)):
-        ha_open[i] = (ha_open[i-1] + ha_close.iloc[i-1]) / 2
-    
-    ha_color = np.where(ha_close > ha_open, 1, -1)
-
-    # 3. Máquina de Estados
-    estado = 0
-    entry_time = None
-    
-    # Empezamos el loop desde que EMA200 es válida (índice 199)
-    for i in range(1, len(df)):
-        h = hist.iloc[i]
-        h_prev = hist.iloc[i-1]
-        c = df["close"].iloc[i]
-        e200 = ema200.iloc[i]
-        
-        # Saltamos si no hay data de indicadores (Warm-up)
-        if np.isnan(e200) or np.isnan(h): continue
-
-        # A. Salidas Dinámicas
-        if estado == 1 and h < h_prev:
-            estado = 0
-        if estado == -1 and h > h_prev:
-            estado = 0
-            
-        # B. Entradas (Solo si estamos en estado 0)
-        if estado == 0:
-            f_ema_long = (c > e200) if use_ema else True
-            f_ema_short = (c < e200) if use_ema else True
-            f_zero_long = (h < 0) if use_zero else True
-            f_zero_short = (h > 0) if use_zero else True
-            
-            long_cond = (ha_color[i] == 1) and (h > h_prev) and f_ema_long and f_zero_long
-            short_cond = (ha_color[i] == -1) and (h < h_prev) and f_ema_short and f_zero_short
-            
-            if long_cond:
-                estado = 1
-                entry_time = df["dt"].iloc[i]
-            elif short_cond:
-                estado = -1
-                entry_time = df["dt"].iloc[i]
-    
-    return estado, entry_time, macd_line.iloc[-1], signal_line.iloc[-1], h.iloc[-1] if hasattr(h, 'iloc') else h
+        ha_open.append((ha_open[-1] + df["HA_Close"].iloc[i-1]) / 2)
+    df["HA_Open"] = ha_open
+    df["HA_Color"] = np.where(df["HA_Close"] > df["HA_Open"], 1, -1)
+    return df
 
 # ─────────────────────────────────────────────
-# ANÁLISIS POR ACTIVO
+# ANÁLISIS TÉCNICO
 # ─────────────────────────────────────────────
-def analyze_ticker(symbol, tf_code, exchange, current_price, utc_offset=-3):
+def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
-        # Necesitamos data suficiente para EMA200
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=400)
-        if len(ohlcv) < 205: return None
-        
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=100)
+        if not ohlcv or len(ohlcv) < 50: return None
         ohlcv[-1][4] = current_price
         df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "vol"])
         df["dt"] = pd.to_datetime(df["time"], unit="ms")
+        macd = ta.macd(df["close"])
+        df["Hist"], df["MACD"], df["Signal"] = macd["MACDh_12_26_9"], macd["MACD_12_26_9"], macd["MACDs_12_26_9"]
+        df["RSI"] = ta.rsi(df["close"], length=14)
+        df = calculate_heikin_ashi(df)
+        last, prev = df.iloc[-1], df.iloc[-2]
         
-        state, e_time, m_line, s_line, h_last = run_sly_engine(df)
-        
-        txt_sig = "FUERA ⚪"
-        if state == 1: txt_sig = "LONG 🟢"
-        elif state == -1: txt_sig = "SHORT 🔴"
-        
-        sig_time = (e_time + pd.Timedelta(hours=utc_offset)).strftime("%H:%M") if e_time else "--:--"
-        
-        # Info MACD para las otras columnas
-        m0 = "SOBRE 0" if m_line > 0 else "BAJO 0"
-        h_dir = "ALCISTA" if h_last > 0 else "BAJISTA" # Simplificado para dirección
+        phase, icon = "NEUTRO", "⚪"
+        if last["HA_Color"] == 1 and last["Hist"] > prev["Hist"]:
+            phase, icon = ("PULLBACK ALCISTA", "🔵") if last["Hist"] < 0 else ("CONFIRMACION BULL", "🟢")
+        elif last["HA_Color"] == -1 and last["Hist"] < prev["Hist"]:
+            phase, icon = ("PULLBACK BAJISTA", "🟠") if last["Hist"] > 0 else ("CONFIRMACION BEAR", "🔴")
+
+        rsi_val = round(last["RSI"], 1)
+        rsi_state = "RSI↑" if rsi_val > 55 else "RSI↓" if rsi_val < 45 else "RSI="
+        df["cross"] = np.sign(df["MACD"] - df["Signal"]).diff().ne(0)
+        crosses = df[df["cross"] == True]
+        last_cross = (crosses["dt"].iloc[-1] - pd.Timedelta(hours=3)).strftime("%H:%M") if not crosses.empty else "--:--"
 
         return {
-            "signal": txt_sig,
-            "signal_time": sig_time,
-            "m0": m0,
-            "h_dir": h_dir,
-            "cross": "--:--" # Opcional: implementar cruce si se requiere
+            "signal": f"{icon} {phase} | {rsi_state} ({rsi_val})",
+            "m0": "SOBRE 0" if last["MACD"] > 0 else "BAJO 0",
+            "h_dir": "ALCISTA" if last["Hist"] > prev["Hist"] else "BAJISTA",
+            "cross_time": last_cross,
+            "signal_time": (last["dt"] - pd.Timedelta(hours=3)).strftime("%H:%M")
         }
     except: return None
 
+def get_verdict(row):
+    bulls = sum(1 for tf in TIMEFRAMES if any(x in str(row.get(f"{tf} H.A./MACD","")) for x in ["BULL", "ALCISTA"]))
+    bears = sum(1 for tf in TIMEFRAMES if any(x in str(row.get(f"{tf} H.A./MACD","")) for x in ["BEAR", "BAJISTA"]))
+    bias_1d = str(row.get("1D MACD 0", ""))
+    if bulls >= 5 and "SOBRE 0" in bias_1d: return "🔥 COMPRA FUERTE", "MTF CONFLUENCE BULL"
+    if bears >= 5 and "BAJO 0" in bias_1d: return "🩸 VENTA FUERTE", "MTF CONFLUENCE BEAR"
+    if "PULLBACK ALCISTA" in str(row.get("1m H.A./MACD", "")): return "💎 GIRO PROBABLE", "PULLBACK DETECTED"
+    return "⚖️ RANGO", "NO TREND"
+
 # ─────────────────────────────────────────────
-# LOGICA DE ESCANEO
+# MOTOR DE ESCANEO
 # ─────────────────────────────────────────────
-def scan_batch(targets, utc_h):
+def scan_batch(targets, accumulate=True):
     ex = get_exchange()
-    results = []
+    new_results = []
     prog = st.progress(0)
     for idx, sym in enumerate(targets):
         clean = sym.split(":")[0].replace("/USDT", "")
-        prog.progress((idx+1)/len(targets), text=f"Sincronizando {clean}...")
+        prog.progress((idx+1)/len(targets), text=f"Analizando {clean}...")
         try:
             p = ex.fetch_ticker(sym)["last"]
             row = {"Activo": clean, "Precio": f"{p:,.4f}"}
             for label, tf in TIMEFRAMES.items():
-                res = analyze_ticker(sym, tf, ex, p, utc_h)
+                res = analyze_ticker_tf(sym, tf, ex, p)
                 if res:
                     row[f"{label} H.A./MACD"] = res["signal"]
                     row[f"{label} Hora Señal"] = res["signal_time"]
                     row[f"{label} MACD 0"] = res["m0"]
                     row[f"{label} Hist."] = res["h_dir"]
+                    row[f"{label} Cruce MACD"] = res["cross_time"]
                 else:
-                    for c in ["H.A./MACD", "Hora Señal", "MACD 0", "Hist."]: row[f"{label} {c}"] = "-"
-            
-            # Veredicto SLY
-            l_cnt = sum(1 for tf in TIMEFRAMES if "LONG" in str(row.get(f"{tf} H.A./MACD","")))
-            s_cnt = sum(1 for tf in TIMEFRAMES if "SHORT" in str(row.get(f"{tf} H.A./MACD","")))
-            row["VEREDICTO"] = "🔥 COMPRA" if l_cnt >= 4 else "🩸 VENTA" if s_cnt >= 4 else "⚖️ RANGO"
-            row["ESTRATEGIA"] = "CONFLUENCIA MTF" if (l_cnt >= 4 or s_cnt >= 4) else "SIN TENDENCIA"
-            
-            results.append(row)
-            time.sleep(0.1)
+                    for c in ["H.A./MACD", "Hora Señal", "MACD 0", "Hist.", "Cruce MACD"]: row[f"{label} {c}"] = "-"
+            v, e = get_verdict(row)
+            row["VEREDICTO"] = v
+            row["ESTRATEGIA"] = e
+            new_results.append(row)
+            time.sleep(0.05)
         except: continue
     prog.empty()
-    
-    # Actualizar Session State
-    current_data = {item["Activo"]: item for item in st.session_state["sniper_results"]}
-    for item in results: current_data[item["Activo"]] = item
-    return list(current_data.values())
+    if accumulate:
+        current_data = {item["Activo"]: item for item in st.session_state["sniper_results"]}
+        for item in new_results: current_data[item["Activo"]] = item
+        return list(current_data.values())
+    return new_results
 
 # ─────────────────────────────────────────────
-# INTERFAZ
+# FUNCION MAPEO DE COLOR PARA FILTRO
 # ─────────────────────────────────────────────
-st.title("🎯 SNIPER MATRIX V27.0 (SLY CLONE)")
+def get_color_category(val):
+    v = str(val).upper()
+    if any(x in v for x in ["BULL", "SOBRE 0", "ALCISTA", "COMPRA"]): return "VERDE"
+    if any(x in v for x in ["BEAR", "BAJO 0", "BAJISTA", "VENTA"]): return "ROJO"
+    if any(x in v for x in ["PULLBACK ALCISTA", "GIRO PROBABLE", "DETECTED"]): return "AZUL"
+    if "PULLBACK BAJISTA" in v: return "NARANJA"
+    return "BLANCO"
 
-with st.sidebar:
-    st.header("Terminal de Control")
-    utc_h = st.number_input("Diferencia Horaria", value=-3)
-    all_sym = get_active_pairs()
-    
-    if all_sym:
-        st.success(f"Mercado: {len(all_sym)} activos")
-        batch_size = st.selectbox("Tamaño de Lote", [20, 50, 100], index=1)
-        batches = [all_sym[i:i+batch_size] for i in range(0, len(all_sym), batch_size)]
-        sel = st.selectbox("Seleccionar Lote", range(len(batches)))
-        
-        if st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True):
-            st.session_state["sniper_results"] = scan_batch(batches[sel], utc_h)
-            
-    if st.button("Limpiar Memoria"):
-        st.session_state["sniper_results"] = []
-        st.rerun()
-
-# ESTILOS
+# ─────────────────────────────────────────────
+# UI & STYLER
+# ─────────────────────────────────────────────
 def style_df(df):
     def apply_color(val):
-        v = str(val).upper()
-        if "LONG" in v or "COMPRA" in v or "SOBRE" in v or "ALCISTA" in v:
-            return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
-        if "SHORT" in v or "VENTA" in v or "BAJO" in v or "BAJISTA" in v:
-            return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
+        cat = get_color_category(val)
+        if cat == "VERDE": return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
+        if cat == "ROJO": return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
+        if cat == "AZUL": return 'background-color: #E1F5FE; color: #01579B; font-weight: bold;'
+        if cat == "NARANJA": return 'background-color: #FFF3E0; color: #E65100; font-weight: bold;'
+        if cat == "BLANCO": return 'background-color: #F5F5F5; color: #616161; font-weight: normal;'
         return ''
     return df.style.applymap(apply_color)
 
+with st.sidebar:
+    st.header("Radar Control")
+    mode = st.radio("Modo:", ["Mercado", "Watchlist"])
+    all_sym = get_active_pairs(min_volume=0)
+    targets = []
+    
+    if mode == "Mercado":
+        vol_min = st.number_input("Volumen Min.", value=100000, step=50000)
+        f_sym = [s for s in all_sym if s in get_active_pairs(min_volume=vol_min)]
+        st.success(f"Disponibles: {len(f_sym)}")
+        b_size = st.selectbox("Batch", [20, 50, 100], index=1)
+        batches = [f_sym[i:i+b_size] for i in range(0, len(f_sym), b_size)]
+        sel = st.selectbox("Lote", range(len(batches)), format_func=lambda x: f"Lote {x} ({len(batches[x])} activos)")
+        targets = batches[sel] if batches else []
+    else:
+        targets = st.multiselect("Watchlist:", options=all_sym)
+
+    mode_acc = st.checkbox("Acumular", value=True)
+    if st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True):
+        if targets: st.session_state["sniper_results"] = scan_batch(targets, accumulate=mode_acc)
+
+    st.divider()
+    # ─────────────────────────────────────────────
+    # FILTROS POR COLORES (V24.0)
+    # ─────────────────────────────────────────────
+    if st.session_state["sniper_results"]:
+        st.header("Filtros por Colores")
+        color_options = ["VERDE", "ROJO", "AZUL", "NARANJA", "BLANCO"]
+        
+        f_colors = {}
+        with st.expander("Filtrar por H.A./MACD"):
+            for label in TIMEFRAMES.keys():
+                col_name = f"{label} H.A./MACD"
+                f_colors[col_name] = st.multiselect(f"Color {label}:", options=color_options, default=color_options)
+        
+        st.header("Filtros Core")
+        f_v = st.multiselect("Veredicto:", options=color_options, default=color_options)
+
+    if st.button("Limpiar Memoria"):
+        st.session_state["sniper_results"] = []; st.rerun()
+
+# RENDERIZADO
 if st.session_state["sniper_results"]:
     df_f = pd.DataFrame(st.session_state["sniper_results"])
+    
+    # Aplicar filtros de colores en temporalidades
+    for col_name, selected_colors in f_colors.items():
+        if col_name in df_f.columns:
+            df_f = df_f[df_f[col_name].apply(lambda x: get_color_category(x) in selected_colors)]
+    
+    # Aplicar filtro de color en Veredicto
+    df_f = df_f[df_f["VEREDICTO"].apply(lambda x: get_color_category(x) in f_v)]
+    
     prio = ["Activo", "VEREDICTO", "ESTRATEGIA", "Precio"]
     valid = [c for c in prio if c in df_f.columns]
     others = [c for c in df_f.columns if c not in valid]
     st.dataframe(style_df(df_f[valid + others]), use_container_width=True, height=800)
+else:
+    st.info("👈 Presione INICIAR ESCANEO.")
