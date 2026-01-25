@@ -9,14 +9,20 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN DEL SISTEMA
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V25.1")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V25.2")
 
+# CSS optimizado para legibilidad universal
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 14px; }
     .stDataFrame { font-size: 12px; border: 1px solid #333; }
     h1 { color: #2962FF; font-weight: 800; }
-    .stExpander { background-color: #1E1E1E; border: 1px solid #2962FF; }
+    /* Ajuste del Manual para legibilidad */
+    .stExpander { 
+        border: 2px solid #2962FF !important; 
+        border-radius: 8px !important;
+        background-color: transparent !important;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -29,32 +35,32 @@ TIMEFRAMES = {
 }
 
 # ─────────────────────────────────────────────
-# DOCUMENTACIÓN OCULTA (TU MANUAL)
+# DOCUMENTACIÓN DEL SISTEMA (LEGIBLE)
 # ─────────────────────────────────────────────
-with st.expander("📖 MANUAL OPERATIVO: ARQUITECTURA DE COLUMNAS Y LÓGICA"):
-    st.markdown("""
-    ### 🛡️ Diccionario de Datos SNIPER MATRIX
+with st.expander("📘 MANUAL OPERATIVO: ARQUITECTURA DE COLUMNAS"):
+    st.info("Utilice este panel como referencia técnica para la interpretación de señales institucionales.")
+    col_m1, col_m2 = st.columns(2)
     
-    #### 1. Columnas Ejecutivas (El "Qué" y el "Por qué")
-    *   **VEREDICTO:** Es la orden final.
-        *   🔥 **COMPRA/VENTA FUERTE:** Confluencia masiva (5+ temporalidades alineadas) a favor del sesgo Diario (1D).
-        *   💎 **GIRO/REBOTE:** Anomalía detectada. Ocurre cuando el momentum rápido (1m, 5m, 15m) se alinea en contra del 1D. Es una oportunidad de entrada temprana.
-        *   ⚖️ **RANGO:** Sin dirección clara. El capital institucional está fuera. **NO OPERAR.**
-    *   **ESTRATEGIA:** La justificación técnica del veredicto (ej. MTF BULLISH SYNC o FAST RECOVERY).
-    *   **MACD REC.:** Recomendación de Momentum. Analiza la pendiente del MACD en 15m, 1H y 4H. Indica si el precio tiene "gasolina" (Acelerando) o si se está agotando.
-
-    #### 2. Columnas por Temporalidad (El "Gatillo")
-    *   **[TF] H.A./MACD:** Estado del trigger. Combina el color de la vela Heikin Ashi y la dirección del histograma MACD. Incluye el **RSI** como filtro de fuerza.
-    *   **[TF] Hora Señal:** La hora exacta en la que se generó la señal actual. Vital para medir la "frescura" del movimiento.
-    *   **[TF] MACD 0:** El sesgo estructural de ese tiempo. SOBRE 0 (Bullish Bias) / BAJO 0 (Bearish Bias).
-    *   **[TF] Hist.:** La dirección de la fuerza. SUBIENDO (Momentum a favor) / BAJANDO (Momentum en contra).
-    *   **[TF] Cruce MACD:** La hora exacta en la que la línea MACD cruzó la línea de Señal. Es el "Vórtice" del cambio de tendencia.
-
-    #### 🎨 Mapa de Colores (Legibilidad Térmica)
-    *   🟩 **Verde Claro:** Alineación Alcista (LONG / SOBRE 0 / SUBIENDO).
-    *   🟥 **Rojo Claro:** Alineación Bajista (SHORT / BAJO 0 / BAJANDO).
-    *   🟨 **Amarillo:** Zona de alerta por Giro o Rebote inminente.
-    """)
+    with col_m1:
+        st.markdown("""
+        **1. COLUMNAS DE MANDO**
+        *   **VEREDICTO:** La instrucción final basada en confluencia.
+            *   🔥 **COMPRA/VENTA FUERTE:** 5+ TFs alineados con el sesgo 1D.
+            *   💎 **GIRO/REBOTE:** 1m, 5m y 15m alineados contra el 1D (Oportunidad temprana).
+            *   ⚖️ **RANGO:** Sin dirección clara. **Filtro de seguridad.**
+        *   **ESTRATEGIA:** Justificación técnica de la señal.
+        *   **MACD REC.:** Análisis de momentum en bloques (15m, 1H, 4H).
+        """)
+        
+    with col_m2:
+        st.markdown("""
+        **2. COLUMNAS DE TEMPORALIDAD**
+        *   **H.A./MACD:** Estado del gatillo (Vela HA + Histograma) + RSI.
+        *   **Hora Señal:** Timestamp del inicio del estado actual.
+        *   **MACD 0:** Sesgo estructural (Sobre/Bajo Cero).
+        *   **Hist.:** Dirección del momentum actual.
+        *   **Cruce MACD:** Hora exacta del último cruce de líneas.
+        """)
 
 # ─────────────────────────────────────────────
 # MOTOR DE DATOS
@@ -78,7 +84,7 @@ def get_active_pairs(min_volume=100000):
     except: return []
 
 # ─────────────────────────────────────────────
-# HEIKIN ASHI Y ANÁLISIS
+# CÁLCULOS TÉCNICOS
 # ─────────────────────────────────────────────
 def calculate_heikin_ashi(df):
     df = df.copy()
@@ -129,9 +135,6 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         }
     except: return None
 
-# ─────────────────────────────────────────────
-# LÓGICA DE DECISIÓN
-# ─────────────────────────────────────────────
 def get_verdict(row):
     bulls = sum(1 for tf in TIMEFRAMES if "LONG" in str(row.get(f"{tf} H.A./MACD","")))
     bears = sum(1 for tf in TIMEFRAMES if "SHORT" in str(row.get(f"{tf} H.A./MACD","")))
@@ -153,7 +156,7 @@ def get_macd_recommendation(row):
     return "Neutral"
 
 # ─────────────────────────────────────────────
-# ESCANEO Y UI
+# PROCESAMIENTO Y UI
 # ─────────────────────────────────────────────
 def scan_batch(targets, accumulate=True):
     ex = get_exchange()
@@ -175,7 +178,6 @@ def scan_batch(targets, accumulate=True):
                     row[f"{label} Cruce MACD"] = res["cross_time"]
                 else:
                     for c in ["H.A./MACD","Hora Señal","MACD 0","Hist.","Cruce MACD"]: row[f"{label} {c}"] = "-"
-            
             row["VEREDICTO"], row["ESTRATEGIA"] = get_verdict(row)
             row["MACD REC."] = get_macd_recommendation(row)
             new_results.append(row)
