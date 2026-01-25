@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V24.0")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V24.1")
 
 st.markdown("""
 <style>
@@ -22,14 +22,19 @@ st.markdown("""
 if "sniper_results" not in st.session_state:
     st.session_state["sniper_results"] = []
 
-TIMEFRAMES = {"1m":"1m", "5m":"5m", "15m":"15m", "30m":"30m", "1H":"1h", "4H":"4h", "1D":"1d"}
+TIMEFRAMES = {
+    "1m":"1m", "5m":"5m", "15m":"15m",
+    "30m":"30m", "1H":"1h", "4H":"4h", "1D":"1d"
+}
 
 # ─────────────────────────────────────────────
-# MOTOR DE DATOS
+# EXCHANGE
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchange():
-    return ccxt.kucoinfutures({"enableRateLimit": True, "timeout": 30000})
+    ex = ccxt.kucoinfutures({"enableRateLimit": True, "timeout": 30000})
+    ex.load_markets()
+    return ex
 
 @st.cache_data(ttl=300)
 def get_active_pairs(min_volume=100000):
@@ -40,9 +45,17 @@ def get_active_pairs(min_volume=100000):
         for s, t in tickers.items():
             if "/USDT:USDT" in s and t.get("quoteVolume", 0) >= min_volume:
                 valid.append({"symbol": s, "vol": t["quoteVolume"]})
-        return pd.DataFrame(valid).sort_values("vol", ascending=False)["symbol"].tolist()
-    except: return []
+        return (
+            pd.DataFrame(valid)
+            .sort_values("vol", ascending=False)["symbol"]
+            .tolist()
+        )
+    except:
+        return []
 
+# ─────────────────────────────────────────────
+# HEIKIN ASHI
+# ─────────────────────────────────────────────
 def calculate_heikin_ashi(df):
     df = df.copy()
     df["HA_Close"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
@@ -54,168 +67,134 @@ def calculate_heikin_ashi(df):
     return df
 
 # ─────────────────────────────────────────────
-# ANÁLISIS TÉCNICO
+# ANALISIS (LOGICA SCRIPT 1)
 # ─────────────────────────────────────────────
 def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=100)
-        if not ohlcv or len(ohlcv) < 50: return None
-        ohlcv[-1][4] = current_price
-        df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "vol"])
-        df["dt"] = pd.to_datetime(df["time"], unit="ms")
-        macd = ta.macd(df["close"])
-        df["Hist"], df["MACD"], df["Signal"] = macd["MACDh_12_26_9"], macd["MACD_12_26_9"], macd["MACDs_12_26_9"]
-        df["RSI"] = ta.rsi(df["close"], length=14)
-        df = calculate_heikin_ashi(df)
-        last, prev = df.iloc[-1], df.iloc[-2]
-        
-        phase, icon = "NEUTRO", "⚪"
-        if last["HA_Color"] == 1 and last["Hist"] > prev["Hist"]:
-            phase, icon = ("PULLBACK ALCISTA", "🔵") if last["Hist"] < 0 else ("CONFIRMACION BULL", "🟢")
-        elif last["HA_Color"] == -1 and last["Hist"] < prev["Hist"]:
-            phase, icon = ("PULLBACK BAJISTA", "🟠") if last["Hist"] > 0 else ("CONFIRMACION BEAR", "🔴")
+        if not ohlcv or len(ohlcv) < 50:
+            return None
 
-        rsi_val = round(last["RSI"], 1)
+        ohlcv[-1][4] = current_price
+
+        df = pd.DataFrame(
+            ohlcv, columns=["time", "open", "high", "low", "close", "vol"]
+        )
+        df["dt"] = pd.to_datetime(df["time"], unit="ms")
+
+        macd = ta.macd(df["close"])
+        df["Hist"] = macd["MACDh_12_26_9"]
+        df["MACD"] = macd["MACD_12_26_9"]
+        df["Signal"] = macd["MACDs_12_26_9"]
+        df["RSI"] = ta.rsi(df["close"], length=14)
+
+        df = calculate_heikin_ashi(df)
+
+        position = "NEUTRO"
+        last_date = df["dt"].iloc[-1]
+
+        for i in range(1, len(df)):
+            hist = df["Hist"].iloc[i]
+            prev_hist = df["Hist"].iloc[i-1]
+            ha_color = df["HA_Color"].iloc[i]
+            date = df["dt"].iloc[i]
+
+            if position == "LONG" and hist < prev_hist:
+                position = "NEUTRO"
+            elif position == "SHORT" and hist > prev_hist:
+                position = "NEUTRO"
+
+            if position == "NEUTRO":
+                if ha_color == 1 and hist > prev_hist:
+                    position = "LONG"
+                    last_date = date
+                elif ha_color == -1 and hist < prev_hist:
+                    position = "SHORT"
+                    last_date = date
+
+        icon = "🟢" if position == "LONG" else "🔴" if position == "SHORT" else "⚪"
+
+        rsi_val = round(df["RSI"].iloc[-1], 1)
         rsi_state = "RSI↑" if rsi_val > 55 else "RSI↓" if rsi_val < 45 else "RSI="
-        df["cross"] = np.sign(df["MACD"] - df["Signal"]).diff().ne(0)
-        crosses = df[df["cross"] == True]
-        last_cross = (crosses["dt"].iloc[-1] - pd.Timedelta(hours=3)).strftime("%H:%M") if not crosses.empty else "--:--"
+
+        hora_alerta = (last_date - pd.Timedelta(hours=3)).strftime("%H:%M")
 
         return {
-            "signal": f"{icon} {phase} | {rsi_state} ({rsi_val})",
-            "m0": "SOBRE 0" if last["MACD"] > 0 else "BAJO 0",
-            "h_dir": "ALCISTA" if last["Hist"] > prev["Hist"] else "BAJISTA",
-            "cross_time": last_cross,
-            "signal_time": (last["dt"] - pd.Timedelta(hours=3)).strftime("%H:%M")
+            "signal": f"{icon} {position} | {rsi_state} ({rsi_val})",
+            "signal_time": hora_alerta
         }
-    except: return None
 
-def get_verdict(row):
-    bulls = sum(1 for tf in TIMEFRAMES if any(x in str(row.get(f"{tf} H.A./MACD","")) for x in ["BULL", "ALCISTA"]))
-    bears = sum(1 for tf in TIMEFRAMES if any(x in str(row.get(f"{tf} H.A./MACD","")) for x in ["BEAR", "BAJISTA"]))
-    bias_1d = str(row.get("1D MACD 0", ""))
-    if bulls >= 5 and "SOBRE 0" in bias_1d: return "🔥 COMPRA FUERTE", "MTF CONFLUENCE BULL"
-    if bears >= 5 and "BAJO 0" in bias_1d: return "🩸 VENTA FUERTE", "MTF CONFLUENCE BEAR"
-    if "PULLBACK ALCISTA" in str(row.get("1m H.A./MACD", "")): return "💎 GIRO PROBABLE", "PULLBACK DETECTED"
-    return "⚖️ RANGO", "NO TREND"
+    except:
+        return None
 
 # ─────────────────────────────────────────────
-# MOTOR DE ESCANEO
+# ESCANEO
 # ─────────────────────────────────────────────
 def scan_batch(targets, accumulate=True):
     ex = get_exchange()
     new_results = []
     prog = st.progress(0)
+
     for idx, sym in enumerate(targets):
         clean = sym.split(":")[0].replace("/USDT", "")
-        prog.progress((idx+1)/len(targets), text=f"Analizando {clean}...")
+        prog.progress((idx+1)/len(targets), text=f"Analizando {clean}")
+
         try:
-            p = ex.fetch_ticker(sym)["last"]
-            row = {"Activo": clean, "Precio": f"{p:,.4f}"}
+            price = ex.fetch_ticker(sym)["last"]
+            row = {"Activo": clean, "Precio": f"{price:,.4f}"}
+
             for label, tf in TIMEFRAMES.items():
-                res = analyze_ticker_tf(sym, tf, ex, p)
+                res = analyze_ticker_tf(sym, tf, ex, price)
                 if res:
                     row[f"{label} H.A./MACD"] = res["signal"]
                     row[f"{label} Hora Señal"] = res["signal_time"]
-                    row[f"{label} MACD 0"] = res["m0"]
-                    row[f"{label} Hist."] = res["h_dir"]
-                    row[f"{label} Cruce MACD"] = res["cross_time"]
                 else:
-                    for c in ["H.A./MACD", "Hora Señal", "MACD 0", "Hist.", "Cruce MACD"]: row[f"{label} {c}"] = "-"
-            v, e = get_verdict(row)
-            row["VEREDICTO"] = v
-            row["ESTRATEGIA"] = e
+                    row[f"{label} H.A./MACD"] = "-"
+                    row[f"{label} Hora Señal"] = "-"
+
             new_results.append(row)
             time.sleep(0.05)
-        except: continue
+
+        except:
+            continue
+
     prog.empty()
+
     if accumulate:
-        current_data = {item["Activo"]: item for item in st.session_state["sniper_results"]}
-        for item in new_results: current_data[item["Activo"]] = item
-        return list(current_data.values())
+        current = {x["Activo"]: x for x in st.session_state["sniper_results"]}
+        for r in new_results:
+            current[r["Activo"]] = r
+        return list(current.values())
+
     return new_results
 
 # ─────────────────────────────────────────────
-# FUNCION MAPEO DE COLOR PARA FILTRO
+# UI
 # ─────────────────────────────────────────────
-def get_color_category(val):
-    v = str(val).upper()
-    if any(x in v for x in ["BULL", "SOBRE 0", "ALCISTA", "COMPRA"]): return "VERDE"
-    if any(x in v for x in ["BEAR", "BAJO 0", "BAJISTA", "VENTA"]): return "ROJO"
-    if any(x in v for x in ["PULLBACK ALCISTA", "GIRO PROBABLE", "DETECTED"]): return "AZUL"
-    if "PULLBACK BAJISTA" in v: return "NARANJA"
-    return "BLANCO"
-
-# ─────────────────────────────────────────────
-# UI & STYLER
-# ─────────────────────────────────────────────
-def style_df(df):
-    def apply_color(val):
-        cat = get_color_category(val)
-        if cat == "VERDE": return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
-        if cat == "ROJO": return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
-        if cat == "AZUL": return 'background-color: #E1F5FE; color: #01579B; font-weight: bold;'
-        if cat == "NARANJA": return 'background-color: #FFF3E0; color: #E65100; font-weight: bold;'
-        if cat == "BLANCO": return 'background-color: #F5F5F5; color: #616161; font-weight: normal;'
-        return ''
-    return df.style.applymap(apply_color)
-
 with st.sidebar:
     st.header("Radar Control")
-    mode = st.radio("Modo:", ["Mercado", "Watchlist"])
-    all_sym = get_active_pairs(min_volume=0)
-    targets = []
-    
-    if mode == "Mercado":
-        vol_min = st.number_input("Volumen Min.", value=100000, step=50000)
-        f_sym = [s for s in all_sym if s in get_active_pairs(min_volume=vol_min)]
-        st.success(f"Disponibles: {len(f_sym)}")
-        b_size = st.selectbox("Batch", [20, 50, 100], index=1)
-        batches = [f_sym[i:i+b_size] for i in range(0, len(f_sym), b_size)]
-        sel = st.selectbox("Lote", range(len(batches)), format_func=lambda x: f"Lote {x} ({len(batches[x])} activos)")
-        targets = batches[sel] if batches else []
-    else:
-        targets = st.multiselect("Watchlist:", options=all_sym)
 
-    mode_acc = st.checkbox("Acumular", value=True)
-    if st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True):
-        if targets: st.session_state["sniper_results"] = scan_batch(targets, accumulate=mode_acc)
+    all_sym = get_active_pairs()
+    b_size = st.selectbox("Batch", [20, 50, 100], index=1)
+    batches = [all_sym[i:i+b_size] for i in range(0, len(all_sym), b_size)]
+    sel = st.selectbox("Lote", range(len(batches)))
+    accumulate = st.checkbox("Acumular", value=True)
 
-    st.divider()
-    # ─────────────────────────────────────────────
-    # FILTROS POR COLORES (V24.0)
-    # ─────────────────────────────────────────────
-    if st.session_state["sniper_results"]:
-        st.header("Filtros por Colores")
-        color_options = ["VERDE", "ROJO", "AZUL", "NARANJA", "BLANCO"]
-        
-        f_colors = {}
-        with st.expander("Filtrar por H.A./MACD"):
-            for label in TIMEFRAMES.keys():
-                col_name = f"{label} H.A./MACD"
-                f_colors[col_name] = st.multiselect(f"Color {label}:", options=color_options, default=color_options)
-        
-        st.header("Filtros Core")
-        f_v = st.multiselect("Veredicto:", options=color_options, default=color_options)
+    if st.button("🚀 INICIAR ESCANEO", type="primary"):
+        if batches:
+            st.session_state["sniper_results"] = scan_batch(
+                batches[sel], accumulate=accumulate
+            )
 
     if st.button("Limpiar Memoria"):
-        st.session_state["sniper_results"] = []; st.rerun()
+        st.session_state["sniper_results"] = []
+        st.rerun()
 
-# RENDERIZADO
+# ─────────────────────────────────────────────
+# TABLA
+# ─────────────────────────────────────────────
 if st.session_state["sniper_results"]:
-    df_f = pd.DataFrame(st.session_state["sniper_results"])
-    
-    # Aplicar filtros de colores en temporalidades
-    for col_name, selected_colors in f_colors.items():
-        if col_name in df_f.columns:
-            df_f = df_f[df_f[col_name].apply(lambda x: get_color_category(x) in selected_colors)]
-    
-    # Aplicar filtro de color en Veredicto
-    df_f = df_f[df_f["VEREDICTO"].apply(lambda x: get_color_category(x) in f_v)]
-    
-    prio = ["Activo", "VEREDICTO", "ESTRATEGIA", "Precio"]
-    valid = [c for c in prio if c in df_f.columns]
-    others = [c for c in df_f.columns if c not in valid]
-    st.dataframe(style_df(df_f[valid + others]), use_container_width=True, height=800)
+    df = pd.DataFrame(st.session_state["sniper_results"])
+    st.dataframe(df, use_container_width=True, height=800)
 else:
-    st.info("👈 Presione INICIAR ESCANEO.")
+    st.info("👈 Presioná INICIAR ESCANEO")
