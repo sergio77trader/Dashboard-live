@@ -9,72 +9,82 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN DEL SISTEMA
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="STOCKS SNIPER | SYSTEMATRADER")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | STOCKS V27.0")
 
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 14px; }
-    .stDataFrame { font-size: 12px; border: 1px solid #333; }
+    .stDataFrame { font-size: 12px; }
     h1 { color: #2962FF; font-weight: 800; }
-    .stExpander { border: 2px solid #2962FF !important; border-radius: 8px !important; }
+    .stExpander { border: 2px solid #2962FF !important; }
 </style>
 """, unsafe_allow_html=True)
 
 if "sniper_results" not in st.session_state:
     st.session_state["sniper_results"] = []
 
-# Mapeo SEGURO de Timeframes para Yahoo Finance
-TIMEFRAMES = {
-    "1m": {"int": "1m", "per": "5d"},
-    "5m": {"int": "5m", "per": "30d"},
-    "15m": {"int": "15m", "per": "30d"},
-    "30m": {"int": "30m", "per": "30d"},
-    "1H": {"int": "60m", "per": "730d"},
-    "4H": {"int": "60m", "per": "730d"}, # Yahoo no tiene 4h nativo, se usa 1h estable
-    "1D": {"int": "1d", "per": "max"}
+# ─────────────────────────────────────────────
+# BASE DE DATOS INSTITUCIONAL (150+ ACTIVOS)
+# ─────────────────────────────────────────────
+# Curaduría de ADRs y CEDEARs con liquidez estructural
+MASTER_INFO = {
+    # ARGENTINA (ADRs NYSE/NASDAQ)
+    'GGAL': {'T': 'ADR', 'S': 'Financiero'}, 'YPF': {'T': 'ADR', 'S': 'Energía'},
+    'BMA': {'T': 'ADR', 'S': 'Financiero'}, 'PAMP': {'T': 'ADR', 'S': 'Energía'},
+    'TGS': {'T': 'ADR', 'S': 'Energía'}, 'CEPU': {'T': 'ADR', 'S': 'Energía'},
+    'EDN': {'T': 'ADR', 'S': 'Energía'}, 'BFR': {'T': 'ADR', 'S': 'Financiero'},
+    'SUPV': {'T': 'ADR', 'S': 'Financiero'}, 'CRESY': {'T': 'ADR', 'S': 'Agro'},
+    'IRS': {'T': 'ADR', 'S': 'Inmuebles'}, 'TEO': {'T': 'ADR', 'S': 'Telecom'},
+    'LOMA': {'T': 'ADR', 'S': 'Construcción'}, 'VIST': {'T': 'ADR', 'S': 'Energía'},
+    'GLOB': {'T': 'ADR', 'S': 'Tech'}, 'MELI': {'T': 'ADR', 'S': 'E-Commerce'},
+    'DESP': {'T': 'ADR', 'S': 'Turismo'}, 'TX': {'T': 'ADR', 'S': 'Siderurgia'},
+    
+    # CEDEARS - TECH & SEMIS
+    'AAPL': {'T': 'CEDEAR', 'S': 'Tech'}, 'MSFT': {'T': 'CEDEAR', 'S': 'Tech'},
+    'NVDA': {'T': 'CEDEAR', 'S': 'Semis'}, 'AMD': {'T': 'CEDEAR', 'S': 'Semis'},
+    'GOOGL': {'T': 'CEDEAR', 'S': 'Tech'}, 'AMZN': {'T': 'CEDEAR', 'S': 'Retail'},
+    'META': {'T': 'CEDEAR', 'S': 'Tech'}, 'TSLA': {'T': 'CEDEAR', 'S': 'Auto'},
+    'NFLX': {'T': 'CEDEAR', 'S': 'Entretenimiento'}, 'INTC': {'T': 'CEDEAR', 'S': 'Semis'},
+    'CRM': {'T': 'CEDEAR', 'S': 'SaaS'}, 'ORCL': {'T': 'CEDEAR', 'S': 'SaaS'},
+    'ADBE': {'T': 'CEDEAR', 'S': 'SaaS'}, 'AVGO': {'T': 'CEDEAR', 'S': 'Semis'},
+    'ASML': {'T': 'CEDEAR', 'S': 'Semis'}, 'SHOP': {'T': 'CEDEAR', 'S': 'Retail'},
+    'UBER': {'T': 'CEDEAR', 'S': 'Transporte'}, 'PLTR': {'T': 'CEDEAR', 'S': 'Big Data'},
+    'SNOW': {'T': 'CEDEAR', 'S': 'Cloud'}, 'SPOT': {'T': 'CEDEAR', 'S': 'Music'},
+
+    # CEDEARS - FINANCIERO & CONSUMO
+    'JPM': {'T': 'CEDEAR', 'S': 'Banco'}, 'BAC': {'T': 'CEDEAR', 'S': 'Banco'},
+    'C': {'T': 'CEDEAR', 'S': 'Banco'}, 'GS': {'T': 'CEDEAR', 'S': 'Banco'},
+    'V': {'T': 'CEDEAR', 'S': 'Pagos'}, 'MA': {'T': 'CEDEAR', 'S': 'Pagos'},
+    'AXP': {'T': 'CEDEAR', 'S': 'Pagos'}, 'PYPL': {'T': 'CEDEAR', 'S': 'Fintech'},
+    'KO': {'T': 'CEDEAR', 'S': 'Consumo'}, 'PEP': {'T': 'CEDEAR', 'S': 'Consumo'},
+    'MCD': {'T': 'CEDEAR', 'S': 'Consumo'}, 'SBUX': {'T': 'CEDEAR', 'S': 'Consumo'},
+    'DIS': {'T': 'CEDEAR', 'S': 'Entretenimiento'}, 'WMT': {'T': 'CEDEAR', 'S': 'Retail'},
+    'COST': {'T': 'CEDEAR', 'S': 'Retail'}, 'PG': {'T': 'CEDEAR', 'S': 'Consumo'},
+    'NKE': {'T': 'CEDEAR', 'S': 'Consumo'}, 'CAT': {'T': 'CEDEAR', 'S': 'Industrial'},
+    
+    # ENERGÍA & MINERÍA
+    'XOM': {'T': 'CEDEAR', 'S': 'Petróleo'}, 'CVX': {'T': 'CEDEAR', 'S': 'Petróleo'},
+    'PBR': {'T': 'CEDEAR', 'S': 'Petróleo'}, 'BP': {'T': 'CEDEAR', 'S': 'Petróleo'},
+    'GOLD': {'T': 'CEDEAR', 'S': 'Oro'}, 'NEM': {'T': 'CEDEAR', 'S': 'Oro'},
+    'VALE': {'T': 'CEDEAR', 'S': 'Hierro'}, 'RIO': {'T': 'CEDEAR', 'S': 'Minería'},
+    'HMY': {'T': 'CEDEAR', 'S': 'Oro'}, 'AUY': {'T': 'CEDEAR', 'S': 'Oro'},
+
+    # ETFs
+    'SPY': {'T': 'ETF', 'S': 'S&P500'}, 'QQQ': {'T': 'ETF', 'S': 'Nasdaq'},
+    'DIA': {'T': 'ETF', 'S': 'DowJones'}, 'IWM': {'T': 'ETF', 'S': 'SmallCaps'},
+    'EEM': {'T': 'ETF', 'S': 'Emergentes'}, 'EWZ': {'T': 'ETF', 'S': 'Brasil'},
+    'ARKK': {'T': 'ETF', 'S': 'Innovación'}, 'XLF': {'T': 'ETF', 'S': 'Financiero'},
+    'XLK': {'T': 'ETF', 'S': 'Tech'}, 'GLD': {'T': 'ETF', 'S': 'Oro'}
 }
 
-MASTER_TICKERS = sorted([
-    'GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'CEPU', 'EDN', 'BFR', 'SUPV', 'CRESY', 'IRS', 'TEO', 'LOMA', 'DESP', 'VIST', 'GLOB', 'MELI', 'BIOX', 'TX',
-    'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NFLX',
-    'CRM', 'ORCL', 'ADBE', 'IBM', 'CSCO', 'PLTR', 'SNOW', 'SHOP', 'SPOT', 'UBER', 'ABNB', 'SAP', 'INTU', 'NOW',
-    'AMD', 'INTC', 'QCOM', 'AVGO', 'TXN', 'MU', 'ADI', 'AMAT', 'ARM', 'SMCI', 'TSM', 'ASML', 'LRCX', 'HPQ', 'DELL',
-    'JPM', 'BAC', 'C', 'WFC', 'GS', 'MS', 'V', 'MA', 'AXP', 'BRK-B', 'PYPL', 'SQ', 'COIN', 'BLK', 'USB', 'NU',
-    'KO', 'PEP', 'MCD', 'SBUX', 'DIS', 'NKE', 'WMT', 'COST', 'TGT', 'HD', 'LOW', 'PG', 'CL', 'MO', 'PM', 'KMB', 'EL',
-    'JNJ', 'PFE', 'MRK', 'LLY', 'ABBV', 'UNH', 'BMY', 'AMGN', 'GILD', 'AZN', 'NVO', 'NVS', 'CVS',
-    'BA', 'CAT', 'DE', 'GE', 'MMM', 'LMT', 'RTX', 'HON', 'UNP', 'UPS', 'FDX', 'LUV', 'DAL',
-    'F', 'GM', 'TM', 'HMC', 'STLA', 'RACE',
-    'XOM', 'CVX', 'SLB', 'OXY', 'HAL', 'BP', 'SHEL', 'TTE', 'PBR', 'VLO',
-    'VZ', 'T', 'TMUS', 'VOD',
-    'BABA', 'JD', 'BIDU', 'NIO', 'PDD', 'TCEHY', 'TCOM', 'BEKE', 'XPEV', 'LI', 'SONY',
-    'VALE', 'ITUB', 'BBD', 'ERJ', 'ABEV', 'GGB', 'SID', 'NBR',
-    'GOLD', 'NEM', 'PAAS', 'FCX', 'SCCO', 'RIO', 'BHP', 'ALB', 'SQM',
-    'SPY', 'QQQ', 'IWM', 'DIA', 'EEM', 'EWZ', 'FXI', 'XLE', 'XLF', 'XLK', 'XLV', 'XLI', 'XLP', 'XLU', 'XLY', 'ARKK', 'SMH', 'TAN', 'GLD', 'SLV', 'GDX'
-])
+TIMEFRAMES = {
+    "1m": {"int": "1m", "per": "5d"}, "5m": {"int": "5m", "per": "30d"},
+    "15m": {"int": "15m", "per": "30d"}, "30m": {"int": "30m", "per": "30d"},
+    "1H": {"int": "60m", "per": "730d"}, "1D": {"int": "1d", "per": "max"}
+}
 
 # ─────────────────────────────────────────────
-# MANUAL OPERATIVO
-# ─────────────────────────────────────────────
-with st.expander("📘 MANUAL DE LÓGICA Y COLUMNAS"):
-    st.info("Referencia técnica de las métricas institucionales del SNIPER para Stocks.")
-    col_m1, col_m2 = st.columns(2)
-    with col_m1:
-        st.markdown("""
-        ### 🎯 LÓGICA DE MANDO (VEREDICTO)
-        *   **🔥 COMPRA/VENTA FUERTE:** Confluencia masiva de 5+ temporalidades alineadas con el sesgo **1D MACD 0**.
-        *   **💎 GIRO/REBOTE:** Cuando **1m, 5m y 15m H.A./MACD** están en **LONG**, pero el sesgo **1D MACD 0** es **BAJO 0**.
-        *   **⚖️ RANGO:** Sin dirección clara. **NO OPERAR.**
-        """)
-    with col_m2:
-        st.markdown("""
-        ### 📊 INDICADORES
-        *   **TF H.A./MACD:** Gatillo Heikin Ashi + MACD Hist + RSI.
-        *   **TF Hist.:** Dirección de fuerza (**SUBIENDO / BAJANDO**).
-        *   **Volumen USD:** Se calcula sobre la última vela operativa.
-        """)
-
-# ─────────────────────────────────────────────
-# CÁLCULOS TÉCNICOS
+# MOTOR DE ANÁLISIS
 # ─────────────────────────────────────────────
 def calculate_heikin_ashi(df):
     df = df.copy()
@@ -85,15 +95,10 @@ def calculate_heikin_ashi(df):
     df["HA_Open"], df["HA_Color"] = ha_open, np.where(df["HA_Close"] > ha_open, 1, -1)
     return df
 
-def analyze_stock_tf(symbol, label, config):
+def analyze_stock_tf(symbol, config):
     try:
-        # Descarga de datos única por TF
         df = yf.download(symbol, interval=config['int'], period=config['per'], progress=False, auto_adjust=True)
-        
-        # Limpieza de MultiIndex si existe
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-            
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         if df.empty or len(df) < 35: return None
 
         macd = ta.macd(df["Close"])
@@ -101,113 +106,88 @@ def analyze_stock_tf(symbol, label, config):
         df["RSI"] = ta.rsi(df["Close"], length=14)
         df = calculate_heikin_ashi(df)
 
-        position, last_date = "NEUTRO", df.index[-1]
+        position = "NEUTRO"
         for i in range(1, len(df)):
-            h, ph, hc, d = df["Hist"].iloc[i], df["Hist"].iloc[i-1], df["HA_Color"].iloc[i], df.index[i]
+            h, ph, hc = df["Hist"].iloc[i], df["Hist"].iloc[i-1], df["HA_Color"].iloc[i]
             if position == "LONG" and h < ph: position = "NEUTRO"
             elif position == "SHORT" and h > ph: position = "NEUTRO"
             if position == "NEUTRO":
-                if hc == 1 and h > ph: position, last_date = "LONG", d
-                elif hc == -1 and h < ph: position, last_date = "SHORT", d
+                if hc == 1 and h > ph: position = "LONG"
+                elif hc == -1 and h < ph: position = "SHORT"
 
-        rsi_val = round(df["RSI"].iloc[-1], 1)
-        rsi_state = "RSI↑" if rsi_val > 55 else "RSI↓" if rsi_val < 45 else "RSI="
-        df["cross"] = np.sign(df["MACD"] - df["Signal"]).diff().ne(0)
-        cross_time = df[df["cross"]].index[-1].strftime("%H:%M") if not df[df["cross"]].empty else "--:--"
-
+        rsi_v = round(df["RSI"].iloc[-1], 1)
+        rsi_s = "RSI↑" if rsi_v > 55 else "RSI↓" if rsi_v < 45 else "RSI="
+        
         return {
-            "signal": f"{'🟢' if position=='LONG' else '🔴' if position=='SHORT' else '⚪'} {position} | {rsi_state}",
-            "signal_time": last_date.strftime("%H:%M"),
+            "sig": f"{'🟢' if position=='LONG' else '🔴' if position=='SHORT' else '⚪'} {position} | {rsi_s}",
             "m0": "SOBRE 0" if df["MACD"].iloc[-1] > 0 else "BAJO 0",
-            "h_dir": "SUBIENDO" if df["Hist"].iloc[-1] > df["Hist"].iloc[-2] else "BAJANDO",
-            "cross_time": cross_time,
-            "last_price": df["Close"].iloc[-1],
+            "h": "SUBIENDO" if df["Hist"].iloc[-1] > df["Hist"].iloc[-2] else "BAJANDO",
             "vol_usd": df["Close"].iloc[-1] * df["Volume"].iloc[-1]
         }
     except: return None
 
-def get_verdict(row):
-    bulls = sum(1 for tf in TIMEFRAMES if "LONG" in str(row.get(f"{tf} H.A./MACD","")))
-    bears = sum(1 for tf in TIMEFRAMES if "SHORT" in str(row.get(f"{tf} H.A./MACD","")))
-    bias_1d = str(row.get("1D MACD 0", ""))
-    micro_bull = all("LONG" in str(row.get(f"{tf} H.A./MACD","")) for tf in ["1m", "5m", "15m"])
-    micro_bear = all("SHORT" in str(row.get(f"{tf} H.A./MACD","")) for tf in ["1m", "5m", "15m"])
-
-    if bulls >= 5 and "SOBRE 0" in bias_1d: return "🔥 COMPRA FUERTE", "MTF BULLISH SYNC"
-    if bears >= 5 and "BAJO 0" in bias_1d: return "🩸 VENTA FUERTE", "MTF BEARISH SYNC"
-    if micro_bull and "BAJO 0" in bias_1d: return "💎 GIRO/REBOTE", "FAST RECOVERY"
-    if micro_bear and "SOBRE 0" in bias_1d: return "📉 RETROCESO", "CORRECTION START"
-    return "⚖️ RANGO", "NO TREND"
-
-def get_macd_rec(row):
-    sub = sum(1 for tf in ["15m", "1H", "4H"] if "SUBIENDO" in str(row.get(f"{tf} Hist.", "")))
-    return "📈 MOMENTUM ALCISTA" if sub >= 2 else "📉 MOMENTUM BAJISTA"
-
 # ─────────────────────────────────────────────
-# MOTOR DE ESCANEO
-# ─────────────────────────────────────────────
-def scan_stocks(targets, acc):
-    results = []
-    prog = st.progress(0)
-    for idx, sym in enumerate(targets):
-        prog.progress((idx+1)/len(targets), text=f"Analizando {sym}")
-        try:
-            row = {"Activo": sym}
-            valid_any = False
-            for label, config in TIMEFRAMES.items():
-                res = analyze_stock_tf(sym, label, config)
-                if res:
-                    valid_any = True
-                    row[f"{label} H.A./MACD"], row[f"{label} Hora Señal"] = res["signal"], res["signal_time"]
-                    row[f"{label} MACD 0"], row[f"{label} Hist."], row[f"{label} Cruce MACD"] = res["m0"], res["h_dir"], res["cross_time"]
-                    row["Precio"] = f"{res['last_price']:.2f}"
-                else:
-                    for c in ["H.A./MACD","Hora Señal","MACD 0","Hist.","Cruce MACD"]: row[f"{label} {c}"] = "-"
-            
-            if valid_any:
-                row["VEREDICTO"], row["ESTRATEGIA"] = get_verdict(row)
-                row["MACD REC."] = get_macd_rec(row)
-                results.append(row)
-            time.sleep(0.2)
-        except: continue
-    prog.empty()
-    if acc:
-        curr = {x["Activo"]: x for x in st.session_state["sniper_results"]}
-        for r in results: curr[r["Activo"]] = r
-        return list(curr.values())
-    return results
-
-def style_matrix(df):
-    def apply_color(val):
-        v = str(val).upper()
-        if any(x in v for x in ["LONG", "SOBRE 0", "SUBIENDO", "COMPRA", "ALCISTA"]): return 'background-color: #d4edda; color: #155724;'
-        if any(x in v for x in ["SHORT", "BAJO 0", "BAJANDO", "VENTA", "BAJISTA"]): return 'background-color: #f8d7da; color: #721c24;'
-        if "GIRO" in v: return 'background-color: #fff3cd; color: #856404;'
-        return ''
-    return df.style.applymap(apply_color)
-
-# ─────────────────────────────────────────────
-# INTERFAZ
+# INTERFAZ Y CONTROL
 # ─────────────────────────────────────────────
 with st.sidebar:
-    st.header("🎯 Stock Sniper")
-    # Tickers que cumplen con el volumen (Simulado o real tras primer scan)
-    b_size = st.selectbox("Lote de escaneo:", [10, 20, 50], index=0)
-    batches = [MASTER_TICKERS[i:i+b_size] for i in range(0, len(MASTER_TICKERS), b_size)]
-    sel = st.selectbox("Seleccionar Lote:", range(len(batches)))
+    st.header("🎯 Stock Sniper ARG/US")
+    mode = st.radio("Modo de Análisis:", ["Pool Institucional", "Inserción Manual"])
+    
+    # Filtro de Liquidez Automático
+    min_liq = st.number_input("Liquidez Mínima USD (Subyacente):", 1000000, step=1000000)
+    
+    if mode == "Pool Institucional":
+        f_tipo = st.multiselect("Tipos:", ["ADR", "CEDEAR", "ETF"], default=["ADR", "CEDEAR", "ETF"])
+        available = [k for k, v in MASTER_INFO.items() if v['T'] in f_tipo]
+        b_size = st.selectbox("Lote:", [10, 20, 50], index=1)
+        batches = [available[i:i+b_size] for i in range(0, len(available), b_size)]
+        sel = st.selectbox("Seleccionar Lote:", range(len(batches)))
+        targets = batches[sel] if batches else []
+    else:
+        custom = st.text_input("Escriba Tickers (ej: AAPL,GGAL,TSLA):")
+        targets = [x.strip().upper() for x in custom.split(",")] if custom else []
+
     acc = st.checkbox("Acumular Resultados", value=True)
     
-    if st.button("🚀 INICIAR ESCANEO", type="primary"):
-        st.session_state["sniper_results"] = scan_stocks(batches[sel], acc)
-    
-    st.divider()
-    if st.session_state["sniper_results"]:
-        df_temp = pd.DataFrame(st.session_state["sniper_results"])
-        f_ver = st.multiselect("Veredicto:", options=df_temp["VEREDICTO"].unique(), default=df_temp["VEREDICTO"].unique())
-        f_est = st.multiselect("Estrategia:", options=df_temp["ESTRATEGIA"].unique(), default=df_temp["ESTRATEGIA"].unique())
+    if st.button("🚀 INICIAR RADAR", type="primary"):
+        ex_results = []
+        prog = st.progress(0)
+        for idx, sym in enumerate(targets):
+            prog.progress((idx+1)/len(targets), text=f"Analizando {sym}...")
+            # 1. Chequeo de Liquidez Rápido
+            check_df = yf.download(sym, period="1d", progress=False)
+            if not check_df.empty:
+                real_vol = (check_df['Close'] * check_df['Volume']).iloc[-1]
+                if real_vol < min_liq: continue # Gatekeeper
+                
+                row = {"Activo": sym, "Tipo": MASTER_INFO.get(sym, {}).get('T', 'Manual'), "Sector": MASTER_INFO.get(sym, {}).get('S', 'Custom')}
+                valid = False
+                for label, config in TIMEFRAMES.items():
+                    res = analyze_stock_tf(sym, config)
+                    if res:
+                        valid = True
+                        row[f"{label} H.A./MACD"], row[f"{label} Hist."] = res["sig"], res["h"]
+                        if label == "1D": row["1D MACD 0"] = res["m0"]
+                    else:
+                        row[f"{label} H.A./MACD"], row[f"{label} Hist."] = "-", "-"
+                
+                if valid:
+                    bulls = sum(1 for tf in TIMEFRAMES if "LONG" in str(row.get(f"{tf} H.A./MACD","")))
+                    bears = sum(1 for tf in TIMEFRAMES if "SHORT" in str(row.get(f"{tf} H.A./MACD","")))
+                    bias_1d = str(row.get("1D MACD 0", ""))
+                    if bulls >= 5 and "SOBRE 0" in bias_1d: row["VEREDICTO"] = "🔥 COMPRA"
+                    elif bears >= 5 and "BAJO 0" in bias_1d: row["VEREDICTO"] = "🩸 VENTA"
+                    else: row["VEREDICTO"] = "⚖️ RANGO"
+                    ex_results.append(row)
+            time.sleep(0.2)
         
-        with st.sidebar.expander("📉 Momentum Hist."):
-            f_hist_val = st.multiselect("Filtro Global Hist.:", options=["SUBIENDO", "BAJANDO", "-"], default=["SUBIENDO", "BAJANDO", "-"])
+        if acc:
+            current = {x["Activo"]: x for x in st.session_state["sniper_results"]}
+            for r in ex_results: current[r["Activo"]] = r
+            st.session_state["sniper_results"] = list(current.values())
+        else:
+            st.session_state["sniper_results"] = ex_results
+        st.rerun()
 
     if st.button("Limpiar Memoria"):
         st.session_state["sniper_results"] = []; st.rerun()
@@ -217,15 +197,22 @@ with st.sidebar:
 # ─────────────────────────────────────────────
 if st.session_state["sniper_results"]:
     df_f = pd.DataFrame(st.session_state["sniper_results"])
-    df_f = df_f[df_f["VEREDICTO"].isin(f_ver) & df_f["ESTRATEGIA"].isin(f_est)]
     
-    # Filtro de Histogramas
-    hist_cols = [c for c in df_f.columns if "Hist." in c]
-    for col in hist_cols:
-        df_f = df_f[df_f[col].isin(f_hist_val)]
-    
-    prio = ["Activo", "VEREDICTO", "ESTRATEGIA", "MACD REC.", "Precio"]
-    df_f = df_f[prio + [c for c in df_f.columns if c not in prio]]
-    st.dataframe(style_matrix(df_f), use_container_width=True, height=800)
+    # Post-Filtros Dinámicos
+    with st.expander("🧹 Filtros Avanzados"):
+        f_ver = st.multiselect("Veredicto:", options=df_f["VEREDICTO"].unique(), default=df_f["VEREDICTO"].unique())
+        f_sec = st.multiselect("Sector:", options=df_f["Sector"].unique(), default=df_f["Sector"].unique())
+        f_hi = st.multiselect("1D Hist:", options=["SUBIENDO", "BAJANDO"], default=["SUBIENDO", "BAJANDO"])
+
+    df_filtered = df_f[(df_f["VEREDICTO"].isin(f_ver)) & (df_f["Sector"].isin(f_sec)) & (df_f["1D Hist."].isin(f_hi))]
+
+    def style_matrix(val):
+        v = str(val).upper()
+        if any(x in v for x in ["LONG", "SOBRE 0", "SUBIENDO", "COMPRA"]): return 'background-color: #d4edda; color: #155724;'
+        if any(x in v for x in ["SHORT", "BAJO 0", "BAJANDO", "VENTA"]): return 'background-color: #f8d7da; color: #721c24;'
+        return ''
+
+    prio = ["Activo", "Tipo", "Sector", "VEREDICTO", "1D H.A./MACD", "1D Hist."]
+    st.dataframe(df_filtered[prio + [c for c in df_filtered.columns if c not in prio]].style.applymap(style_matrix), use_container_width=True, height=800)
 else:
-    st.info("👈 Seleccione un lote y presione INICIAR ESCANEO.")
+    st.info("Sistema listo. Seleccione un modo de análisis.")
