@@ -4,18 +4,20 @@ import pandas as pd
 import pandas_ta as ta
 import numpy as np
 import time
+import random
 from datetime import datetime
+import requests
 
 # ─────────────────────────────────────────────
-# CONFIGURACIÓN
+# CONFIGURACIÓN DEL SISTEMA
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | STOCKS V28.0")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | STOCKS V29.0")
 
 st.markdown("""
 <style>
-    [data-testid="stMetricValue"] { font-size: 14px; }
     .stDataFrame { font-size: 12px; }
     h1 { color: #2962FF; font-weight: 800; }
+    .stExpander { border: 2px solid #2962FF !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -23,40 +25,41 @@ if "sniper_results" not in st.session_state:
     st.session_state["sniper_results"] = []
 
 # ─────────────────────────────────────────────
-# BASE DE DATOS MAESTRA (150+ ACTIVOS)
+# CONFIGURACIÓN DE SESIÓN ANTI-BLOQUEO
+# ─────────────────────────────────────────────
+@st.cache_resource
+def get_stealth_session():
+    session = requests.Session()
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36'
+    })
+    return session
+
+# ─────────────────────────────────────────────
+# BASE DE DATOS MAESTRA
 # ─────────────────────────────────────────────
 MASTER_INFO = {
-    # ARGENTINA (ADRs)
     'GGAL': {'T': 'ADR', 'S': 'Financiero'}, 'YPF': {'T': 'ADR', 'S': 'Energía'},
     'BMA': {'T': 'ADR', 'S': 'Financiero'}, 'PAMP': {'T': 'ADR', 'S': 'Energía'},
-    'TGS': {'T': 'ADR', 'S': 'Energía'}, 'CEPU': {'T': 'ADR', 'S': 'Energía'},
-    'EDN': {'T': 'ADR', 'S': 'Energía'}, 'BFR': {'T': 'ADR', 'S': 'Financiero'},
-    'SUPV': {'T': 'ADR', 'S': 'Financiero'}, 'CRESY': {'T': 'ADR', 'S': 'Agro'},
-    'IRS': {'T': 'ADR', 'S': 'Inmuebles'}, 'TEO': {'T': 'ADR', 'S': 'Telecom'},
-    'LOMA': {'T': 'ADR', 'S': 'Construcción'}, 'VIST': {'T': 'ADR', 'S': 'Energía'},
-    'GLOB': {'T': 'ADR', 'S': 'Tech'}, 'MELI': {'T': 'ADR', 'S': 'E-Commerce'},
-    'DESP': {'T': 'ADR', 'S': 'Turismo'}, 'TX': {'T': 'ADR', 'S': 'Siderurgia'},
-    # CEDEARS SELECCIONADOS
+    'VIST': {'T': 'ADR', 'S': 'Energía'}, 'MELI': {'T': 'ADR', 'S': 'E-Commerce'},
     'AAPL': {'T': 'CEDEAR', 'S': 'Tech'}, 'MSFT': {'T': 'CEDEAR', 'S': 'Tech'},
-    'NVDA': {'T': 'CEDEAR', 'S': 'Semis'}, 'AMD': {'T': 'CEDEAR', 'S': 'Semis'},
-    'GOOGL': {'T': 'CEDEAR', 'S': 'Tech'}, 'AMZN': {'T': 'CEDEAR', 'S': 'Retail'},
-    'META': {'T': 'CEDEAR', 'S': 'Tech'}, 'TSLA': {'T': 'CEDEAR', 'S': 'Auto'},
-    'NFLX': {'T': 'CEDEAR', 'S': 'Consumo'}, 'KO': {'T': 'CEDEAR', 'S': 'Consumo'},
-    'JPM': {'T': 'CEDEAR', 'S': 'Banco'}, 'WMT': {'T': 'CEDEAR', 'S': 'Retail'},
-    'GOLD': {'T': 'CEDEAR', 'S': 'Minería'}, 'XOM': {'T': 'CEDEAR', 'S': 'Energía'},
-    'SPY': {'T': 'ETF', 'S': 'Índice'}, 'QQQ': {'T': 'ETF', 'S': 'Índice'},
-    'DIA': {'T': 'ETF', 'S': 'Índice'}, 'EEM': {'T': 'ETF', 'S': 'Emergentes'},
-    'EWZ': {'T': 'ETF', 'S': 'Brasil'}
+    'NVDA': {'T': 'CEDEAR', 'S': 'Semis'}, 'TSLA': {'T': 'CEDEAR', 'S': 'Auto'},
+    'KO': {'T': 'CEDEAR', 'S': 'Consumo'}, 'SPY': {'T': 'ETF', 'S': 'Índice'},
+    'QQQ': {'T': 'ETF', 'S': 'Índice'}, 'DIA': {'T': 'ETF', 'S': 'Índice'}
 }
 
+# Timeframes configurados para reducir carga
 TIMEFRAMES = {
-    "1m": {"int": "1m", "per": "5d"}, "5m": {"int": "5m", "per": "30d"},
-    "15m": {"int": "15m", "per": "30d"}, "30m": {"int": "30m", "per": "30d"},
-    "1H": {"int": "60m", "per": "730d"}, "1D": {"int": "1d", "per": "max"}
+    "1D": {"int": "1d", "per": "1y"},
+    "1H": {"int": "60m", "per": "730d"},
+    "30m": {"int": "30m", "per": "30d"},
+    "15m": {"int": "15m", "per": "30d"},
+    "5m": {"int": "5m", "per": "30d"},
+    "1m": {"int": "1m", "per": "5d"}
 }
 
 # ─────────────────────────────────────────────
-# FUNCIONES TÉCNICAS
+# CÁLCULOS TÉCNICOS
 # ─────────────────────────────────────────────
 def calculate_heikin_ashi(df):
     df = df.copy()
@@ -67,15 +70,17 @@ def calculate_heikin_ashi(df):
     df["HA_Open"], df["HA_Color"] = ha_open, np.where(df["HA_Close"] > ha_open, 1, -1)
     return df
 
-def analyze_ticker_tf(symbol, config):
+def analyze_stock_tf(symbol, label, config, session):
     try:
-        df = yf.download(symbol, interval=config['int'], period=config['per'], progress=False, auto_adjust=True)
+        # Petición usando la sesión con User-Agent
+        df = yf.download(symbol, interval=config['int'], period=config['per'], 
+                         progress=False, auto_adjust=True, session=session)
+        
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
         if df.empty or len(df) < 35: return None
 
         macd = ta.macd(df["Close"])
         df["Hist"], df["MACD"], df["Signal"] = macd["MACDh_12_26_9"], macd["MACD_12_26_9"], macd["MACDs_12_26_9"]
-        df["RSI"] = ta.rsi(df["Close"], length=14)
         df = calculate_heikin_ashi(df)
 
         pos = "NEUTRO"
@@ -87,13 +92,12 @@ def analyze_ticker_tf(symbol, config):
                 if hc == 1 and h > ph: pos = "LONG"
                 elif hc == -1 and h < ph: pos = "SHORT"
 
-        rsi_v = round(df["RSI"].iloc[-1], 1)
-        rsi_s = "RSI↑" if rsi_v > 55 else "RSI↓" if rsi_v < 45 else "RSI="
-        
         return {
-            "sig": f"{'🟢' if pos=='LONG' else '🔴' if pos=='SHORT' else '⚪'} {pos} | {rsi_s}",
+            "sig": f"{'🟢' if pos=='LONG' else '🔴' if pos=='SHORT' else '⚪'} {pos}",
             "m0": "SOBRE 0" if df["MACD"].iloc[-1] > 0 else "BAJO 0",
-            "h": "SUBIENDO" if df["Hist"].iloc[-1] > df["Hist"].iloc[-2] else "BAJANDO"
+            "h": "SUBIENDO" if df["Hist"].iloc[-1] > df["Hist"].iloc[-2] else "BAJANDO",
+            "p": df["Close"].iloc[-1],
+            "v_usd": df["Close"].iloc[-1] * df["Volume"].iloc[-1]
         }
     except: return None
 
@@ -101,13 +105,13 @@ def analyze_ticker_tf(symbol, config):
 # INTERFAZ DE CONTROL
 # ─────────────────────────────────────────────
 with st.sidebar:
-    st.header("🎯 Stock Sniper Control")
-    mode = st.radio("Modo:", ["Pool Institucional", "Inserción Manual"])
+    st.header("🎯 Stock Sniper V29 PRO")
     min_liq = st.number_input("Liquidez Mínima USD:", 1, value=1000000)
+    mode = st.radio("Modo:", ["Pool", "Manual"])
     
-    if mode == "Pool Institucional":
+    if mode == "Pool":
         available = list(MASTER_INFO.keys())
-        b_size = st.selectbox("Lote:", [10, 20, 50], index=1)
+        b_size = st.selectbox("Lote:", [5, 10, 20], index=1)
         batches = [available[i:i+b_size] for i in range(0, len(available), b_size)]
         sel = st.selectbox("Seleccionar Lote:", range(len(batches)))
         targets = batches[sel] if batches else []
@@ -115,55 +119,45 @@ with st.sidebar:
         custom = st.text_input("Tickers (ej: TSLA,AAPL):")
         targets = [x.strip().upper() for x in custom.split(",")] if custom else []
 
-    acc = st.checkbox("Acumular", value=True)
-    
-    if st.button("🚀 INICIAR RADAR"):
+    if st.button("🚀 INICIAR ESCANEO"):
+        session = get_stealth_session()
         temp_results = []
         prog = st.progress(0)
+        
         for idx, sym in enumerate(targets):
             prog.progress((idx+1)/len(targets), text=f"Analizando {sym}")
             
-            # Chequeo de Liquidez Seguro
-            check = yf.Ticker(sym).history(period="1d")
-            if not check.empty:
-                # CORRECCIÓN ValueError: Asegurar que real_vol sea un escalar
-                real_vol = (check['Close'].iloc[-1] * check['Volume'].iloc[-1])
-                if real_vol < min_liq: continue
-                
+            # --- PASO 1: Descargar 1D PRIMERO (Ahorro de peticiones) ---
+            res_1d = analyze_stock_tf(sym, "1D", TIMEFRAMES["1D"], session)
+            
+            if res_1d and res_1d["v_usd"] >= min_liq:
                 row = {
-                    "Activo": sym, 
+                    "Activo": sym, "Precio": f"{res_1d['p']:.2f}",
                     "Tipo": MASTER_INFO.get(sym, {}).get('T', 'MANUAL'),
-                    "Sector": MASTER_INFO.get(sym, {}).get('S', 'CUSTOM')
+                    "Sector": MASTER_INFO.get(sym, {}).get('S', 'CUSTOM'),
+                    "1D H.A./MACD": res_1d["sig"], "1D Hist.": res_1d["h"], "1D MACD 0": res_1d["m0"]
                 }
                 
-                valid_any = False
-                for label, config in TIMEFRAMES.items():
-                    res = analyze_ticker_tf(sym, config)
+                # --- PASO 2: Descargar el resto solo si superó liquidez ---
+                for label in ["1H", "30m", "15m", "5m", "1m"]:
+                    res = analyze_stock_tf(sym, label, TIMEFRAMES[label], session)
                     if res:
-                        valid_any = True
                         row[f"{label} H.A./MACD"] = res["sig"]
                         row[f"{label} Hist."] = res["h"]
-                        if label == "1D": row["1D Hist."] = res["h"]; row["1D MACD 0"] = res["m0"]
                     else:
                         row[f"{label} H.A./MACD"], row[f"{label} Hist."] = "-", "-"
+                    time.sleep(random.uniform(0.1, 0.3)) # Throttling entre TFs
+                
+                # Veredicto
+                bulls = sum(1 for label in TIMEFRAMES if "LONG" in str(row.get(f"{label} H.A./MACD", "")))
+                bears = sum(1 for label in TIMEFRAMES if "SHORT" in str(row.get(f"{label} H.A./MACD", "")))
+                row["VEREDICTO"] = "🔥 COMPRA" if bulls >= 4 and "SOBRE 0" in row["1D MACD 0"] else "🩸 VENTA" if bears >= 4 and "BAJO 0" in row["1D MACD 0"] else "⚖️ RANGO"
+                temp_results.append(row)
+            
+            time.sleep(random.uniform(1.0, 2.0)) # Throttling entre Activos
 
-                if valid_any:
-                    bulls = sum(1 for tf in TIMEFRAMES if "LONG" in str(row.get(f"{tf} H.A./MACD","")))
-                    bears = sum(1 for tf in TIMEFRAMES if "SHORT" in str(row.get(f"{tf} H.A./MACD","")))
-                    row["VEREDICTO"] = "🔥 COMPRA" if bulls >= 5 and "SOBRE 0" in str(row.get("1D MACD 0","")) else "🩸 VENTA" if bears >= 5 and "BAJO 0" in str(row.get("1D MACD 0","")) else "⚖️ RANGO"
-                    temp_results.append(row)
-            time.sleep(0.1)
-
-        if acc:
-            current = {x["Activo"]: x for x in st.session_state["sniper_results"]}
-            for r in temp_results: current[r["Activo"]] = r
-            st.session_state["sniper_results"] = list(current.values())
-        else:
-            st.session_state["sniper_results"] = temp_results
+        st.session_state["sniper_results"] = temp_results
         st.rerun()
-
-    if st.button("Limpiar Memoria"):
-        st.session_state["sniper_results"] = []; st.rerun()
 
 # ─────────────────────────────────────────────
 # FILTROS Y TABLA FINAL
@@ -172,15 +166,11 @@ if st.session_state["sniper_results"]:
     df_f = pd.DataFrame(st.session_state["sniper_results"])
     
     st.sidebar.divider()
-    st.sidebar.subheader("🧹 Filtros de Tabla")
     f_ver = st.sidebar.multiselect("Veredicto:", options=df_f["VEREDICTO"].unique(), default=df_f["VEREDICTO"].unique())
     f_sec = st.sidebar.multiselect("Sector:", options=df_f["Sector"].unique(), default=df_f["Sector"].unique())
-    f_tip = st.sidebar.multiselect("Tipo:", options=df_f["Tipo"].unique(), default=df_f["Tipo"].unique())
     f_h1d = st.sidebar.multiselect("1D Hist:", options=df_f["1D Hist."].unique(), default=df_f["1D Hist."].unique())
 
-    # Aplicación de Filtros
-    mask = (df_f["VEREDICTO"].isin(f_ver)) & (df_f["Sector"].isin(f_sec)) & (df_f["Tipo"].isin(f_tip)) & (df_f["1D Hist."].isin(f_h1d))
-    df_filtered = df_f[mask]
+    df_filtered = df_f[(df_f["VEREDICTO"].isin(f_ver)) & (df_f["Sector"].isin(f_sec)) & (df_f["1D Hist."].isin(f_h1d))]
 
     def style_matrix(val):
         v = str(val).upper()
@@ -188,9 +178,5 @@ if st.session_state["sniper_results"]:
         if any(x in v for x in ["SHORT", "BAJO 0", "BAJANDO", "VENTA"]): return 'background-color: #f8d7da; color: #721c24;'
         return ''
 
-    # Orden Institucional de Columnas
-    prio = ["Activo", "Tipo", "Sector", "VEREDICTO", "1D Hist.", "1D H.A./MACD"]
-    other = [c for c in df_filtered.columns if c not in prio]
-    st.dataframe(df_filtered[prio + other].style.applymap(style_matrix), use_container_width=True, height=800)
-else:
-    st.info("👈 Configure y presione INICIAR RADAR.")
+    prio = ["Activo", "Tipo", "Sector", "VEREDICTO", "1D Hist.", "1D H.A./MACD", "Precio"]
+    st.dataframe(df_filtered[prio + [c for c in df_filtered.columns if c not in prio]].style.applymap(style_matrix), use_container_width=True, height=800)
