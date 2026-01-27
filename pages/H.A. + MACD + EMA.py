@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN DEL SISTEMA
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V25.4")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V25.5")
 
 st.markdown("""
 <style>
@@ -68,7 +68,6 @@ def get_active_pairs(min_vol):
         tickers = ex.fetch_tickers()
         valid = []
         for s, t in tickers.items():
-            # Filtro por volumen mínimo en USDT
             if "/USDT:USDT" in s and t.get("quoteVolume", 0) >= min_vol:
                 valid.append({"symbol": s, "vol": t["quoteVolume"]})
         return pd.DataFrame(valid).sort_values("vol", ascending=False)["symbol"].tolist()
@@ -109,15 +108,22 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
 
         rsi_val = round(df["RSI"].iloc[-1], 1)
         rsi_state = "RSI↑" if rsi_val > 55 else "RSI↓" if rsi_val < 45 else "RSI="
+        
+        # LÓGICA DE CRUCE DIRECCIONAL (Alcista/Bajista)
         df["cross"] = np.sign(df["MACD"] - df["Signal"]).diff().ne(0)
-        cross_time = (df[df["cross"]]["dt"].iloc[-1] - pd.Timedelta(hours=3)).strftime("%H:%M") if not df[df["cross"]].empty else "--:--"
+        cross_rows = df[df["cross"]]
+        if not cross_rows.empty:
+            last_cross = cross_rows.iloc[-1]
+            cross_result = "Alcista" if last_cross["MACD"] > last_cross["Signal"] else "Bajista"
+        else:
+            cross_result = "--"
 
         return {
             "signal": f"{'🟢' if position=='LONG' else '🔴' if position=='SHORT' else '⚪'} {position} | {rsi_state}",
             "signal_time": (last_date - pd.Timedelta(hours=3)).strftime("%H:%M"),
             "m0": "SOBRE 0" if df["MACD"].iloc[-1] > 0 else "BAJO 0",
             "h_dir": "SUBIENDO" if df["Hist"].iloc[-1] > df["Hist"].iloc[-2] else "BAJANDO",
-            "cross_time": cross_time
+            "cross_state": cross_result
         }
     except: return None
 
@@ -154,7 +160,7 @@ def scan_batch(targets, acc):
                 res = analyze_ticker_tf(sym, tf, ex, p)
                 if res:
                     row[f"{label} H.A./MACD"], row[f"{label} Hora Señal"] = res["signal"], res["signal_time"]
-                    row[f"{label} MACD 0"], row[f"{label} Hist."], row[f"{label} Cruce MACD"] = res["m0"], res["h_dir"], res["cross_time"]
+                    row[f"{label} MACD 0"], row[f"{label} Hist."], row[f"{label} Cruce MACD"] = res["m0"], res["h_dir"], res["cross_state"]
                 else:
                     for c in ["H.A./MACD","Hora Señal","MACD 0","Hist.","Cruce MACD"]: row[f"{label} {c}"] = "-"
             row["VEREDICTO"], row["ESTRATEGIA"] = get_verdict(row)
