@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN DEL SISTEMA
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V25.5")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V26.0")
 
 st.markdown("""
 <style>
@@ -19,7 +19,6 @@ st.markdown("""
     .stExpander { 
         border: 2px solid #2962FF !important; 
         border-radius: 8px !important;
-        background-color: transparent !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -33,27 +32,7 @@ TIMEFRAMES = {
 }
 
 # ─────────────────────────────────────────────
-# MANUAL OPERATIVO
-# ─────────────────────────────────────────────
-with st.expander("📘 MANUAL OPERATIVO Y FILTROS"):
-    st.info("Referencia de métricas y confluencias institucionales.")
-    col_m1, col_m2 = st.columns(2)
-    with col_m1:
-        st.markdown("""
-        ### 🎯 LÓGICA DE MANDO
-        *   **VEREDICTO:** Orden ejecutiva basada en confluencia masiva + Sesgo 1D.
-        *   **ESTRATEGIA:** Fase técnica detectada (Sync, Recovery, Correction).
-        *   **MACD REC.:** Momentum de bloques intermedios (15m, 1H, 4H).
-        """)
-    with col_m2:
-        st.markdown("""
-        ### 📊 FILTROS DE MERCADO
-        *   **Volumen Mínimo:** Solo analiza activos con capitalización de flujo real (USDT).
-        *   **Post-Filtro:** Permite aislar oportunidades sin distracciones una vez terminado el escaneo.
-        """)
-
-# ─────────────────────────────────────────────
-# MOTOR DE DATOS CON FILTRO DE VOLUMEN
+# MOTOR DE DATOS
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchange():
@@ -62,7 +41,15 @@ def get_exchange():
     return ex
 
 @st.cache_data(ttl=300)
-def get_active_pairs(min_vol):
+def get_all_symbols():
+    try:
+        ex = get_exchange()
+        tickers = ex.fetch_tickers()
+        return [s for s in tickers if "/USDT:USDT" in s]
+    except: return []
+
+@st.cache_data(ttl=300)
+def get_active_pairs_by_vol(min_vol):
     try:
         ex = get_exchange()
         tickers = ex.fetch_tickers()
@@ -109,14 +96,12 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         rsi_val = round(df["RSI"].iloc[-1], 1)
         rsi_state = "RSI↑" if rsi_val > 55 else "RSI↓" if rsi_val < 45 else "RSI="
         
-        # LÓGICA DE CRUCE DIRECCIONAL (Alcista/Bajista)
         df["cross"] = np.sign(df["MACD"] - df["Signal"]).diff().ne(0)
         cross_rows = df[df["cross"]]
         if not cross_rows.empty:
             last_cross = cross_rows.iloc[-1]
             cross_result = "Alcista" if last_cross["MACD"] > last_cross["Signal"] else "Bajista"
-        else:
-            cross_result = "--"
+        else: cross_result = "--"
 
         return {
             "signal": f"{'🟢' if position=='LONG' else '🔴' if position=='SHORT' else '⚪'} {position} | {rsi_state}",
@@ -149,7 +134,7 @@ def get_macd_rec(row):
 # ─────────────────────────────────────────────
 def scan_batch(targets, acc):
     ex = get_exchange()
-    results = []
+    new_results = []
     prog = st.progress(0)
     for idx, sym in enumerate(targets):
         prog.progress((idx+1)/len(targets), text=f"Analizando {sym.split(':')[0]}")
@@ -165,15 +150,15 @@ def scan_batch(targets, acc):
                     for c in ["H.A./MACD","Hora Señal","MACD 0","Hist.","Cruce MACD"]: row[f"{label} {c}"] = "-"
             row["VEREDICTO"], row["ESTRATEGIA"] = get_verdict(row)
             row["MACD REC."] = get_macd_rec(row)
-            results.append(row)
+            new_results.append(row)
             time.sleep(0.05)
         except: continue
     prog.empty()
     if acc:
         curr = {x["Activo"]: x for x in st.session_state["sniper_results"]}
-        for r in results: curr[r["Activo"]] = r
+        for r in new_results: curr[r["Activo"]] = r
         return list(curr.values())
-    return results
+    return new_results
 
 def style_matrix(df):
     def apply_color(val):
@@ -189,21 +174,37 @@ def style_matrix(df):
 # ─────────────────────────────────────────────
 with st.sidebar:
     st.header("🎯 Radar Control")
-    min_volume = st.number_input("Volumen Mínimo 24h (USDT):", value=500000, step=100000)
-    all_sym = get_active_pairs(min_volume)
     
-    if all_sym:
-        st.success(f"Activos filtrados: {len(all_pairs := all_sym)}")
-        b_size = st.selectbox("Lote de escaneo:", [10, 20, 50], index=1)
-        batches = [all_pairs[i:i+b_size] for i in range(0, len(all_pairs), b_size)]
-        sel = st.selectbox("Seleccionar Lote:", range(len(batches)))
-        acc = st.checkbox("Acumular Resultados", value=True)
-        if st.button("🚀 INICIAR ESCANEO", type="primary"):
-            st.session_state["sniper_results"] = scan_batch(batches[sel], acc)
+    # NUEVO: Selector de Modo
+    analysis_mode = st.radio("Modo de Análisis:", ["Mercado (Lotes)", "Watchlist (Manual)"])
     
+    targets_to_scan = []
+    
+    if analysis_mode == "Mercado (Lotes)":
+        min_volume = st.number_input("Volumen Mínimo 24h (USDT):", value=500000, step=100000)
+        all_sym = get_active_pairs_by_vol(min_volume)
+        if all_sym:
+            st.success(f"Activos filtrados: {len(all_sym)}")
+            b_size = st.selectbox("Lote de escaneo:", [10, 20, 50], index=1)
+            batches = [all_sym[i:i+b_size] for i in range(0, len(all_sym), b_size)]
+            sel_lote = st.selectbox("Seleccionar Lote:", range(len(batches)))
+            targets_to_scan = batches[sel_lote]
+    else:
+        full_list = get_all_symbols()
+        selected_symbols = st.multiselect("Seleccionar Activos:", options=full_list, default=[])
+        targets_to_scan = selected_symbols
+
+    acc = st.checkbox("Acumular Resultados", value=True)
+    
+    if st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True):
+        if targets_to_scan:
+            st.session_state["sniper_results"] = scan_batch(targets_to_scan, acc)
+        else:
+            st.warning("Seleccione al menos un activo para analizar.")
+
     st.divider()
     if st.session_state["sniper_results"]:
-        st.subheader("🧹 Post-Filtros de Tabla")
+        st.subheader("🧹 Post-Filtros")
         df_temp = pd.DataFrame(st.session_state["sniper_results"])
         f_ver = st.multiselect("Veredicto:", options=df_temp["VEREDICTO"].unique(), default=df_temp["VEREDICTO"].unique())
         f_est = st.multiselect("Estrategia:", options=df_temp["ESTRATEGIA"].unique(), default=df_temp["ESTRATEGIA"].unique())
@@ -211,6 +212,17 @@ with st.sidebar:
     
     if st.button("Limpiar Memoria"):
         st.session_state["sniper_results"] = []; st.rerun()
+
+# ─────────────────────────────────────────────
+# MANUAL OPERATIVO
+# ─────────────────────────────────────────────
+with st.expander("📘 MANUAL OPERATIVO"):
+    st.markdown("""
+    ### 🎯 LÓGICA DE MANDO
+    *   **VEREDICTO:** Orden ejecutiva basada en confluencia masiva + Sesgo 1D.
+    *   **ESTRATEGIA:** Fase técnica detectada (Sync, Recovery, Correction).
+    *   **MACD REC.:** Momentum de bloques intermedios (15m, 1H, 4H).
+    """)
 
 # ─────────────────────────────────────────────
 # RENDERIZADO FINAL
@@ -224,4 +236,4 @@ if st.session_state["sniper_results"]:
     df_f = df_f[prio + [c for c in df_f.columns if c not in prio]]
     st.dataframe(style_matrix(df_f), use_container_width=True, height=800)
 else:
-    st.info("👈 Ajuste el volumen y seleccione un lote para iniciar.")
+    st.info("👈 Seleccione activos o un lote para iniciar el radar.")
