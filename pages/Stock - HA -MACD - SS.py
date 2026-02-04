@@ -9,148 +9,138 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN DEL SISTEMA
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="STOCKS SNIPER V38.0 | MACD MACRO")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | TRIPLE MACRO SYNC")
 
 st.markdown("""
 <style>
-    [data-testid="stMetricValue"] { font-size: 14px; }
-    .stDataFrame { font-size: 12px; font-family: monospace; }
+    .stDataFrame { font-size: 11px; font-family: 'Roboto Mono', monospace; }
     h1 { color: #00897B; font-weight: 800; border-bottom: 2px solid #00897B; }
+    [data-testid="stMetricValue"] { font-size: 14px; }
 </style>
 """, unsafe_allow_html=True)
 
 if "sniper_results" not in st.session_state:
     st.session_state["sniper_results"] = []
 
-# Mapeo de Timeframes Macro para Yahoo Finance
-TIMEFRAMES_MACRO = {
+# Configuraciones de descarga
+MACRO_CONFIG = {
     "1D": {"int": "1d", "per": "2y"},
-    "1 Semana": {"int": "1wk", "per": "5y"},
-    "1 Mes": {"int": "1mo", "per": "max"}
+    "1S": {"int": "1wk", "per": "5y"},
+    "1M": {"int": "1mo", "per": "max"}
 }
 
 # ─────────────────────────────────────────────
-# BÓVEDA UNIFICADA (172 ACTIVOS)
+# BÓVEDA DE ACTIVOS (172 ACTIVOS CONSOLIDADOS)
 # ─────────────────────────────────────────────
 MASTER_TICKERS = sorted([
-    # ARGENTINA ADRs
     'GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'CEPU', 'EDN', 'BFR', 'SUPV', 'CRESY', 'IRS', 'TEO', 'LOMA', 'DESP', 'VIST', 'GLOB', 'MELI', 'BIOX', 'TX',
-    # TECH & SEMIS
     'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NFLX', 'CRM', 'ORCL', 'ADBE', 'IBM', 'CSCO', 'PLTR', 'SNOW', 'SHOP', 'SPOT', 'UBER', 'ABNB', 'AMD', 'INTC', 'QCOM', 'AVGO', 'TXN', 'MU', 'ADI', 'AMAT', 'ARM', 'SMCI', 'TSM', 'ASML', 'LRCX',
-    # FINANZAS & CONSUMO
     'JPM', 'BAC', 'C', 'WFC', 'GS', 'MS', 'V', 'MA', 'AXP', 'BRK-B', 'PYPL', 'SQ', 'COIN', 'BLK', 'USB', 'NU', 'KO', 'PEP', 'MCD', 'SBUX', 'DIS', 'NKE', 'WMT', 'COST', 'TGT', 'HD', 'LOW', 'PG', 'CL', 'MO', 'PM', 'KMB', 'EL',
-    # ENERGÍA, MINERÍA & INDUSTRIAL
     'JNJ', 'PFE', 'MRK', 'LLY', 'ABBV', 'UNH', 'BMY', 'AMGN', 'GILD', 'AZN', 'NVO', 'NVS', 'CVS', 'BA', 'CAT', 'DE', 'GE', 'MMM', 'LMT', 'RTX', 'HON', 'UNP', 'UPS', 'FDX', 'XOM', 'CVX', 'SLB', 'OXY', 'HAL', 'BP', 'SHEL', 'TTE', 'PBR', 'VLO', 'VALE', 'ITUB', 'BBD', 'ERJ', 'ABEV', 'GGB', 'SID', 'NBR', 'GOLD', 'NEM', 'PAAS', 'FCX', 'SCCO', 'RIO', 'BHP', 'ALB', 'SQM',
-    # ETFs
     'SPY', 'QQQ', 'IWM', 'DIA', 'EEM', 'EWZ', 'FXI', 'XLE', 'XLF', 'XLK', 'XLV', 'XLI', 'XLP', 'XLU', 'XLY', 'ARKK', 'SMH', 'TAN', 'GLD', 'SLV', 'GDX'
 ])
 
 # ─────────────────────────────────────────────
-# MOTOR TÉCNICO (MÁQUINA DE ESTADOS SLY)
+# MOTOR TÉCNICO SLY RECURSIVO
 # ─────────────────────────────────────────────
-def calculate_heikin_ashi(df):
+def run_sly_engine(df):
+    if df.empty or len(df) < 35: return 0, 0, None
+    
+    # 1. MACD
+    macd = ta.macd(df['Close'], fast=12, slow=26, signal=9)
+    hist = macd['MACDh_12_26_9']
+    
+    # 2. Heikin Ashi
     ha_close = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
     ha_open = np.zeros(len(df))
     ha_open[0] = (df['Open'].iloc[0] + df['Close'].iloc[0]) / 2
     for i in range(1, len(df)):
         ha_open[i] = (ha_open[i-1] + ha_close.iloc[i-1]) / 2
-    return ha_open, ha_close
-
-def run_sly_logic(df):
-    # MACD 12, 26, 9
-    macd = ta.macd(df['Close'], fast=12, slow=26, signal=9)
-    if macd is None: return 0, 0, None
-    hist = macd['MACDh_12_26_9']
-    
-    # Heikin Ashi
-    ha_open, ha_close = calculate_heikin_ashi(df)
     ha_dir = np.where(ha_close > ha_open, 1, -1)
     
+    # 3. Máquina de Estados
     state = 0
-    entry_price = 0.0
-    entry_time = None
+    entry_px = 0.0
+    entry_tm = None
     
-    # Procesamiento histórico barra por barra
     for i in range(1, len(df)):
-        h = hist.iloc[i]
-        h_prev = hist.iloc[i-1]
-        hd = ha_dir[i]
-        hd_prev = ha_dir[i-1]
+        h, h_prev = hist.iloc[i], hist.iloc[i-1]
+        hd, hd_prev = ha_dir[i], ha_dir[i-1]
         
-        # Lógica SLY Script 6
-        longCond  = (hd == 1  and hd_prev == -1 and h < 0 and h > h_prev)
-        shortCond = (hd == -1 and hd_prev == 1  and h > 0 and h < h_prev)
+        # Gatillos SLY
+        longC = (hd == 1 and hd_prev == -1 and h < 0 and h > h_prev)
+        shrtC = (hd == -1 and hd_prev == 1 and h > 0 and h < h_prev)
         
-        if longCond:
-            state = 1
-            entry_price = df['Close'].iloc[i]
-            entry_time = df.index[i]
-        elif shortCond:
-            state = -1
-            entry_price = df['Close'].iloc[i]
-            entry_time = df.index[i]
+        if longC:
+            state, entry_px, entry_tm = 1, df['Close'].iloc[i], df.index[i]
+        elif shrtC:
+            state, entry_px, entry_tm = -1, df['Close'].iloc[i], df.index[i]
         elif state != 0:
-            # Salida si el histograma se gira
             if (state == 1 and h < h_prev) or (state == -1 and h > h_prev):
                 state = 0
                 
-    return state, entry_price, entry_time
+    return state, entry_px, entry_tm
 
 # ─────────────────────────────────────────────
-# ANALIZADOR POR TICKER
+# ANALIZADOR TRIPLE CICLO
 # ─────────────────────────────────────────────
-def analyze_ticker(symbol, tf_label):
-    config = TIMEFRAMES_MACRO[tf_label]
-    try:
-        df = yf.download(symbol, interval=config['int'], period=config['per'], progress=False, auto_adjust=True)
-        
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+def analyze_triple_cycle(symbol):
+    row = {"Activo": symbol}
+    current_price = None
+    
+    for tf_key, config in MACRO_CONFIG.items():
+        try:
+            df = yf.download(symbol, interval=config['int'], period=config['per'], progress=False, auto_adjust=True)
+            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             
-        if df.empty or len(df) < 35: return None
-
-        state, p_entry, t_entry = run_sly_logic(df)
-        curr_p = df['Close'].iloc[-1]
-        
-        # Cálculo de PnL idéntico a TradingView
-        pnl_val = 0.0
-        if state == 1: pnl_val = (curr_p - p_entry) / p_entry * 100
-        elif state == -1: pnl_val = (p_entry - curr_p) / p_entry * 100
-        
-        return {
-            "Activo": symbol,
-            "Estado": "LONG 🟢" if state == 1 else "SHORT 🔴" if state == -1 else "FUERA",
-            "Precio": f"{curr_p:.2f}",
-            "Hora": t_entry.strftime("%d/%m") if t_entry else "-", # En D/W/M usamos fecha como 'Hora'
-            "PnL": f"{pnl_val:.2f}%" if state != 0 else "-"
-        }
-    except: return None
+            if df.empty:
+                row[f"{tf_key}"] = "S/D"
+                continue
+            
+            if tf_key == "1D": current_price = df['Close'].iloc[-1]
+            
+            st_val, px_in, tm_in = run_sly_engine(df)
+            
+            # Formateo de columnas
+            if st_val != 0:
+                pnl = (df['Close'].iloc[-1] - px_in) / px_in * 100 if st_val == 1 else (px_in - df['Close'].iloc[-1]) / px_in * 100
+                row[f"{tf_key} Signal"] = "LONG 🟢" if st_val == 1 else "SHORT 🔴"
+                row[f"{tf_key} Fecha"] = tm_in.strftime("%d/%m/%y")
+                row[f"{tf_key} PnL"] = f"{pnl:.2f}%"
+            else:
+                row[f"{tf_key} Signal"] = "FUERA ⚪"
+                row[f"{tf_key} Fecha"] = "-"
+                row[f"{tf_key} PnL"] = "-"
+        except:
+            row[f"{tf_key} Signal"] = "ERR"
+            
+    row["Precio"] = f"{current_price:.2f}" if current_price else "-"
+    return row
 
 # ─────────────────────────────────────────────
 # INTERFAZ Streamlit
 # ─────────────────────────────────────────────
 with st.sidebar:
-    st.header("🎯 Macro Sniper Control")
-    tf_selected = st.selectbox("Temporalidad (Ciclo):", list(TIMEFRAMES_MACRO.keys()), index=0)
+    st.header("🦅 Control Triple Sync")
+    st.info("Este motor analiza automáticamente ciclos Diario, Semanal y Mensual.")
     
-    st.divider()
-    b_size = st.selectbox("Lote de escaneo:", [10, 20, 50, 100], index=1)
+    b_size = st.selectbox("Tamaño Lote:", [10, 20, 50], index=1)
     batches = [MASTER_TICKERS[i:i+b_size] for i in range(0, len(MASTER_TICKERS), b_size)]
     sel_batch = st.selectbox("Seleccionar Lote:", range(len(batches)), format_func=lambda x: f"Lote {x} ({len(batches[x])} activos)")
     
     acc = st.checkbox("Acumular Resultados", value=True)
     
-    if st.button("🚀 INICIAR ESCANEO MACRO", type="primary"):
+    if st.button("🚀 ESCANEAR MATRIZ MACRO", type="primary", use_container_width=True):
         results = []
         prog = st.progress(0)
         targets = batches[sel_batch]
         
         for idx, sym in enumerate(targets):
-            prog.progress((idx+1)/len(targets), text=f"Calculando ciclo {tf_selected} para {sym}...")
-            res = analyze_ticker(sym, tf_selected)
-            if res: results.append(res)
-            time.sleep(0.1) # Delay anti-bloqueo Yahoo
-        
+            prog.progress((idx+1)/len(targets), text=f"Procesando Triple Ciclo: {sym}")
+            res = analyze_triple_cycle(sym)
+            results.append(res)
+            time.sleep(0.2) # Delay preventivo Yahoo
+            
         if acc:
             current = {x["Activo"]: x for x in st.session_state["sniper_results"]}
             for r in results: current[r["Activo"]] = r
@@ -164,14 +154,23 @@ with st.sidebar:
         st.rerun()
 
 # ─────────────────────────────────────────────
-# TABLA DE RESULTADOS
+# TABLA FINAL
 # ─────────────────────────────────────────────
-st.title(f"🦅 SLY MACRO SNIPER | {tf_selected}")
+st.title("🦅 SLY TRIPLE MACRO MATRIX")
 
 if st.session_state["sniper_results"]:
-    df_f = pd.DataFrame(st.session_state["sniper_results"])
+    df_final = pd.DataFrame(st.session_state["sniper_results"])
     
-    def style_matrix(val):
+    # Ordenar columnas lógicamente
+    cols_order = ["Activo", "Precio", 
+                  "1D Signal", "1D Fecha", "1D PnL",
+                  "1S Signal", "1S Fecha", "1S PnL",
+                  "1M Signal", "1M Fecha", "1M PnL"]
+    
+    # Filtrar solo columnas existentes para evitar errores
+    df_final = df_final[[c for c in cols_order if c in df_final.columns]]
+
+    def style_table(val):
         if "LONG" in str(val): return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
         if "SHORT" in str(val): return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
         if "%" in str(val):
@@ -181,6 +180,6 @@ if st.session_state["sniper_results"]:
             except: return ''
         return ''
 
-    st.dataframe(df_f.style.applymap(style_matrix), use_container_width=True, height=800)
+    st.dataframe(df_final.style.applymap(style_table), use_container_width=True, height=800)
 else:
-    st.info("👈 Seleccione una temporalidad macro y un lote para iniciar el análisis estructural.")
+    st.info("👈 Presione el botón para iniciar la sincronización de los 172 activos en todos los ciclos macro.")
