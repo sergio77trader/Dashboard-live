@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN DEL SISTEMA
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="STOCKS SNIPER V37.0 | SLY REPLICA")
+st.set_page_config(layout="wide", page_title="STOCKS SNIPER V38.0 | MACD MACRO")
 
 st.markdown("""
 <style>
@@ -22,8 +22,15 @@ st.markdown("""
 if "sniper_results" not in st.session_state:
     st.session_state["sniper_results"] = []
 
+# Mapeo de Timeframes Macro para Yahoo Finance
+TIMEFRAMES_MACRO = {
+    "1D": {"int": "1d", "per": "2y"},
+    "1 Semana": {"int": "1wk", "per": "5y"},
+    "1 Mes": {"int": "1mo", "per": "max"}
+}
+
 # ─────────────────────────────────────────────
-# BÓVEDA UNIFICADA (SCRIPTS V1 A V6)
+# BÓVEDA UNIFICADA (172 ACTIVOS)
 # ─────────────────────────────────────────────
 MASTER_TICKERS = sorted([
     # ARGENTINA ADRs
@@ -39,7 +46,7 @@ MASTER_TICKERS = sorted([
 ])
 
 # ─────────────────────────────────────────────
-# MOTOR TÉCNICO REPLICA TRADINGVIEW
+# MOTOR TÉCNICO (MÁQUINA DE ESTADOS SLY)
 # ─────────────────────────────────────────────
 def calculate_heikin_ashi(df):
     ha_close = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
@@ -50,28 +57,29 @@ def calculate_heikin_ashi(df):
     return ha_open, ha_close
 
 def run_sly_logic(df):
-    # MACD
+    # MACD 12, 26, 9
     macd = ta.macd(df['Close'], fast=12, slow=26, signal=9)
+    if macd is None: return 0, 0, None
     hist = macd['MACDh_12_26_9']
     
     # Heikin Ashi
     ha_open, ha_close = calculate_heikin_ashi(df)
     ha_dir = np.where(ha_close > ha_open, 1, -1)
     
-    # Máquina de Estados (State Machine)
     state = 0
     entry_price = 0.0
     entry_time = None
     
+    # Procesamiento histórico barra por barra
     for i in range(1, len(df)):
         h = hist.iloc[i]
         h_prev = hist.iloc[i-1]
         hd = ha_dir[i]
         hd_prev = ha_dir[i-1]
         
-        # Condiciones Script 6
-        longCond = (hd == 1 and hd_prev == -1 and h < 0 and h > h_prev)
-        shortCond = (hd == -1 and hd_prev == 1 and h > 0 and h < h_prev)
+        # Lógica SLY Script 6
+        longCond  = (hd == 1  and hd_prev == -1 and h < 0 and h > h_prev)
+        shortCond = (hd == -1 and hd_prev == 1  and h > 0 and h < h_prev)
         
         if longCond:
             state = 1
@@ -82,20 +90,19 @@ def run_sly_logic(df):
             entry_price = df['Close'].iloc[i]
             entry_time = df.index[i]
         elif state != 0:
-            # Salida dinámica por giro de histograma
+            # Salida si el histograma se gira
             if (state == 1 and h < h_prev) or (state == -1 and h > h_prev):
                 state = 0
                 
     return state, entry_price, entry_time
 
 # ─────────────────────────────────────────────
-# ANALIZADOR
+# ANALIZADOR POR TICKER
 # ─────────────────────────────────────────────
-def analyze_ticker(symbol, interval):
+def analyze_ticker(symbol, tf_label):
+    config = TIMEFRAMES_MACRO[tf_label]
     try:
-        # Descarga con periodos optimizados por intervalo
-        period = "1mo" if "m" in interval else "2y"
-        df = yf.download(symbol, interval=interval, period=period, progress=False, auto_adjust=True)
+        df = yf.download(symbol, interval=config['int'], period=config['per'], progress=False, auto_adjust=True)
         
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
@@ -105,7 +112,7 @@ def analyze_ticker(symbol, interval):
         state, p_entry, t_entry = run_sly_logic(df)
         curr_p = df['Close'].iloc[-1]
         
-        # PnL Calculation
+        # Cálculo de PnL idéntico a TradingView
         pnl_val = 0.0
         if state == 1: pnl_val = (curr_p - p_entry) / p_entry * 100
         elif state == -1: pnl_val = (p_entry - curr_p) / p_entry * 100
@@ -114,7 +121,7 @@ def analyze_ticker(symbol, interval):
             "Activo": symbol,
             "Estado": "LONG 🟢" if state == 1 else "SHORT 🔴" if state == -1 else "FUERA",
             "Precio": f"{curr_p:.2f}",
-            "Hora": t_entry.strftime("%d/%m %H:%M") if t_entry else "-",
+            "Hora": t_entry.strftime("%d/%m") if t_entry else "-", # En D/W/M usamos fecha como 'Hora'
             "PnL": f"{pnl_val:.2f}%" if state != 0 else "-"
         }
     except: return None
@@ -123,26 +130,26 @@ def analyze_ticker(symbol, interval):
 # INTERFAZ Streamlit
 # ─────────────────────────────────────────────
 with st.sidebar:
-    st.header("🎯 Stock Sniper Control")
-    tf_selected = st.selectbox("Temporalidad (TF):", ["1m", "5m", "15m", "30m", "1h", "1d"], index=4)
+    st.header("🎯 Macro Sniper Control")
+    tf_selected = st.selectbox("Temporalidad (Ciclo):", list(TIMEFRAMES_MACRO.keys()), index=0)
     
-    # Manejo de Lotes
-    b_size = st.selectbox("Tamaño del Lote:", [10, 20, 50, 100], index=1)
+    st.divider()
+    b_size = st.selectbox("Lote de escaneo:", [10, 20, 50, 100], index=1)
     batches = [MASTER_TICKERS[i:i+b_size] for i in range(0, len(MASTER_TICKERS), b_size)]
     sel_batch = st.selectbox("Seleccionar Lote:", range(len(batches)), format_func=lambda x: f"Lote {x} ({len(batches[x])} activos)")
     
     acc = st.checkbox("Acumular Resultados", value=True)
     
-    if st.button("🚀 INICIAR ESCANEO", type="primary"):
+    if st.button("🚀 INICIAR ESCANEO MACRO", type="primary"):
         results = []
         prog = st.progress(0)
         targets = batches[sel_batch]
         
         for idx, sym in enumerate(targets):
-            prog.progress((idx+1)/len(targets), text=f"Analizando {sym}...")
+            prog.progress((idx+1)/len(targets), text=f"Calculando ciclo {tf_selected} para {sym}...")
             res = analyze_ticker(sym, tf_selected)
             if res: results.append(res)
-            time.sleep(0.1)
+            time.sleep(0.1) # Delay anti-bloqueo Yahoo
         
         if acc:
             current = {x["Activo"]: x for x in st.session_state["sniper_results"]}
@@ -157,9 +164,9 @@ with st.sidebar:
         st.rerun()
 
 # ─────────────────────────────────────────────
-# TABLA FINAL (LEGIBILIDAD INSTITUCIONAL)
+# TABLA DE RESULTADOS
 # ─────────────────────────────────────────────
-st.title("🦅 SLY SYSTEMATRADER STOCKS")
+st.title(f"🦅 SLY MACRO SNIPER | {tf_selected}")
 
 if st.session_state["sniper_results"]:
     df_f = pd.DataFrame(st.session_state["sniper_results"])
@@ -168,10 +175,12 @@ if st.session_state["sniper_results"]:
         if "LONG" in str(val): return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
         if "SHORT" in str(val): return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
         if "%" in str(val):
-            v = float(val.replace("%",""))
-            return f'color: {"#2E7D32" if v >= 0 else "#C62828"}; font-weight: bold;'
+            try:
+                v = float(val.replace("%",""))
+                return f'color: {"#2E7D32" if v >= 0 else "#C62828"}; font-weight: bold;'
+            except: return ''
         return ''
 
     st.dataframe(df_f.style.applymap(style_matrix), use_container_width=True, height=800)
 else:
-    st.info("👈 Seleccione un lote y presione INICIAR ESCANEO para ver los estados del mercado.")
+    st.info("👈 Seleccione una temporalidad macro y un lote para iniciar el análisis estructural.")
