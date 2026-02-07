@@ -15,6 +15,7 @@ st.markdown("""
 <style>
     .stDataFrame { font-size: 11px; font-family: 'Roboto Mono', monospace; }
     h1 { color: #2962FF; font-weight: 800; border-bottom: 2px solid #2962FF; }
+    h3 { color: #00E676; border-left: 5px solid #00E676; padding-left: 10px; margin-top: 20px; }
     .stProgress > div > div > div > div { background-color: #2962FF; }
 </style>
 """, unsafe_allow_html=True)
@@ -49,29 +50,34 @@ OPERABLE_BYMA = [
 ]
 
 # ─────────────────────────────────────────────
-# BÓVEDA DE ACTIVOS (CATEGORÍA UNIFICADA PARA ARG)
+# BÓVEDA DE ACTIVOS SEGMENTADA POR SECTOR ARG
 # ─────────────────────────────────────────────
-# He unificado el string de Categoría para Argentina para forzar el agrupamiento
-CAT_ARG = "Argentina / ADRs Líderes"
-
 ASSET_DATABASE = {
-    # --- ARGENTINA (UNIFICADOS PARA AGRUPAR) ---
-    "GGAL": [CAT_ARG, ["GGAL"]],
-    "YPF":  [CAT_ARG, ["YPF"]],
-    "PAMP": [CAT_ARG, ["PAMP"]],
-    "VIST": [CAT_ARG, ["VIST"]],
-    "MELI": [CAT_ARG, ["MELI"]],
-    "GLOB": [CAT_ARG, ["GLOB"]],
-    "TGS":  [CAT_ARG, ["TGS"]],
-    "BMA":  [CAT_ARG, ["BMA"]],
-    "CEPU": [CAT_ARG, ["CEPU"]],
-    "EDN":  [CAT_ARG, ["EDN"]],
-    "BFR":  [CAT_ARG, ["BFR"]],
-    "SUPV": [CAT_ARG, ["SUPV"]],
-    "CRESY":[CAT_ARG, ["CRESY"]],
-    "LOMA": [CAT_ARG, ["LOMA"]],
-    "TX":   [CAT_ARG, ["TX"]],
-    "TEO":  [CAT_ARG, ["TEO"]],
+    # --- ARGENTINA: ENERGÍA & OIL ---
+    "YPF":  ["ARG / Energía & Oil (ADR)", ["YPF"]],
+    "PAMP": ["ARG / Energía & Oil (ADR)", ["PAMP"]],
+    "VIST": ["ARG / Energía & Oil (ADR)", ["VIST"]],
+    "TGS":  ["ARG / Energía & Oil (ADR)", ["TGS"]],
+    "CEPU": ["ARG / Energía & Oil (ADR)", ["CEPU"]],
+    "EDN":  ["ARG / Energía & Oil (ADR)", ["EDN"]],
+
+    # --- ARGENTINA: BANCOS ---
+    "GGAL": ["ARG / Bancos (ADR)", ["GGAL"]],
+    "BMA":  ["ARG / Bancos (ADR)", ["BMA"]],
+    "BFR":  ["ARG / Bancos (ADR)", ["BFR"]],
+    "SUPV": ["ARG / Bancos (ADR)", ["SUPV"]],
+
+    # --- ARGENTINA: TECH & E-COMMERCE ---
+    "MELI": ["ARG / Tech & E-Commerce (ADR)", ["MELI"]],
+    "GLOB": ["ARG / Tech & E-Commerce (ADR)", ["GLOB"]],
+
+    # --- ARGENTINA: INMUEBLES & CONSTRUCCIÓN ---
+    "CRESY":["ARG / Inmuebles & Const. (ADR)", ["CRESY"]],
+    "LOMA": ["ARG / Inmuebles & Const. (ADR)", ["LOMA"]],
+
+    # --- ARGENTINA: INDUSTRIAL & TELECOM ---
+    "TX":   ["ARG / Industrial & Telco (ADR)", ["TX"]],
+    "TEO":  ["ARG / Industrial & Telco (ADR)", ["TEO"]],
 
     # --- ÍNDICES ---
     "SPY":  ["Índice / S&P 500", ["AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "BRK-B", "LLY", "JPM", "TSLA"]],
@@ -80,7 +86,7 @@ ASSET_DATABASE = {
     "EWZ":  ["Índice / Brasil", ["VALE", "PETR4.SA", "ITUB", "BBD", "ABEV", "GGB", "BBAS3.SA", "WEGE3.SA"]],
     "FXI":  ["Índice / China", ["TCEHY", "BABA", "MEIT", "CCB", "JD", "BIDU", "PDD", "BYDDY", "LI", "NIO"]],
 
-    # --- SECTORES ---
+    # --- SECTORES S&P 500 ---
     "XLK":  ["Sector / Tecnología", ["AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "ADBE", "CRM", "AMD", "TXN", "QCOM"]],
     "XLF":  ["Sector / Financiero", ["JPM", "V", "MA", "BAC", "GS", "MS", "WFC", "BLK", "SPGI", "AXP"]],
     "XLE":  ["Sector / Energía", ["XOM", "CVX", "COP", "SLB", "MPC", "PSX", "VLO", "OXY", "BKR", "HAL"]],
@@ -102,7 +108,7 @@ ASSET_DATABASE = {
 TICKERS_LIST = sorted(list(ASSET_DATABASE.keys()))
 
 # ─────────────────────────────────────────────
-# MOTOR TÉCNICO SLY
+# MOTOR TÉCNICO SLY RECURSIVO
 # ─────────────────────────────────────────────
 def run_sly_engine(df):
     if df.empty or len(df) < 35: return 0, 0, None
@@ -172,7 +178,7 @@ def style_macro(df):
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("🦅 GLOBAL MACRO TRIPLE SYNC V46.2")
+st.title("🦅 GLOBAL MACRO TRIPLE SYNC V46.3")
 
 with st.sidebar:
     st.header("⚙️ Radar Control")
@@ -180,7 +186,7 @@ with st.sidebar:
         results = []
         prog = st.progress(0)
         for idx, sym in enumerate(TICKERS_LIST):
-            prog.progress((idx+1)/len(TICKERS_LIST), text=f"Analizando: {sym}")
+            prog.progress((idx+1)/len(TICKERS_LIST), text=f"Sincronizando: {sym}")
             results.append(analyze_asset(sym, ASSET_DATABASE[sym][0]))
             time.sleep(0.05)
         st.session_state["sniper_results"] = results
@@ -190,11 +196,12 @@ with st.sidebar:
 if st.session_state["sniper_results"]:
     df_f = pd.DataFrame(st.session_state["sniper_results"])
     
-    # FORZAMOS EL ORDENAMIENTO POR CATEGORÍA
-    df_f = df_f.sort_values(["Categoría", "Activo"])
+    # --- AJUSTE DE ORDENAMIENTO CRÍTICO ---
+    # Ordenamos por Categoría (esto agrupa todos los ARG / juntos) y luego por Activo
+    df_f = df_f.sort_values(by=["Categoría", "Activo"], ascending=[True, True])
     
     main_cols = ["Categoría", "Activo", "Precio", "1D Signal", "1D Fecha", "1D PnL", "1S Signal", "1S Fecha", "1S PnL", "1M Signal", "1M Fecha", "1M PnL"]
-    st.dataframe(style_macro(df_f[main_cols]), use_container_width=True, height=500)
+    st.dataframe(style_macro(df_f[main_cols]), use_container_width=True, height=600)
 
     # ─────────────────────────────────────────────
     # DEEP DIVE
