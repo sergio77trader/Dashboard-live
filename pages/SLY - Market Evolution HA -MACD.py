@@ -32,10 +32,9 @@ MACRO_CONFIG = {
 # ─────────────────────────────────────────────
 # LISTADO MAESTRO DE OPERABILIDAD (ByMA)
 # ─────────────────────────────────────────────
-# Incluye CEDEARs y Acciones Argentinas con ADR
 OPERABLE_BYMA = [
-    "GGAL", "YPF", "BMA", "PAMP", "TGS", "CEPU", "EDN", "BFR", "SUPV", "CRESY", "IRS", "TEO", "LOMA", "VIST", "GLOB", "MELI", # ARG
-    "AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "ADBE", "CRM", "AMD", "TXN", "QCOM", # Tech
+    "GGAL", "YPF", "BMA", "PAMP", "TGS", "CEPU", "EDN", "BFR", "SUPV", "CRESY", "IRS", "TEO", "LOMA", "VIST", "GLOB", "MELI", "TX", "DESP", # ARG ADRs
+    "AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "ADBE", "CRM", "AMD", "TXN", "QCOM", "INTC", "CSCO", # Tech
     "JPM", "V", "MA", "BAC", "GS", "MS", "WFC", "BLK", "AXP", "HSBC", # Finanzas
     "XOM", "CVX", "COP", "SLB", "OXY", "HAL", "BP", "PBR", "RIG", # Energía
     "LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "ABT", "PFE", "AMGN", "GILD", # Salud
@@ -51,46 +50,49 @@ OPERABLE_BYMA = [
 ]
 
 # ─────────────────────────────────────────────
-# BÓVEDA DE ACTIVOS Y COMPONENTES
+# BÓVEDA DE ACTIVOS SEGMENTADA
 # ─────────────────────────────────────────────
 ASSET_DATABASE = {
-    # --- ARGENTINA (NUEVO) ---
-    "GGAL": ["Acción / Argentina (ADR)", ["GGAL"]],
-    "YPF": ["Acción / Argentina (ADR)", ["YPF"]],
-    "PAMP": ["Acción / Argentina (ADR)", ["PAMP"]],
-    "VIST": ["Acción / Argentina (ADR)", ["VIST"]],
-    "MELI": ["Acción / Argentina (ADR)", ["MELI"]],
-    "GLOB": ["Acción / Argentina (ADR)", ["GLOB"]],
-    "TGS": ["Acción / Argentina (ADR)", ["TGS"]],
-    "BMA": ["Acción / Argentina (ADR)", ["BMA"]],
-    "CEPU": ["Acción / Argentina (ADR)", ["CEPU"]],
+    # --- ARGENTINA SEGMENTADA (ADRs) ---
+    "GGAL": ["ARG / Bancos (ADR)", ["GGAL"]],
+    "BMA":  ["ARG / Bancos (ADR)", ["BMA"]],
+    "BFR":  ["ARG / Bancos (ADR)", ["BFR"]],
+    "SUPV": ["ARG / Bancos (ADR)", ["SUPV"]],
+    "YPF":  ["ARG / Energía & Oil (ADR)", ["YPF"]],
+    "PAMP": ["ARG / Energía & Oil (ADR)", ["PAMP"]],
+    "VIST": ["ARG / Energía & Oil (ADR)", ["VIST"]],
+    "TGS":  ["ARG / Energía & Oil (ADR)", ["TGS"]],
+    "CEPU": ["ARG / Energía & Oil (ADR)", ["CEPU"]],
+    "EDN":  ["ARG / Energía & Oil (ADR)", ["EDN"]],
+    "MELI": ["ARG / Tech & E-Commerce (ADR)", ["MELI"]],
+    "GLOB": ["ARG / Tech & E-Commerce (ADR)", ["GLOB"]],
+    "LOMA": ["ARG / Construcción & Inmuebles (ADR)", ["LOMA"]],
+    "CRESY":["ARG / Construcción & Inmuebles (ADR)", ["CRESY"]],
+    "TX":   ["ARG / Siderurgia (ADR)", ["TX"]],
+    "TEO":  ["ARG / Telecom (ADR)", ["TEO"]],
 
-    # --- INDICES ---
-    "SPY": ["Índice / S&P 500", ["AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "BRK-B", "LLY", "JPM", "TSLA"]],
-    "QQQ": ["Índice / Nasdaq 100", ["AAPL", "MSFT", "NVDA", "AMZN", "META", "AVGO", "GOOGL", "GOOG", "COST", "TSLA"]],
-    "EEM": ["Índice / Emergentes", ["TSM", "TCEHY", "BABA", "PDD", "JD", "VALE", "BIDU", "NIO", "MELI", "ITUB"]],
-    "EWZ": ["Índice / Brasil", ["VALE", "ITUB", "PETR4.SA", "BBD", "ABEV", "GGB", "JBSS3.SA", "WEGE3.SA"]],
-    "FXI": ["Índice / China", ["TCEHY", "BABA", "MEIT", "CCB", "JD", "BIDU", "PDD", "BYDDY", "LI", "NIO"]],
-    "ARKK": ["Índice / Innovación", ["TSLA", "COIN", "ROKU", "PLTR", "PATH", "DKNG", "HOOD", "TWLO", "CRSP", "U"]],
+    # --- ÍNDICES GLOBALES ---
+    "SPY":  ["Índice / S&P 500", ["AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "BRK-B", "LLY", "JPM", "TSLA"]],
+    "QQQ":  ["Índice / Nasdaq 100", ["AAPL", "MSFT", "NVDA", "AMZN", "META", "AVGO", "GOOGL", "GOOG", "COST", "TSLA"]],
+    "EEM":  ["Índice / Emergentes", ["TSM", "TCEHY", "BABA", "PDD", "JD", "VALE", "BIDU", "NIO", "MELI", "ITUB"]],
+    "EWZ":  ["Índice / Brasil", ["VALE", "PETR4.SA", "ITUB", "BBD", "ABEV", "GGB", "BBAS3.SA", "WEGE3.SA"]],
+    "FXI":  ["Índice / China", ["TCEHY", "BABA", "MEIT", "CCB", "JD", "BIDU", "PDD", "BYDDY", "LI", "NIO"]],
 
-    # --- SECTORES ---
-    "XLK": ["Sector / Tecnología", ["AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "ADBE", "CRM", "AMD", "TXN", "QCOM"]],
-    "XLF": ["Sector / Financiero", ["JPM", "V", "MA", "BAC", "GS", "MS", "WFC", "BLK", "SPGI", "AXP"]],
-    "XLE": ["Sector / Energía", ["XOM", "CVX", "COP", "SLB", "MPC", "PSX", "VLO", "OXY", "BKR", "HAL"]],
-    "XLV": ["Sector / Salud", ["LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "ABT", "DHR", "PFE", "AMGN"]],
-    "XLI": ["Sector / Industrial", ["GE", "CAT", "UNP", "HON", "RTX", "LOW", "DE", "LMT", "UPS", "BA"]],
-    "XLP": ["Sector / Consumo Básico", ["PG", "COST", "PEP", "KO", "PM", "WMT", "MO", "MDLZ", "CL", "TGT"]],
-    "XLY": ["Sector / Consumo Disc.", ["AMZN", "TSLA", "HD", "MCD", "NKE", "BKNG", "SBUX", "TJX", "ORLY", "LULU"]],
-    "XLC": ["Sector / Comunicaciones", ["GOOGL", "META", "NFLX", "DIS", "TMUS", "VZ", "T", "CHTR", "CMCSA", "PARA"]],
-    
+    # --- SECTORES S&P 500 ---
+    "XLK":  ["Sector / Tecnología", ["AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "ADBE", "CRM", "AMD", "TXN", "QCOM"]],
+    "XLF":  ["Sector / Financiero", ["JPM", "V", "MA", "BAC", "GS", "MS", "WFC", "BLK", "SPGI", "AXP"]],
+    "XLE":  ["Sector / Energía", ["XOM", "CVX", "COP", "SLB", "MPC", "PSX", "VLO", "OXY", "BKR", "HAL"]],
+    "XLV":  ["Sector / Salud", ["LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "ABT", "DHR", "PFE", "AMGN"]],
+    "XLI":  ["Sector / Industrial", ["GE", "CAT", "UNP", "HON", "RTX", "LOW", "DE", "LMT", "UPS", "BA"]],
+    "XLP":  ["Sector / Consumo Básico", ["PG", "COST", "PEP", "KO", "PM", "WMT", "MO", "MDLZ", "CL", "TGT"]],
+
     # --- CRIPTO ---
     "BTC-USD": ["Cripto / Bitcoin", ["BTC-USD", "MSTR", "MARA", "RIOT", "CLSK"]],
     "ETH-USD": ["Cripto / Ethereum", ["ETH-USD", "COIN", "ETHE", "LINK-USD", "UNI-USD"]],
-    
+
     # --- METALES & MACRO ---
     "GLD": ["Metales / Oro", ["GLD", "NEM", "GOLD", "AU", "HMY"]],
     "SLV": ["Metales / Plata", ["SLV", "PAAS", "AG", "FSM", "WPM"]],
-    "CPER": ["Metales / Cobre", ["CPER", "FCX", "RIO", "BHP", "SCCO"]],
     "USO": ["Macro / Petróleo", ["USO", "XOM", "CVX", "OXY", "RIG"]],
     "DX-Y.NYB": ["Macro / Dollar Index", ["DX-Y.NYB", "UUP"]]
 }
@@ -98,7 +100,7 @@ ASSET_DATABASE = {
 TICKERS_LIST = sorted(list(ASSET_DATABASE.keys()))
 
 # ─────────────────────────────────────────────
-# MOTOR TÉCNICO SLY
+# MOTOR TÉCNICO SLY RECURSIVO
 # ─────────────────────────────────────────────
 def run_sly_engine(df):
     if df.empty or len(df) < 35: return 0, 0, None
@@ -128,7 +130,7 @@ def run_sly_engine(df):
 # ─────────────────────────────────────────────
 def analyze_asset(symbol, category="Custom"):
     row = {"Categoría": category, "Activo": symbol}
-    clean_sym = symbol.split("-")[0].split(".")[0].upper()
+    clean_sym = symbol.split("-")[0].split(".")[0].split(":")[0].upper()
     row["Operable (ByMA)"] = "✅ SÍ" if clean_sym in OPERABLE_BYMA else "❌ NO"
     
     current_price = None
@@ -168,7 +170,7 @@ def style_macro(df):
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("🦅 GLOBAL MACRO TRIPLE SYNC V46")
+st.title("🦅 GLOBAL MACRO TRIPLE SYNC V46.1")
 
 with st.sidebar:
     st.header("⚙️ Radar Control")
@@ -176,12 +178,13 @@ with st.sidebar:
         results = []
         prog = st.progress(0)
         for idx, sym in enumerate(TICKERS_LIST):
-            prog.progress((idx+1)/len(TICKERS_LIST), text=f"Analizando: {sym}")
+            prog.progress((idx+1)/len(TICKERS_LIST), text=f"Sincronizando: {sym}")
             results.append(analyze_asset(sym, ASSET_DATABASE[sym][0]))
             time.sleep(0.05)
         st.session_state["sniper_results"] = results
         st.rerun()
 
+# TABLA PRINCIPAL
 if st.session_state["sniper_results"]:
     df_f = pd.DataFrame(st.session_state["sniper_results"])
     df_f = df_f.sort_values(["Categoría", "Activo"])
@@ -189,13 +192,12 @@ if st.session_state["sniper_results"]:
     st.dataframe(style_macro(df_f[main_cols]), use_container_width=True, height=500)
 
     # ─────────────────────────────────────────────
-    # DEEP DIVE (AUDITORÍA TOTAL)
+    # DEEP DIVE
     # ─────────────────────────────────────────────
     st.divider()
     st.header("🔍 Auditoría de Componentes y Sincronía")
     
-    # El selectbox ahora incluye TODOS los activos de la tabla superior
-    selected_main = st.selectbox("Seleccione Activo de la tabla superior para auditar componentes:", TICKERS_LIST)
+    selected_main = st.selectbox("Seleccione Activo para desglosar sus componentes:", TICKERS_LIST)
     
     if st.button(f"🔎 ANALIZAR {selected_main}"):
         constituents = ASSET_DATABASE[selected_main][1]
@@ -204,12 +206,12 @@ if st.session_state["sniper_results"]:
         
         for idx, comp in enumerate(constituents):
             prog_detail.progress((idx+1)/len(constituents), text=f"Calculando: {comp}")
-            detailed_results.append(analyze_asset(comp, f"Derivado de {selected_main}"))
+            detailed_results.append(analyze_asset(comp, f"Driver de {selected_main}"))
             time.sleep(0.05)
         
-        st.subheader(f"📊 Desglose de Ejecución: {selected_main}")
+        st.subheader(f"📊 Desglose Técnico: {selected_main}")
         df_detailed = pd.DataFrame(detailed_results)
         cols_final = ["Operable (ByMA)", "Activo", "Precio", "1D Signal", "1D Fecha", "1D PnL", "1S Signal", "1S Fecha", "1S PnL", "1M Signal", "1M Fecha", "1M PnL"]
         st.dataframe(style_macro(df_detailed[cols_final]), use_container_width=True)
 else:
-    st.info("Pulse 'ACTUALIZAR MATRIZ GLOBAL' para cargar el sistema.")
+    st.info("Pulse 'ACTUALIZAR MATRIZ GLOBAL' para iniciar.")
