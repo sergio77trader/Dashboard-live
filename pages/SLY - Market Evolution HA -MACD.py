@@ -30,43 +30,44 @@ MACRO_CONFIG = {
 }
 
 # ─────────────────────────────────────────────
-# BÓVEDA DE ACTIVOS Y COMPONENTES (TOP 10 MOVERS)
+# LISTADO MAESTRO DE CEDEARS OPERABLES (ByMA)
+# ─────────────────────────────────────────────
+CEDEAR_LIST = [
+    "AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "ADBE", "CRM", "AMD", "TXN", "QCOM", # Tech
+    "JPM", "V", "MA", "BAC", "GS", "MS", "WFC", "BLK", "AXP", "HSBC", # Finanzas
+    "XOM", "CVX", "COP", "SLB", "OXY", "HAL", "BP", "PBR", "VIST", # Energía
+    "LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "ABT", "PFE", "AMGN", "GILD", # Salud
+    "GE", "CAT", "UNP", "HON", "RTX", "LOW", "DE", "LMT", "UPS", "BA", "MMM", # Industrial
+    "PG", "COST", "PEP", "KO", "PM", "WMT", "MO", "MDLZ", "CL", "TGT", "NKE", # Consumo
+    "AMZN", "TSLA", "HD", "MCD", "BKNG", "SBUX", "TJX", "MELI", "EBAY", # Consumo Disc
+    "GOOGL", "META", "NFLX", "DIS", "TMUS", "VZ", "T", # Comunicaciones
+    "LIN", "SHW", "FCX", "NEM", "NUE", "DOW", "ALB", "GOLD", "RIO", "BHP", # Materiales
+    "BABA", "JD", "BIDU", "NIO", "PDD", "TSM", "TCEHY", # China / Emergentes
+    "VALE", "ITUB", "BBD", "ERJ", "ABEV", "GGB", # Brasil
+    "MSTR", "COIN", "MARA", "RIOT", "CLSK", # Cripto Relacionados
+    "SPY", "QQQ", "DIA", "EEM", "EWZ", "XLE", "XLF", "XLK", "XLV", "XLI", "XLP", "XLK", "ARKK", "GLD", "SLV" # ETFs
+]
+
+# ─────────────────────────────────────────────
+# BÓVEDA DE ACTIVOS Y COMPONENTES
 # ─────────────────────────────────────────────
 ASSET_DATABASE = {
-    # SECTORES
     "XLK": ["Sector / Tecnología", ["AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "ADBE", "CRM", "AMD", "TXN", "QCOM"]],
     "XLF": ["Sector / Financiero", ["JPM", "V", "MA", "BAC", "GS", "MS", "WFC", "BLK", "SPGI", "AXP"]],
     "XLE": ["Sector / Energía", ["XOM", "CVX", "COP", "SLB", "MPC", "PSX", "VLO", "OXY", "BKR", "HAL"]],
     "XLV": ["Sector / Salud", ["LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "ABT", "DHR", "PFE", "AMGN"]],
     "XLI": ["Sector / Industrial", ["GE", "CAT", "UNP", "HON", "RTX", "LOW", "DE", "LMT", "UPS", "BA"]],
     "XLP": ["Sector / Consumo Básico", ["PG", "COST", "PEP", "KO", "PM", "WMT", "MO", "MDLZ", "CL", "TGT"]],
-    "XLU": ["Sector / Utilities", ["NEE", "SO", "DUK", "CEG", "SRE", "AEP", "D", "PCG", "EXC", "XEL"]],
     "XLY": ["Sector / Consumo Disc.", ["AMZN", "TSLA", "HD", "MCD", "NKE", "BKNG", "SBUX", "TJX", "ORLY", "LULU"]],
-    "XLB": ["Sector / Materiales", ["LIN", "SHW", "APD", "FCX", "CTVA", "ECL", "NEM", "NUE", "DOW", "ALB"]],
     "XLC": ["Sector / Comunicaciones", ["GOOGL", "META", "NFLX", "DIS", "TMUS", "VZ", "T", "CHTR", "CMCSA", "PARA"]],
-    "XLRE": ["Sector / Real Estate", ["PLD", "AMT", "EQIX", "WELL", "SPG", "DLR", "PSA", "O", "VICI", "SBAC"]],
-    
-    # INDICES
     "SPY": ["Índice / S&P 500", ["AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "BRK-B", "LLY", "JPM", "TSLA"]],
     "QQQ": ["Índice / Nasdaq 100", ["AAPL", "MSFT", "NVDA", "AMZN", "META", "AVGO", "GOOGL", "GOOG", "COST", "TSLA"]],
-    "EEM": ["Índice / Emergentes", ["TSM", "TCEHY", "BABA", "PDD", "JD", "VALE", "INFO", "BIDU", "NIO", "MELI"]],
-    "ARKK": ["Índice / Innovación", ["TSLA", "COIN", "ROKU", "PLTR", "PATH", "DKNG", "HOOD", "TWLO", "CRSP", "U"]],
-    
-    # CRIPTOMONEDAS
     "BTC-USD": ["Cripto / Bitcoin", ["BTC-USD", "MSTR", "MARA", "RIOT", "CLSK"]],
     "ETH-USD": ["Cripto / Ethereum", ["ETH-USD", "COIN", "ETHE", "LINK-USD", "UNI-USD"]],
-    "SOL-USD": ["Cripto / Solana", ["SOL-USD", "PYTH-USD", "JUP-USD", "RENDER-USD"]],
-    
-    # METALES Y MACRO
     "GLD": ["Metales / Oro", ["GLD", "NEM", "GOLD", "AU", "HMY"]],
     "SLV": ["Metales / Plata", ["SLV", "PAAS", "AG", "FSM", "WPM"]],
-    "CPER": ["Metales / Cobre", ["CPER", "FCX", "RIO", "BHP", "SCCO"]],
-    "DX-Y.NYB": ["Macro / Dollar Index", ["DX-Y.NYB", "UUP"]],
     "USO": ["Macro / Petróleo", ["USO", "XOM", "CVX", "OXY", "RIG"]],
-    "TLT": ["Macro / Bonos 20Y", ["TLT", "TBT", "TMV"]],
-    "VNQ": ["Macro / Real Estate", ["VNQ", "PLD", "AMT"]],
-    "CORN": ["Macro / Agro", ["CORN", "ADM", "BG", "CTVA", "DE"]],
-    "SOYB": ["Macro / Agro", ["SOYB", "ADM", "BG", "KORT", "CF"]]
+    "CORN": ["Macro / Agro", ["CORN", "ADM", "BG", "CTVA", "DE"]]
 }
 
 TICKERS_LIST = sorted(list(ASSET_DATABASE.keys()))
@@ -102,6 +103,11 @@ def run_sly_engine(df):
 # ─────────────────────────────────────────────
 def analyze_asset(symbol, category="Custom"):
     row = {"Categoría": category, "Activo": symbol}
+    
+    # NUEVO: Marca de Operabilidad CEDEAR
+    clean_sym = symbol.split("-")[0].split(".")[0] # Limpiar sufijos de Yahoo
+    row["CEDEAR (ByMA)"] = "✅ SÍ" if clean_sym in CEDEAR_LIST else "❌ NO"
+    
     current_price = None
     for tf_key, config in MACRO_CONFIG.items():
         try:
@@ -127,6 +133,7 @@ def style_macro(df):
     def apply_color(val):
         if "LONG" in str(val): return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
         if "SHORT" in str(val): return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
+        if "✅ SÍ" in str(val): return 'color: #00E676; font-weight: bold;'
         if "%" in str(val):
             try:
                 v = float(str(val).replace("%",""))
@@ -138,7 +145,7 @@ def style_macro(df):
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("🦅 GLOBAL MACRO TRIPLE SYNC V44")
+st.title("🦅 GLOBAL MACRO TRIPLE SYNC V45")
 
 with st.sidebar:
     st.header("⚙️ Radar Control")
@@ -155,30 +162,32 @@ with st.sidebar:
 # TABLA PRINCIPAL
 if st.session_state["sniper_results"]:
     df_f = pd.DataFrame(st.session_state["sniper_results"])
-    df_f = df_f.sort_values(["Categoría", "Activo"])
     main_cols = ["Categoría", "Activo", "Precio", "1D Signal", "1D Fecha", "1D PnL", "1S Signal", "1S Fecha", "1S PnL", "1M Signal", "1M Fecha", "1M PnL"]
     st.dataframe(style_macro(df_f[main_cols]), use_container_width=True, height=500)
 
     # ─────────────────────────────────────────────
-    # SECCIÓN: DEEP DIVE - DESGLOSE DE COMPONENTES
+    # SECCIÓN: DEEP DIVE - DESGLOSE DE COMPONENTES CON FILTRO AR
     # ─────────────────────────────────────────────
     st.divider()
-    st.header("🔍 Análisis de Componentes e Influencia")
+    st.header("🔍 Análisis de Componentes e Inversión CEDEAR")
     
-    selected_main = st.selectbox("Seleccione un Sector, Índice o Cripto:", TICKERS_LIST)
+    selected_main = st.selectbox("Seleccione para desglosar acciones operables:", TICKERS_LIST)
     
-    if st.button(f"🔎 DESGLOSAR COMPONENTES DE {selected_main}"):
+    if st.button(f"🔎 AUDITAR COMPONENTES DE {selected_main}"):
         constituents = ASSET_DATABASE[selected_main][1]
         detailed_results = []
         prog_detail = st.progress(0)
         
         for idx, comp in enumerate(constituents):
-            prog_detail.progress((idx+1)/len(constituents), text=f"Auditando: {comp}")
-            detailed_results.append(analyze_asset(comp, f"Constituyente de {selected_main}"))
+            prog_detail.progress((idx+1)/len(constituents), text=f"Calculando subyacente: {comp}")
+            detailed_results.append(analyze_asset(comp, f"Holding de {selected_main}"))
             time.sleep(0.05)
         
-        st.subheader(f"📊 Radiografía Técnica: {selected_main}")
+        st.subheader(f"📊 Desglose de Activos: {selected_main}")
         df_detailed = pd.DataFrame(detailed_results)
-        st.dataframe(style_macro(df_detailed[main_cols]), use_container_width=True)
+        
+        # Reordenar para poner la columna CEDEAR al inicio
+        cols_final = ["CEDEAR (ByMA)", "Activo", "Precio", "1D Signal", "1D Fecha", "1D PnL", "1S Signal", "1S Fecha", "1S PnL", "1M Signal", "1M Fecha", "1M PnL"]
+        st.dataframe(style_macro(df_detailed[cols_final]), use_container_width=True)
 else:
-    st.info("Pulse 'ACTUALIZAR MATRIZ GLOBAL' para cargar la visión institucional.")
+    st.info("Pulse 'ACTUALIZAR MATRIZ GLOBAL' para cargar el sistema.")
