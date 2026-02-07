@@ -9,13 +9,13 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN DEL SISTEMA
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | MACD EVOLUTION MATRIX")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | MACRO DEEP DIVE")
 
 st.markdown("""
 <style>
     .stDataFrame { font-size: 11px; font-family: 'Roboto Mono', monospace; }
     h1 { color: #2962FF; font-weight: 800; border-bottom: 2px solid #2962FF; }
-    h2 { color: #00E676; border-left: 5px solid #00E676; padding-left: 10px; }
+    h3 { color: #00E676; border-left: 5px solid #00E676; padding-left: 10px; margin-top: 20px; }
     .stProgress > div > div > div > div { background-color: #2962FF; }
 </style>
 """, unsafe_allow_html=True)
@@ -23,7 +23,6 @@ st.markdown("""
 if "sniper_results" not in st.session_state:
     st.session_state["sniper_results"] = []
 
-# CONFIGURACIÓN DE DESCARGA
 MACRO_CONFIG = {
     "1D": {"int": "1d", "per": "2y"},
     "1S": {"int": "1wk", "per": "5y"},
@@ -31,44 +30,40 @@ MACRO_CONFIG = {
 }
 
 # ─────────────────────────────────────────────
-# BÓVEDA DE ACTIVOS Y DETALLES DE COMPOSICIÓN
+# BÓVEDA DE ACTIVOS Y COMPONENTES (TOP 5 POR PESO)
 # ─────────────────────────────────────────────
 ASSET_DATABASE = {
-    "GLD": ["Metales / Refugio", "Oro físico (Gold Trust)"],
-    "SLV": ["Metales / Riesgo", "Plata física (Silver Trust)"],
-    "CPER": ["Metales / Industrial", "Futuros de Cobre (Termómetro Económico)"],
-    "PPLT": ["Metales / Industrial", "Platino físico"],
-    "XLK": ["Sector / Tech", "Tecnología: Apple, Microsoft, Nvidia"],
-    "XLF": ["Sector / Finanzas", "Bancos y Seguros: JPM, Berkshire, Visa"],
-    "XLE": ["Sector / Energía", "Petróleo y Gas: Exxon, Chevron"],
-    "XLV": ["Sector / Salud", "Farmacéuticas: Eli Lilly, UnitedHealth"],
-    "XLI": ["Sector / Industrial", "Maquinaria y Transporte: Caterpillar, GE"],
-    "XLP": ["Sector / Consumo Básico", "Necesidades: Walmart, P&G, Coca-Cola"],
-    "XLU": ["Sector / Utilities", "Energía Eléctrica y Agua"],
-    "XLY": ["Sector / Consumo Disc.", "Lujo y Amazon, Tesla, McDonald's"],
-    "XLB": ["Sector / Materiales", "Químicas y Minería"],
-    "XLC": ["Sector / Comunicaciones", "Google, Meta, Netflix"],
-    "XLRE": ["Sector / Real Estate", "Bienes Raíces y Alquileres"],
-    "BTC-USD": ["Crypto / BTC", "Bitcoin (Reserva de valor digital)"],
-    "ETH-USD": ["Crypto / Alt", "Ethereum (Contratos inteligentes)"],
-    "SOL-USD": ["Crypto / Alt", "Solana (Alta velocidad)"],
-    "SPY": ["Índice / S&P500", "500 empresas más grandes de EE.UU."],
-    "QQQ": ["Índice / Nasdaq", "100 empresas tecnológicas líderes"],
-    "EEM": ["Índice / Emergentes", "Mercados emergentes (Asia/Latam)"],
-    "EWZ": ["Índice / Brasil", "Empresas líderes de Brasil (Ibovespa)"],
-    "FXI": ["Índice / China", "Empresas chinas de gran capitalización"],
-    "ARKK": ["Índice / Innovación", "Tecnología disruptiva y genómica"],
-    "DX-Y.NYB": ["Macro / Dollar Index", "Valor del Dólar vs Canasta Global"],
-    "TLT": ["Macro / Tesoro 20Y", "Bonos del Tesoro de EE.UU. a largo plazo"],
-    "USO": ["Macro / Petróleo", "Petróleo Crudo WTI"],
-    "VNQ": ["Macro / Real Estate", "Fideicomisos de inversión inmobiliaria"],
-    "HYG": ["Macro / Junk Bonds", "Bonos corporativos de alto rendimiento"]
+    "XLK": ["Sector / Tech", ["AAPL", "MSFT", "NVDA", "AVGO", "ORCL"]],
+    "XLF": ["Sector / Finanzas", ["JPM", "V", "MA", "BAC", "GS"]],
+    "XLE": ["Sector / Energía", ["XOM", "CVX", "COP", "SLB", "MPC"]],
+    "XLV": ["Sector / Salud", ["LLY", "UNH", "JNJ", "ABBV", "MRK"]],
+    "XLI": ["Sector / Industrial", ["GE", "CAT", "UNP", "HON", "RTX"]],
+    "XLP": ["Sector / Consumo Básico", ["PG", "COST", "PEP", "KO", "PM"]],
+    "XLU": ["Sector / Utilities", ["NEE", "SO", "DUK", "CEG", "SRE"]],
+    "XLY": ["Sector / Consumo Disc.", ["AMZN", "TSLA", "HD", "MCD", "LOW"]],
+    "XLB": ["Sector / Materiales", ["LIN", "SHW", "APD", "FCX", "CTVA"]],
+    "XLC": ["Sector / Comunicaciones", ["GOOGL", "META", "NFLX", "DIS", "TMUS"]],
+    "XLRE": ["Sector / Real Estate", ["PLD", "AMT", "EQIX", "WELL", "SPG"]],
+    "SPY": ["Índice / S&P500", ["AAPL", "MSFT", "NVDA", "AMZN", "META"]],
+    "QQQ": ["Índice / Nasdaq", ["AAPL", "MSFT", "NVDA", "AMZN", "META"]],
+    "EEM": ["Índice / Emergentes", ["TSM", "TCEHY", "BABA", "PDD", "JD"]],
+    "EWZ": ["Índice / Brasil", ["VALE", "ITUB4.SA", "PETR4.SA", "BBDC4.SA", "ABEV3.SA"]],
+    "FXI": ["Índice / China", ["TCEHY", "BABA", "MEIT", "CCB", "JD"]],
+    "ARKK": ["Índice / Innovación", ["TSLA", "COIN", "ROKU", "PLTR", "PATH"]],
+    "GLD": ["Metales / Refugio", ["GLD"]],
+    "SLV": ["Metales / Riesgo", ["SLV"]],
+    "CPER": ["Metales / Industrial", ["CPER"]],
+    "DX-Y.NYB": ["Macro / Dollar Index", ["DX-Y.NYB"]],
+    "TLT": ["Macro / Tesoro 20Y", ["TLT"]],
+    "USO": ["Macro / Petróleo", ["USO"]],
+    "VNQ": ["Macro / Real Estate", ["VNQ"]],
+    "HYG": ["Macro / Junk Bonds", ["HYG"]]
 }
 
 TICKERS_LIST = list(ASSET_DATABASE.keys())
 
 # ─────────────────────────────────────────────
-# MOTOR TÉCNICO SLY RECURSIVO
+# MOTOR TÉCNICO SLY
 # ─────────────────────────────────────────────
 def run_sly_engine(df):
     if df.empty or len(df) < 35: return 0, 0, None
@@ -94,10 +89,10 @@ def run_sly_engine(df):
     return state, entry_px, entry_tm
 
 # ─────────────────────────────────────────────
-# ANALIZADOR
+# ANALIZADOR GENÉRICO
 # ─────────────────────────────────────────────
-def analyze_asset(symbol):
-    row = {"Categoría": ASSET_DATABASE[symbol][0], "Activo": symbol, "Composición": ASSET_DATABASE[symbol][1]}
+def analyze_asset(symbol, category="Custom"):
+    row = {"Categoría": category, "Activo": symbol}
     current_price = None
     for tf_key, config in MACRO_CONFIG.items():
         try:
@@ -125,7 +120,7 @@ def style_macro(df):
         if "SHORT" in str(val): return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
         if "%" in str(val):
             try:
-                v = float(val.replace("%",""))
+                v = float(str(val).replace("%",""))
                 return f'color: {"#2E7D32" if v >= 0 else "#C62828"}; font-weight: bold;'
             except: return ''
         return ''
@@ -138,46 +133,42 @@ st.title("🦅 GLOBAL MACRO EVOLUTION MATRIX")
 
 with st.sidebar:
     st.header("⚙️ Radar Control")
-    if st.button("🚀 ACTUALIZAR TODO EL MERCADO", type="primary", use_container_width=True):
+    if st.button("🚀 ACTUALIZAR MATRIZ GLOBAL", type="primary", use_container_width=True):
         results = []
         prog = st.progress(0)
         for idx, sym in enumerate(TICKERS_LIST):
-            prog.progress((idx+1)/len(TICKERS_LIST), text=f"Sincronizando: {sym}")
-            results.append(analyze_asset(sym))
-            time.sleep(0.1)
+            prog.progress((idx+1)/len(TICKERS_LIST), text=f"Analizando: {sym}")
+            results.append(analyze_asset(sym, ASSET_DATABASE[sym][0]))
+            time.sleep(0.05)
         st.session_state["sniper_results"] = results
-        st.rerun()
-    if st.button("Limpiar"):
-        st.session_state["sniper_results"] = []
         st.rerun()
 
 # TABLA PRINCIPAL
 if st.session_state["sniper_results"]:
     df_f = pd.DataFrame(st.session_state["sniper_results"])
-    df_f = df_f.sort_values(["Categoría", "Activo"])
-    
-    # Seleccionar columnas para la tabla principal (Ocultamos composición para no saturar)
     main_cols = ["Categoría", "Activo", "Precio", "1D Signal", "1D Fecha", "1D PnL", "1S Signal", "1S Fecha", "1S PnL", "1M Signal", "1M Fecha", "1M PnL"]
-    st.dataframe(style_macro(df_f[main_cols]), use_container_width=True, height=600)
+    st.dataframe(style_macro(df_f[main_cols]), use_container_width=True, height=500)
 
     # ─────────────────────────────────────────────
-    # NUEVA SECCIÓN: DEEP DIVE (ANÁLISIS INDIVIDUAL)
+    # SECCIÓN: DEEP DIVE - DESGLOSE DE COMPONENTES
     # ─────────────────────────────────────────────
     st.divider()
-    st.header("🔍 Módulo de Análisis Individual (Deep Dive)")
+    st.header("🔍 Análisis de Componentes (Constituents Deep Dive)")
     
-    selected_ticker = st.selectbox("Seleccione un activo para ver su composición y señales detalladas:", TICKERS_LIST)
+    selected_main = st.selectbox("Seleccione un Sector o Índice para desglosar sus acciones:", TICKERS_LIST)
     
-    if selected_ticker:
-        # Filtrar el dataframe de resultados para el activo seleccionado
-        df_single = df_f[df_f["Activo"] == selected_ticker]
+    if st.button(f"🔎 ANALIZAR COMPONENTES DE {selected_main}"):
+        constituents = ASSET_DATABASE[selected_main][1]
+        detailed_results = []
+        prog_detail = st.progress(0)
         
-        if not df_single.empty:
-            # Reordenar para resaltar la composición
-            detail_cols = ["Activo", "Composición", "Precio", "1D Signal", "1D Fecha", "1D PnL", "1S Signal", "1S Fecha", "1S PnL", "1M Signal", "1M Fecha", "1M PnL"]
-            st.dataframe(style_macro(df_single[detail_cols]), use_container_width=True)
-        else:
-            st.warning(f"Los datos de {selected_ticker} aún no han sido escaneados. Pulse 'Actualizar' arriba.")
-
+        for idx, comp in enumerate(constituents):
+            prog_detail.progress((idx+1)/len(constituents), text=f"Analizando componente: {comp}")
+            detailed_results.append(analyze_asset(comp, f"Holding de {selected_main}"))
+            time.sleep(0.05)
+        
+        st.subheader(f"📊 Desglose Técnico: {selected_main}")
+        df_detailed = pd.DataFrame(detailed_results)
+        st.dataframe(style_macro(df_detailed[main_cols]), use_container_width=True)
 else:
-    st.info("Pulse 'ACTUALIZAR TODO EL MERCADO' para procesar los activos.")
+    st.info("Pulse 'ACTUALIZAR MATRIZ GLOBAL' para iniciar el escaneo.")
