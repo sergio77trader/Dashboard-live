@@ -30,22 +30,23 @@ MACRO_CONFIG = {
 }
 
 # ─────────────────────────────────────────────
-# LISTADO MAESTRO DE CEDEARS OPERABLES (ByMA)
+# LISTADO MAESTRO DE CEDEARS OPERABLES (ACTUALIZADO V45.1)
 # ─────────────────────────────────────────────
 CEDEAR_LIST = [
     "AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "ADBE", "CRM", "AMD", "TXN", "QCOM", # Tech
     "JPM", "V", "MA", "BAC", "GS", "MS", "WFC", "BLK", "AXP", "HSBC", # Finanzas
-    "XOM", "CVX", "COP", "SLB", "OXY", "HAL", "BP", "PBR", "VIST", # Energía
+    "XOM", "CVX", "COP", "SLB", "OXY", "HAL", "BP", "PBR", "VIST", "RIG", # Energía
     "LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "ABT", "PFE", "AMGN", "GILD", # Salud
     "GE", "CAT", "UNP", "HON", "RTX", "LOW", "DE", "LMT", "UPS", "BA", "MMM", # Industrial
     "PG", "COST", "PEP", "KO", "PM", "WMT", "MO", "MDLZ", "CL", "TGT", "NKE", # Consumo
     "AMZN", "TSLA", "HD", "MCD", "BKNG", "SBUX", "TJX", "MELI", "EBAY", # Consumo Disc
     "GOOGL", "META", "NFLX", "DIS", "TMUS", "VZ", "T", # Comunicaciones
     "LIN", "SHW", "FCX", "NEM", "NUE", "DOW", "ALB", "GOLD", "RIO", "BHP", # Materiales
+    "PAAS", "HMY", "AU", "ADM", "BG", # Metales & Agro (Sincronizados)
     "BABA", "JD", "BIDU", "NIO", "PDD", "TSM", "TCEHY", # China / Emergentes
     "VALE", "ITUB", "BBD", "ERJ", "ABEV", "GGB", # Brasil
     "MSTR", "COIN", "MARA", "RIOT", "CLSK", # Cripto Relacionados
-    "SPY", "QQQ", "DIA", "EEM", "EWZ", "XLE", "XLF", "XLK", "XLV", "XLI", "XLP", "XLK", "ARKK", "GLD", "SLV" # ETFs
+    "SPY", "QQQ", "DIA", "EEM", "EWZ", "XLE", "XLF", "XLK", "XLV", "XLI", "XLP", "ARKK", "GLD", "SLV" # ETFs
 ]
 
 # ─────────────────────────────────────────────
@@ -104,8 +105,8 @@ def run_sly_engine(df):
 def analyze_asset(symbol, category="Custom"):
     row = {"Categoría": category, "Activo": symbol}
     
-    # NUEVO: Marca de Operabilidad CEDEAR
-    clean_sym = symbol.split("-")[0].split(".")[0] # Limpiar sufijos de Yahoo
+    # Validación ByMA
+    clean_sym = symbol.split("-")[0].split(".")[0].upper()
     row["CEDEAR (ByMA)"] = "✅ SÍ" if clean_sym in CEDEAR_LIST else "❌ NO"
     
     current_price = None
@@ -145,7 +146,7 @@ def style_macro(df):
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("🦅 GLOBAL MACRO TRIPLE SYNC V45")
+st.title("🦅 GLOBAL MACRO TRIPLE SYNC V45.1")
 
 with st.sidebar:
     st.header("⚙️ Radar Control")
@@ -153,7 +154,7 @@ with st.sidebar:
         results = []
         prog = st.progress(0)
         for idx, sym in enumerate(TICKERS_LIST):
-            prog.progress((idx+1)/len(TICKERS_LIST), text=f"Sincronizando: {sym}")
+            prog.progress((idx+1)/len(TICKERS_LIST), text=f"Analizando: {sym}")
             results.append(analyze_asset(sym, ASSET_DATABASE[sym][0]))
             time.sleep(0.05)
         st.session_state["sniper_results"] = results
@@ -162,32 +163,31 @@ with st.sidebar:
 # TABLA PRINCIPAL
 if st.session_state["sniper_results"]:
     df_f = pd.DataFrame(st.session_state["sniper_results"])
+    df_f = df_f.sort_values(["Categoría", "Activo"])
     main_cols = ["Categoría", "Activo", "Precio", "1D Signal", "1D Fecha", "1D PnL", "1S Signal", "1S Fecha", "1S PnL", "1M Signal", "1M Fecha", "1M PnL"]
     st.dataframe(style_macro(df_f[main_cols]), use_container_width=True, height=500)
 
     # ─────────────────────────────────────────────
-    # SECCIÓN: DEEP DIVE - DESGLOSE DE COMPONENTES CON FILTRO AR
+    # DEEP DIVE
     # ─────────────────────────────────────────────
     st.divider()
-    st.header("🔍 Análisis de Componentes e Inversión CEDEAR")
+    st.header("🔍 Auditoría de CEDEARs y Componentes")
     
-    selected_main = st.selectbox("Seleccione para desglosar acciones operables:", TICKERS_LIST)
+    selected_main = st.selectbox("Seleccione Sector/Índice para auditar ByMA:", TICKERS_LIST)
     
-    if st.button(f"🔎 AUDITAR COMPONENTES DE {selected_main}"):
+    if st.button(f"🔎 ANALIZAR COMPONENTES DE {selected_main}"):
         constituents = ASSET_DATABASE[selected_main][1]
         detailed_results = []
         prog_detail = st.progress(0)
         
         for idx, comp in enumerate(constituents):
-            prog_detail.progress((idx+1)/len(constituents), text=f"Calculando subyacente: {comp}")
+            prog_detail.progress((idx+1)/len(constituents), text=f"Sincronizando: {comp}")
             detailed_results.append(analyze_asset(comp, f"Holding de {selected_main}"))
             time.sleep(0.05)
         
-        st.subheader(f"📊 Desglose de Activos: {selected_main}")
+        st.subheader(f"📊 Desglose Técnico: {selected_main}")
         df_detailed = pd.DataFrame(detailed_results)
-        
-        # Reordenar para poner la columna CEDEAR al inicio
         cols_final = ["CEDEAR (ByMA)", "Activo", "Precio", "1D Signal", "1D Fecha", "1D PnL", "1S Signal", "1S Fecha", "1S PnL", "1M Signal", "1M Fecha", "1M PnL"]
         st.dataframe(style_macro(df_detailed[cols_final]), use_container_width=True)
 else:
-    st.info("Pulse 'ACTUALIZAR MATRIZ GLOBAL' para cargar el sistema.")
+    st.info("Pulse 'ACTUALIZAR MATRIZ GLOBAL' para iniciar.")
