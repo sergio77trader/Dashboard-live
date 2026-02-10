@@ -6,7 +6,7 @@ on:
     - cron: '30 16 * * *'
     # 18:30 ART (21:30 UTC)
     - cron: '30 21 * * *'
-  workflow_dispatch: # Botón para ejecutar manual
+  workflow_dispatch: 
 
 jobs:
   build:
@@ -18,11 +18,13 @@ jobs:
       - name: Setup Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.9'
+          python-version: '3.10' # Actualizado para mejor compatibilidad
 
       - name: Install Dependencies
         run: |
-          pip install yfinance pandas pandas_ta numpy requests
+          python -m pip install --upgrade pip
+          pip install yfinance pandas pandas-ta numpy requests 
+          # Nota: se cambió pandas_ta por pandas-ta
 
       - name: Run Macro Bot
         env:
