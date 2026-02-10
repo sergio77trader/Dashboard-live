@@ -7,7 +7,9 @@ import time
 import os
 from datetime import datetime
 
-# CREDENCIALES
+# ─────────────────────────────────────────────
+# 1. CREDENCIALES
+# ─────────────────────────────────────────────
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
@@ -24,6 +26,9 @@ MACRO_CONFIG = {
     "1M": {"int": "1mo", "per": "max", "label": "M"}
 }
 
+# ─────────────────────────────────────────────
+# 2. MOTOR TÉCNICO
+# ─────────────────────────────────────────────
 def calculate_heikin_ashi(df):
     ha_close = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
     ha_open = np.zeros(len(df))
@@ -45,25 +50,41 @@ def run_sly_engine(df):
         h, h_prev = hist.iloc[i], hist.iloc[i-1]
         hd, hd_prev = ha_dir[i], ha_dir[i-1]
         longC = (hd == 1 and hd_prev == -1 and h < 0 and h > h_prev)
-        shrtC = (hd == -1 and hd_prev == 1 and h > 0 and h < h_prev)
+        shortC = (hd == -1 and hd_prev == 1 and h > 0 and h < h_prev)
+        
         if longC: state, entry_px, entry_tm = 1, df['Close'].iloc[i], df.index[i]
-        elif shrtC: state, entry_px, entry_tm = -1, df['Close'].iloc[i], df.index[i]
+        elif shortC: state, entry_px, entry_tm = -1, df['Close'].iloc[i], df.index[i]
         elif state != 0:
             if (state == 1 and h < h_prev) or (state == -1 and h > h_prev): state = 0
             
     is_new = False
-    if entry_tm is not None and entry_tm >= df.index[-2]: is_new = True
+    if entry_tm is not None:
+        # Detecta si el cambio de estado ocurrió en las últimas 2 velas (para no perder el aviso)
+        if entry_tm >= df.index[-2]:
+            is_new = True
+            
     return state, entry_px, entry_tm, is_new
 
+# ─────────────────────────────────────────────
+# 3. COMUNICACIÓN
+# ─────────────────────────────────────────────
 def send_telegram_msg(message):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"})
+    # Fragmentación de seguridad
+    if len(message) > 4000:
+        parts = [message[i:i+4000] for i in range(0, len(message), 4000)]
+        for p in parts: requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": p, "parse_mode": "Markdown"})
+    else:
+        requests.post(url, data={"chat_id": TELEGRAM_CHAT_ID, "text": message, "parse_mode": "Markdown"})
 
+# ─────────────────────────────────────────────
+# 4. EJECUCIÓN PRINCIPAL
+# ─────────────────────────────────────────────
 def main():
     results_list = []
     for sym in TICKERS_TO_SCAN:
-        asset_data = {"symbol": sym, "new_alert": False, "lines": []}
+        asset_data = {"symbol": sym, "new_alert": False, "has_position": False, "lines": []}
         curr_price = 0
         for tf_key, config in MACRO_CONFIG.items():
             try:
@@ -71,24 +92,37 @@ def main():
                 if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
                 if df.empty: continue
                 if tf_key == "1D": curr_price = df['Close'].iloc[-1]
+                
                 st_val, px_in, tm_in, is_new = run_sly_engine(df)
+                
                 if is_new: asset_data["new_alert"] = True
-                if st_val != 0:
+                if st_val != 0: 
+                    asset_data["has_position"] = True
                     pnl = (df['Close'].iloc[-1] - px_in) / px_in * 100 if st_val == 1 else (px_in - df['Close'].iloc[-1]) / px_in * 100
                     icon = "🟢 LONG" if st_val == 1 else "🔴 SHORT"
-                    asset_data["lines"].append(f"{config['label']}: {'🆕 ' if is_new else ''}{icon} | {tm_in.strftime('%d/%m')} | {pnl:+.2f}%")
-                else: asset_data["lines"].append(f"{config['label']}: ⚪ FUERA | - | -")
+                    tag = "🆕 " if is_new else ""
+                    asset_data["lines"].append(f"{config['label']}: {tag}{icon} | {tm_in.strftime('%d/%m')} | {pnl:+.2f}%")
+                else:
+                    asset_data["lines"].append(f"{config['label']}: ⚪ FUERA | - | -")
             except: continue
+        
         asset_data["price"] = curr_price
+        # Determinar prioridad para el ordenamiento
+        if asset_data["new_alert"]: asset_data["priority"] = 0
+        elif asset_data["has_position"]: asset_data["priority"] = 1
+        else: asset_data["priority"] = 2
+        
         results_list.append(asset_data)
         time.sleep(0.2)
 
-    results_list.sort(key=lambda x: (not x["new_alert"], x["symbol"]))
+    # ORDENAMIENTO JERÁRQUICO: 1° Nuevas, 2° Activas, 3° Fuera, 4° Alfabético
+    results_list.sort(key=lambda x: (x["priority"], x["symbol"]))
     
     header = f"🦅 **REPORTE SYSTEMATRADER MACRO**\n📅 {datetime.now().strftime('%d/%m %H:%M')}\n⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯\n\n"
     body = ""
     for item in results_list:
-        body += f"{'🆕 ' if item['new_alert'] else '🔹 '}**{item['symbol']}** | ${item['price']:,.2f}\n" + "\n".join(item["lines"]) + "\n\n"
+        prefix = "🆕 " if item["new_alert"] else "🔹 "
+        body += f"{prefix}**{item['symbol']}** | ${item['price']:,.2f}\n" + "\n".join(item["lines"]) + "\n\n"
     
     send_telegram_msg(header + body)
 
