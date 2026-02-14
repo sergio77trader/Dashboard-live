@@ -1,183 +1,183 @@
 import streamlit as st
-import requests
+import ccxt
 import pandas as pd
+import pandas_ta as ta
 import numpy as np
-from ta.momentum import RSIIndicator
-from ta.trend import MACD
+import time
+from datetime import datetime
 
-# -------------------------
-# CONFIG
-# -------------------------
-TIMEFRAME = "1hour"
-LIMIT = 120
-BATCH_SIZE = 50
+# ─────────────────────────────────────────────
+# CONFIGURACIÓN DEL SISTEMA
+# ─────────────────────────────────────────────
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | RSI MACRO MATRIX")
 
-# -------------------------
-# KUCOIN API
-# -------------------------
-BASE_URL = "https://api.kucoin.com"
+st.markdown("""
+<style>
+    [data-testid="stMetricValue"] { font-size: 14px; }
+    .stDataFrame { font-size: 12px; border: 1px solid #333; }
+    h1 { color: #00E676; font-weight: 800; border-bottom: 2px solid #00E676; }
+</style>
+""", unsafe_allow_html=True)
 
-def get_symbols():
-    url = f"{BASE_URL}/api/v1/symbols"
-    r = requests.get(url).json()
-    return [s["symbol"] for s in r["data"] if s["quoteCurrency"] == "USDT"]
+if "rsi_matrix_results" not in st.session_state:
+    st.session_state["rsi_matrix_results"] = []
 
-def get_klines(symbol):
-    url = f"{BASE_URL}/api/v1/market/candles"
-    params = {
-        "symbol": symbol,
-        "type": TIMEFRAME
-    }
-    r = requests.get(url, params=params).json()
-    data = r.get("data", [])[:LIMIT]
-    if not data:
-        return None
+# Periodos definidos por el usuario
+RSI_PERIODS = [2, 4, 8, 12, 24, 84, 168]
 
-    df = pd.DataFrame(
-        data,
-        columns=[
-            "time","open","close","high","low","volume","turnover"
-        ]
-    )
-    df = df.astype(float)
-    df = df.iloc[::-1].reset_index(drop=True)
+# ─────────────────────────────────────────────
+# MOTOR DE DATOS
+# ─────────────────────────────────────────────
+@st.cache_resource
+def get_exchange():
+    ex = ccxt.kucoinfutures({"enableRateLimit": True, "timeout": 30000})
+    ex.load_markets()
+    return ex
+
+@st.cache_data(ttl=300)
+def get_active_pairs_by_vol(min_vol):
+    try:
+        ex = get_exchange()
+        tickers = ex.fetch_tickers()
+        valid = []
+        for s, t in tickers.items():
+            if "/USDT:USDT" in s and t.get("quoteVolume", 0) >= min_vol:
+                valid.append({"symbol": s, "vol": t["quoteVolume"]})
+        return pd.DataFrame(valid).sort_values("vol", ascending=False)["symbol"].tolist()
+    except: return []
+
+# ─────────────────────────────────────────────
+# CÁLCULOS TÉCNICOS
+# ─────────────────────────────────────────────
+def calculate_heikin_ashi(df):
+    df = df.copy()
+    df["HA_Close"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
+    ha_open = [df["open"].iloc[0]]
+    for i in range(1, len(df)):
+        ha_open.append((ha_open[-1] + df["HA_Close"].iloc[i-1]) / 2)
+    df["HA_Open"] = ha_open
+    df["HA_Color"] = np.where(df["HA_Close"] > df["HA_Open"], 1, -1)
     return df
 
-# -------------------------
-# HEIKIN ASHI
-# -------------------------
-def heikin_ashi(df):
-    ha = df.copy()
-    ha["ha_close"] = (df["open"] + df["high"] + df["low"] + df["close"]) / 4
+def analyze_ticker_rsi_logic(symbol, exchange, current_price):
+    try:
+        # Necesitamos suficiente data para el RSI 168
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe='1h', limit=300)
+        if not ohlcv or len(ohlcv) < 170: return None
+        
+        ohlcv[-1][4] = current_price
+        df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "vol"])
+        
+        # 1. MACD (12, 26, 9)
+        macd = ta.macd(df["close"])
+        df["Hist"] = macd["MACDh_12_26_9"]
+        
+        # 2. Heikin Ashi
+        df = calculate_heikin_ashi(df)
+        
+        # 3. RSIs con suavizado dinámico
+        rsi_signals = {}
+        for p in RSI_PERIODS:
+            rsi_raw = ta.rsi(df["close"], length=p)
+            # Aplicamos suavizado (Smoothing) igual al periodo
+            rsi_smooth = ta.sma(rsi_raw, length=p)
+            
+            curr_rsi = rsi_smooth.iloc[-1]
+            prev_rsi = rsi_smooth.iloc[-2]
+            
+            if curr_rsi > prev_rsi:
+                rsi_signals[f"RSI {p}"] = "📈 SUBE"
+            else:
+                rsi_signals[f"RSI {p}"] = "📉 BAJA"
 
-    ha_open = [(df["open"].iloc[0] + df["close"].iloc[0]) / 2]
-    for i in range(1, len(df)):
-        ha_open.append((ha_open[i-1] + ha["ha_close"].iloc[i-1]) / 2)
+        # Lógica MACD Hist + HA
+        hist_now = df["Hist"].iloc[-1]
+        hist_prev = df["Hist"].iloc[-2]
+        ha_now = df["HA_Color"].iloc[-1]
+        ha_prev = df["HA_Color"].iloc[-2]
+        
+        macd_momentum = "Neutral"
+        if hist_now > hist_prev:
+            macd_momentum = "Acelerando 🚀" if hist_now > 0 else "Recuperando ⤴️"
+        else:
+            macd_momentum = "Cediendo 📉" if hist_now > 0 else "Cayendo 🩸"
+            
+        ha_status = "VERDE 🟢" if ha_now == 1 else "ROJO 🔴"
+        ha_change = "CAMBIO" if ha_now != ha_prev else "Mantiene"
 
-    ha["ha_open"] = ha_open
-    return ha
+        return {
+            "RSI_Data": rsi_signals,
+            "MACD_Hist": macd_momentum,
+            "HA_Color": ha_status,
+            "HA_Trend": ha_change
+        }
+    except Exception as e:
+        return None
 
-# -------------------------
-# INDICATORS + SEMAFORO
-# -------------------------
-def analyze(df):
-    # RSI
-    rsi2 = RSIIndicator(df["close"], window=2).rsi().rolling(2).mean()
-    rsi4 = RSIIndicator(df["close"], window=4).rsi().rolling(4).mean()
+# ─────────────────────────────────────────────
+# INTERFAZ DE CONTROL
+# ─────────────────────────────────────────────
+with st.sidebar:
+    st.header("⚙️ Configuración RSI Sync")
+    min_volume = st.number_input("Volumen Mínimo (USDT):", value=1000000, step=100000)
+    all_sym = get_active_pairs_by_vol(min_volume)
+    
+    if all_sym:
+        st.success(f"Activos disponibles: {len(all_sym)}")
+        b_size = st.selectbox("Lote:", [10, 20, 50], index=1)
+        batches = [all_sym[i:i+b_size] for i in range(0, len(all_sym), b_size)]
+        sel_lote = st.selectbox("Seleccionar Lote:", range(len(batches)))
+        
+        if st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True):
+            ex = get_exchange()
+            results = []
+            prog = st.progress(0)
+            targets = batches[sel_lote]
+            
+            for idx, sym in enumerate(targets):
+                prog.progress((idx+1)/len(targets), text=f"Analizando {sym}")
+                try:
+                    price = ex.fetch_ticker(sym)["last"]
+                    analysis = analyze_ticker_rsi_logic(sym, ex, price)
+                    if analysis:
+                        row = {
+                            "Activo": sym.split(":")[0].replace("/USDT", ""),
+                            "Precio": f"{price:,.4f}",
+                            "HA 1H": analysis["HA_Color"],
+                            "HA Estado": analysis["HA_Trend"],
+                            "MACD Hist": analysis["MACD_Hist"]
+                        }
+                        # Integrar los RSIs en la fila
+                        row.update(analysis["RSI_Data"])
+                        results.append(row)
+                except: continue
+                time.sleep(0.1)
+            
+            st.session_state["rsi_matrix_results"] = results
+            prog.empty()
 
-    # MACD
-    macd = MACD(df["close"])
-    hist = macd.macd_diff()
+    if st.button("Limpiar Memoria"):
+        st.session_state["rsi_matrix_results"] = []
+        st.rerun()
 
-    # Volume
-    vol_sma = df["volume"].rolling(20).mean()
+# ─────────────────────────────────────────────
+# RENDERIZADO DE TABLA
+# ─────────────────────────────────────────────
+st.title("🎯 SNIPER MATRIX: CONVERGENCIA RSI & MACD")
 
-    # Heikin Ashi
-    ha = heikin_ashi(df)
-    ha_body = abs(ha["ha_close"] - ha["ha_open"])
-    ha_body_sma = ha_body.rolling(20).mean()
+if st.session_state["rsi_matrix_results"]:
+    df = pd.DataFrame(st.session_state["rsi_matrix_results"])
+    
+    def style_matrix(val):
+        color = ''
+        if "SUBE" in str(val) or "Acelerando" in str(val) or "VERDE" in str(val) or "Recuperando" in str(val):
+            color = 'background-color: #d4edda; color: #155724;'
+        elif "BAJA" in str(val) or "Cayendo" in str(val) or "ROJO" in str(val) or "Cediendo" in str(val):
+            color = 'background-color: #f8d7da; color: #721c24;'
+        return color
 
-    i = -1  # última vela
-
-    score = 0
-
-    # RSI aceleración
-    if rsi2.iloc[i] > rsi2.iloc[i-1]:
-        score += 1
-    else:
-        score -= 1
-
-    if rsi4.iloc[i] > rsi4.iloc[i-1]:
-        score += 1
-    else:
-        score -= 1
-
-    # MACD Histogram
-    if hist.iloc[i] > hist.iloc[i-1]:
-        score += 2
-    else:
-        score -= 2
-
-    # Heikin Ashi
-    if ha["ha_close"].iloc[i] > ha["ha_open"].iloc[i]:
-        score += 1
-    else:
-        score -= 1
-
-    # Volumen
-    if df["volume"].iloc[i] > vol_sma.iloc[i]:
-        score += 1
-    else:
-        score -= 1
-
-    # Semáforo
-    if score >= 4:
-        semaforo = "🟢"
-    elif score >= 1:
-        semaforo = "🟡"
-    else:
-        semaforo = "🔴"
-
-    # Money Inflow Score
-    vol_ratio = df["volume"].iloc[i] / vol_sma.iloc[i]
-    body_ratio = ha_body.iloc[i] / ha_body_sma.iloc[i]
-    macd_strength = abs(hist.iloc[i] - hist.iloc[i-1])
-
-    mis = vol_ratio * body_ratio * (1 + macd_strength)
-
-    return {
-        "RSI2": round(rsi2.iloc[i], 2),
-        "RSI4": round(rsi4.iloc[i], 2),
-        "MACD_hist": round(hist.iloc[i], 4),
-        "Score": score,
-        "Semaforo": semaforo,
-        "Vol_Ratio": round(vol_ratio, 2),
-        "MIS": round(mis, 2)
-    }
-
-# -------------------------
-# STREAMLIT APP
-# -------------------------
-st.set_page_config(layout="wide")
-st.title("🚦 KuCoin Money Inflow Scanner (1H)")
-
-symbols = get_symbols()
-
-run = st.button("🚀 Analizar mercado")
-
-if run:
-    results = []
-    total_batches = len(symbols) // BATCH_SIZE + 1
-
-    progress = st.progress(0)
-    status = st.empty()
-
-    for i in range(0, len(symbols), BATCH_SIZE):
-        batch = symbols[i:i+BATCH_SIZE]
-        batch_num = i // BATCH_SIZE + 1
-        status.text(f"Analizando lote {batch_num} / {total_batches}")
-
-        for sym in batch:
-            try:
-                df = get_klines(sym)
-                if df is None or len(df) < 50:
-                    continue
-
-                data = analyze(df)
-
-                if data["Semaforo"] != "🔴":
-                    results.append({
-                        "Symbol": sym,
-                        **data
-                    })
-
-            except:
-                continue
-
-        progress.progress(batch_num / total_batches)
-
-    df_results = pd.DataFrame(results)
-    df_results = df_results.sort_values("MIS", ascending=False)
-
-    st.subheader("🔥 Ranking – Dónde entra MÁS dinero ahora")
-    st.dataframe(df_results, use_container_width=True)
+    # Ordenar columnas para visualización lógica
+    cols = ["Activo", "Precio", "HA 1H", "HA Estado", "MACD Hist"] + [f"RSI {p}" for p in RSI_PERIODS]
+    st.dataframe(df[cols].style.applymap(style_matrix), use_container_width=True, height=800)
+else:
+    st.info("👈 Configure el volumen y el lote para iniciar el análisis multitemporal de RSI.")
