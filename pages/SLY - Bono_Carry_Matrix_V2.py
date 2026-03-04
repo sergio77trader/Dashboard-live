@@ -10,7 +10,7 @@ import numpy as np
 # CONFIGURACIÓN INSTITUCIONAL
 # ─────────────────────────────────────────────
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | OMNI-SYNC V52")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | OMNI-SYNC V52.1")
 
 st.markdown("""
 <style>
@@ -23,7 +23,6 @@ st.markdown("""
 # ─────────────────────────────────────────────
 # BÓVEDA DE PAYOFFS (TASAS FIJAS)
 # ─────────────────────────────────────────────
-# Solo estos permiten cálculo de Carry Trade (TEM/Breakeven)
 FIXED_CONFIG = {
     "S31M6": {"vto": date(2026, 3, 31), "p": 103.85}, "S16M6": {"vto": date(2026, 3, 16), "p": 102.10},
     "S17A6": {"vto": date(2026, 4, 17), "p": 107.50}, "S30A6": {"vto": date(2026, 4, 30), "p": 108.90},
@@ -37,7 +36,7 @@ FIXED_CONFIG = {
 }
 
 # ─────────────────────────────────────────────
-# LÓGICA DE CLASIFICACIÓN (TU LISTA)
+# LÓGICA DE CLASIFICACIÓN
 # ─────────────────────────────────────────────
 def classify_bond(ticker):
     t = str(ticker).upper().strip()
@@ -50,7 +49,7 @@ def classify_bond(ticker):
     return 'Otros / Sin Clasificar'
 
 # ─────────────────────────────────────────────
-# MOTOR DE DATOS
+# MOTOR DE DATOS (REFORZADO)
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=60)
 def fetch_all_data():
@@ -66,25 +65,36 @@ def fetch_all_data():
     for key, url in endpoints.items():
         try:
             r = requests.get(url, verify=False, timeout=10, headers=h).json()
-            if key == "MEP": mep = pd.DataFrame(r)['close'].median()
-            else: raw.extend(r)
+            if key == "MEP":
+                if isinstance(r, list) and len(r) > 0:
+                    mep = pd.DataFrame(r)['close'].median()
+            else:
+                if isinstance(r, list): raw.extend(r)
         except: continue
     return mep, pd.DataFrame(raw)
 
 # ─────────────────────────────────────────────
-# PROCESAMIENTO
+# PROCESAMIENTO CON BLINDAJE ANTI-CRASH
 # ─────────────────────────────────────────────
 def build_matrices(mep, df):
     if df.empty: return pd.DataFrame(), pd.DataFrame()
-    df['symbol'] = df['symbol'].str.replace(" ", "").str.upper()
+    
+    # PARCHE DE SEGURIDAD: Verificar si existe la columna symbol
+    if 'symbol' not in df.columns:
+        st.error("Error técnico: La API no devolvió la columna 'symbol'.")
+        return pd.DataFrame(), df
+
+    df['symbol'] = df['symbol'].astype(str).str.replace(" ", "").str.upper()
     
     carry_list = []
     today = date.today()
 
     for _, row in df.iterrows():
         sym = row['symbol']
-        price = float(row['c'])
-        # Solo calculamos Carry para los que tenemos el Payoff cargado
+        # Validar precio numérico
+        try: price = float(row['c'])
+        except: continue
+        
         for tid, info in FIXED_CONFIG.items():
             if tid in sym and not (sym.endswith('D') or sym.endswith('C')):
                 days = (info['vto'] - today).days
@@ -98,14 +108,18 @@ def build_matrices(mep, df):
                     })
                 break
     
-    # Clasificar todo para el Inspector
     df['Categoría'] = df['symbol'].apply(classify_bond)
-    return pd.DataFrame(carry_list), df[['Categoría', 'symbol', 'c', 'v', 'p']]
+    
+    # Asegurar que existan las columnas para el Inspector
+    cols_inspect = ['Categoría', 'symbol', 'c', 'v']
+    actual_cols = [c for c in cols_inspect if c in df.columns]
+    
+    return pd.DataFrame(carry_list), df[actual_cols]
 
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("💸 SYSTEMATRADER | OMNI-BOND V52")
+st.title("💸 SYSTEMATRADER | OMNI-SYNC V52.1")
 
 mep_val, raw_df = fetch_all_data()
 
@@ -141,8 +155,10 @@ if mep_val:
 
     with tabs[3]:
         st.subheader("Auditoría de Activos ByMA")
-        f_cat = st.multiselect("Filtrar Categoría:", df_inspect['Categoría'].unique(), default=df_inspect['Categoría'].unique())
-        st.dataframe(df_inspect[df_inspect['Categoría'].isin(f_cat)].sort_values(['Categoría','symbol']), use_container_width=True, height=600)
+        if not df_inspect.empty:
+            f_cat = st.multiselect("Filtrar Categoría:", df_inspect['Categoría'].unique(), default=df_inspect['Categoría'].unique())
+            st.dataframe(df_inspect[df_inspect['Categoría'].isin(f_cat)].sort_values(['Categoría','symbol']), use_container_width=True, height=600)
+        else: st.error("No hay datos para mostrar en el inspector.")
 
 if st.button("🔄 ACTUALIZAR", key="refresh"):
     st.cache_data.clear()
