@@ -11,35 +11,35 @@ import numpy as np
 # ─────────────────────────────────────────────
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | ARBITRAGE MASTER")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | CARRY MATRIX 2026")
 
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 1.2rem; font-family: 'Roboto Mono', monospace; }
     .stDataFrame { font-size: 0.85rem; font-family: 'Roboto Mono', monospace; }
     h1 { color: #00E676; font-weight: 800; border-bottom: 2px solid #00E676; }
-    h3 { color: #2962FF; }
 </style>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# BÓVEDA DE DATOS: CURVA 2026 - 2027
+# BÓVEDA DE DATOS: CURVA COMPLETA 2026 - 2027
 # ─────────────────────────────────────────────
 TICKERS_DATE = {
-    # LECAPS (S)
+    # LECAPS (S) - Las nuevas letras de 2026
     "S31M6": date(2026, 3, 31), "S17A6": date(2026, 4, 17), "S29Y6": date(2026, 5, 29),
     "S30J6": date(2026, 6, 30), "S31L6": date(2026, 7, 31), "S31G6": date(2026, 8, 31),
     "S30S6": date(2026, 9, 30), "S30O6": date(2026, 10, 30), "S30N6": date(2026, 11, 30),
     "S30D6": date(2026, 12, 30),
-    # BONCAPS (T / TT)
+    # BONCAPS (T / TT) - Bonos de Tasa Fija
     "TTM26": date(2026, 3, 16), "TTJ26": date(2026, 6, 30), "T30J6": date(2026, 6, 30),
     "TTS26": date(2026, 9, 15), "TTD26": date(2026, 12, 15), "T15E7": date(2027, 1, 15),
     "T15M7": date(2027, 3, 15), "T15J7": date(2027, 6, 15)
 }
 
+# Payoffs estimados (Capital + Intereses capitalizados al vencimiento)
 PAYOFF = {
-    "S31M6": 103.50, "S17A6": 107.20, "S29Y6": 111.40, "S30J6": 115.10,
-    "S31L6": 119.30, "S31G6": 123.80, "S30S6": 128.20, "S30O6": 132.50,
+    "S31M6": 103.50, "S17A6": 107.15, "S29Y6": 111.40, "S30J6": 115.10,
+    "S31L6": 119.30, "S31G6": 123.85, "S30S6": 128.20, "S30O6": 132.55,
     "S30N6": 137.10, "S30D6": 142.00, "TTM26": 135.24, "TTJ26": 144.63,
     "T30J6": 144.90, "TTS26": 152.10, "TTD26": 161.14, "T15E7": 165.80,
     "T15M7": 172.30, "T15J7": 181.50
@@ -52,6 +52,7 @@ PAYOFF = {
 def fetch_market_data():
     try:
         h = {'User-Agent': 'Mozilla/5.0'}
+        # Peticiones en paralelo al servidor de datos
         r_mep = requests.get('https://data912.com/live/mep', verify=False, timeout=10, headers=h).json()
         r_notes = requests.get('https://data912.com/live/arg_notes', verify=False, timeout=10, headers=h).json()
         r_bonds = requests.get('https://data912.com/live/arg_bonds', verify=False, timeout=10, headers=h).json()
@@ -60,12 +61,13 @@ def fetch_market_data():
         df_full = pd.DataFrame(r_notes + r_bonds)
         return mep, df_full
     except Exception as e:
-        st.error(f"Falla de conexión: {e}")
+        st.error(f"Falla de conexión con el mercado: {e}")
         return None, None
 
 def calculate_arbitrage_metrics(mep, df):
     if df.empty or 'symbol' not in df.columns: return pd.DataFrame()
     
+    # Filtrado por activos vivos en nuestra base de datos
     df = df[df['symbol'].isin(TICKERS_DATE.keys())].copy()
     if df.empty: return pd.DataFrame()
     
@@ -76,14 +78,14 @@ def calculate_arbitrage_metrics(mep, df):
     
     today = date.today()
     df['days_to_exp'] = (pd.to_datetime(df['expiration']).dt.date - today).apply(lambda x: x.days)
-    df = df[df['days_to_exp'] > 0] # Filtro de activos vivos
+    df = df[df['days_to_exp'] > 0] # Filtro de supervivencia
     
-    # Cálculos de Tasas (Compuestas)
+    # Tasas Efectivas (TEM y TEA)
     df['tem'] = ((df['payoff'] / df['bond_price']) ** (30 / df['days_to_exp']) - 1)
     df['tna'] = ((df['payoff'] / df['bond_price']) - 1) / df['days_to_exp'] * 365
     df['tea'] = ((df['payoff'] / df['bond_price']) ** (365 / df['days_to_exp']) - 1)
     
-    # Breakeven y Cobertura
+    # Breakeven MEP
     df['MEP_BREAKEVEN'] = mep * (df['payoff'] / df['bond_price'])
     df['buffer_deval'] = (df['MEP_BREAKEVEN'] / mep) - 1
     
@@ -93,22 +95,21 @@ def calculate_arbitrage_metrics(mep, df):
 # INTERFAZ
 # ─────────────────────────────────────────────
 st.title("💸 SYSTEMATRADER | CARRY MATRIX 2026")
-
-if st.button("🔄 REFRESCAR MERCADO", type="primary", key="btn_main"):
-    st.cache_data.clear()
-    st.rerun()
+st.markdown("### Arbitraje de Tasas: Pesos (Lecaps/Boncaps) vs Dólar MEP")
 
 mep_now, df_raw = fetch_market_data()
 
 if mep_now:
-    st.metric("Dólar MEP Referencia", f"${mep_now:,.2f}")
+    col1, col2 = st.columns([1, 4])
+    col1.metric("Dólar MEP Hoy", f"${mep_now:,.2f}")
+    
     df_calc = calculate_arbitrage_metrics(mep_now, df_raw)
     
     if not df_calc.empty:
-        # --- PESTAÑAS ---
-        tab1, tab2, tab3 = st.tabs(["📊 Matriz de Tasas", "🛡️ Cobertura (Breakeven)", "📈 Escenarios USD"])
+        # TABS ORIGINALES
+        t1, t2, t3 = st.tabs(["📊 Matriz de Tasas", "🛡️ Cobertura (Breakeven)", "📈 Escenarios USD"])
         
-        with tab1:
+        with t1:
             st.subheader("Rendimiento Fijo en Pesos")
             st.dataframe(
                 df_calc[['bond_price', 'days_to_exp', 'tna', 'tem', 'tea']],
@@ -122,7 +123,7 @@ if mep_now:
                 use_container_width=True, height=550
             )
             
-        with tab2:
+        with t2:
             st.subheader("Punto de Equilibrio Cambiario")
             fig = go.Figure()
             fig.add_hline(y=mep_now, line_dash="dash", line_color="red", annotation_text="MEP Hoy")
@@ -141,22 +142,22 @@ if mep_now:
                 use_container_width=True
             )
             
-        with tab3:
-            st.subheader("Retorno Directo en USD")
+        with t3:
+            st.subheader("Retorno Neto en Dólares (Simulación)")
             scenarios = [0, 5, 10, 15, 20]
             sim = pd.DataFrame(index=df_calc.index)
             for pct in scenarios:
                 mep_fut = mep_now * (1 + pct/100)
+                # (Valor Final USD / Valor Inicial USD) - 1
                 usd_ret = (df_calc['payoff'] / mep_fut) / (df_calc['bond_price'] / mep_now) - 1
                 sim[f"MEP +{pct}% (${mep_fut:.0f})"] = usd_ret
             
             st.dataframe(sim.style.format("{:.2%}"), use_container_width=True, height=550)
     else:
-        st.warning("Los bonos configurados ya vencieron o no están cotizando hoy.")
+        st.warning("Los bonos en código ya vencieron. Se requiere actualización de la curva ByMA.")
 else:
     st.error("Error de conexión con el feed de datos.")
 
-# BOTÓN FINAL CON KEY ÚNICA
-if st.button("🔄 ACTUALIZAR MATRIZ", key="btn_footer"):
+if st.button("🔄 ACTUALIZAR MATRIZ", key="btn_ref"):
     st.cache_data.clear()
     st.rerun()
