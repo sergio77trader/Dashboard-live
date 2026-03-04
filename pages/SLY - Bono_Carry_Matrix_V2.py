@@ -10,12 +10,12 @@ import numpy as np
 # CONFIGURACIÓN INSTITUCIONAL
 # ─────────────────────────────────────────────
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | ARBITRAGE MASTER V49")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | ARBITRAGE V50")
 
 st.markdown("""
 <style>
     [data-testid="stMetricValue"] { font-size: 1.2rem; font-family: 'Roboto Mono', monospace; }
-    .stDataFrame { font-size: 0.85rem; font-family: 'Roboto Mono', monospace; }
+    .stDataFrame { font-size: 0.8rem; font-family: 'Roboto Mono', monospace; }
     h1 { color: #00E676; font-weight: 800; border-bottom: 2px solid #00E676; }
     .stTabs [data-baseweb="tab"] { height: 50px; background-color: #111; color: white; border-radius: 4px; }
     .stTabs [aria-selected="true"] { background-color: #00E676; color: black; font-weight: bold; }
@@ -23,10 +23,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# BÓVEDA DE DATOS: CURVA COMPLETA 2026 - 2027
+# BÓVEDA DE DATOS: CURVA 2026 - 2027
 # ─────────────────────────────────────────────
 TICKERS_CONFIG = {
-    # LECAPS (S)
+    # LECAPS (S) - Nombres probables en feed
     "S31M6": {"vto": date(2026, 3, 31), "payoff": 103.85},
     "S17A6": {"vto": date(2026, 4, 17), "payoff": 107.50},
     "S29Y6": {"vto": date(2026, 5, 29), "payoff": 111.65},
@@ -47,40 +47,47 @@ TICKERS_CONFIG = {
 }
 
 # ─────────────────────────────────────────────
-# MOTOR DE DATOS (TRIANGULACIÓN DE ENDPOINTS)
+# MOTOR DE DATOS UNIVERSAL
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=60)
-def fetch_all_arg_data():
-    try:
-        h = {'User-Agent': 'Mozilla/5.0'}
-        # 1. MEP
-        r_mep = requests.get('https://data912.com/live/mep', verify=False, timeout=10, headers=h).json()
-        mep = pd.DataFrame(r_mep)['close'].median()
-        
-        # 2. EL TRIPLE ENDPOINT (Bonds + Notes + Letras)
-        # Aquí estaba el error: faltaba 'arg_letras' para los tickers "S"
-        e1 = requests.get('https://data912.com/live/arg_bonds', verify=False, timeout=10, headers=h).json()
-        e2 = requests.get('https://data912.com/live/arg_notes', verify=False, timeout=10, headers=h).json()
-        e3 = requests.get('https://data912.com/live/arg_letras', verify=False, timeout=10, headers=h).json()
-        
-        df_full = pd.DataFrame(e1 + e2 + e3)
-        return mep, df_full
-    except Exception as e:
-        st.error(f"Error de red: {e}")
-        return None, None
+def fetch_raw_market_data():
+    h = {'User-Agent': 'Mozilla/5.0'}
+    endpoints = {
+        "MEP": "https://data912.com/live/mep",
+        "LETRAS": "https://data912.com/live/arg_letras",
+        "NOTAS": "https://data912.com/live/arg_notes",
+        "BONOS": "https://data912.com/live/arg_bonds"
+    }
+    
+    collected_data = []
+    mep_price = 1200.0 # Fallback
+    
+    for name, url in endpoints.items():
+        try:
+            r = requests.get(url, verify=False, timeout=10, headers=h)
+            if r.status_code == 200:
+                data = r.json()
+                if name == "MEP":
+                    mep_price = pd.DataFrame(data)['close'].median()
+                else:
+                    collected_data.extend(data)
+        except:
+            continue
+            
+    return mep_price, pd.DataFrame(collected_data)
 
-def process_matrix(mep, df):
+def generate_matrix(mep, df):
     if df.empty: return pd.DataFrame()
     
-    # Limpieza de símbolos para matcheo agresivo
-    df['symbol'] = df['symbol'].str.replace(" ", "").str.upper()
+    # NORMALIZACIÓN TOTAL
+    df['symbol'] = df['symbol'].astype(str).str.replace(" ", "").str.upper()
     
     results = []
     today = date.today()
 
-    for ticker_id, info in TICKERS_CONFIG.items():
-        # Buscamos el ticker dentro del nombre (S31M6 debe estar contenido en el nombre del mercado)
-        match = df[df['symbol'].str.contains(ticker_id, na=False)]
+    for ticker, info in TICKERS_CONFIG.items():
+        # Buscamos por coincidencia parcial para evitar errores de nombres largos
+        match = df[df['symbol'].str.contains(ticker, na=False)]
         
         if not match.empty:
             price = float(match.iloc[0]['c'])
@@ -88,13 +95,13 @@ def process_matrix(mep, df):
             
             if days > 0 and price > 0:
                 results.append({
-                    "Ticker": ticker_id,
+                    "Ticker": ticker,
                     "Precio": price,
                     "Días": days,
                     "Payoff": info['payoff'],
                     "TEM": ((info['payoff'] / price) ** (30 / days) - 1),
-                    "TNA": ((info['payoff'] / price) - 1) / days * 365,
                     "TEA": ((info['payoff'] / price) ** (365 / days) - 1),
+                    "TNA": ((info['payoff'] / price) - 1) / days * 365,
                     "BREAKEVEN": mep * (info['payoff'] / price),
                     "BUFFER": ((mep * (info['payoff'] / price)) / mep) - 1
                 })
@@ -104,72 +111,64 @@ def process_matrix(mep, df):
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("💸 SYSTEMATRADER | CARRY TRADE V49")
+st.title("💸 SYSTEMATRADER | CARRY TRADE V50")
 
-mep_ref, raw_market_df = fetch_all_arg_data()
+# Botón de refresco con KEY única
+if st.button("🔄 ACTUALIZAR TODO EL MERCADO", type="primary", key="btn_v50"):
+    st.cache_data.clear()
+    st.rerun()
 
-if mep_ref is not None:
-    st.metric("Dólar MEP de Referencia", f"${mep_ref:,.2f}")
+mep_now, df_raw = fetch_raw_market_data()
+
+if mep_now:
+    st.metric("Dólar MEP Hoy", f"${mep_now:,.2f}")
     
-    df_matrix = process_matrix(mep_ref, raw_market_df)
+    df_matrix = generate_matrix(mep_now, df_raw)
+    
+    # LAS 3 SOLAPAS + INSPECTOR
+    t1, t2, t3, t4 = st.tabs(["📊 Matriz de Tasas", "🛡️ Breakeven MEP", "📈 Escenarios USD", "🔍 INSPECTOR DE MERCADO"])
     
     if not df_matrix.empty:
-        # --- LAS 3 SOLAPAS SOLICITADAS ---
-        t1, t2, t3 = st.tabs(["📊 Matriz de Tasas", "🛡️ Cobertura Breakeven", "📈 Escenarios USD"])
-        
         with t1:
-            st.subheader("Rendimiento en Pesos (Compuesto)")
-            st.dataframe(
-                df_matrix[['Ticker', 'Precio', 'Días', 'TEM', 'TNA', 'TEA']],
-                column_config={
-                    "Precio": st.column_config.NumberColumn(format="$%.2f"),
-                    "TEM": st.column_config.NumberColumn("TEM (Mensual)", format="%.2f%%"),
-                    "TNA": st.column_config.NumberColumn(format="%.2f%%"),
-                    "TEA": st.column_config.NumberColumn("TEA (Anual)", format="%.2f%%"),
-                },
-                use_container_width=True, height=550
-            )
+            st.subheader("Rendimiento Fijo en Pesos")
+            st.dataframe(df_matrix[['Ticker', 'Precio', 'Días', 'TEM', 'TNA', 'TEA']].style.format({
+                'TEM': '{:.2%}', 'TNA': '{:.2%}', 'TEA': '{:.2%}', 'Precio': '${:.2f}'
+            }), use_container_width=True, height=500)
 
         with t2:
-            st.subheader("Protección vs Devaluación")
+            st.subheader("Punto de Equilibrio (Breakeven)")
             fig = go.Figure()
-            fig.add_hline(y=mep_ref, line_dash="dash", line_color="red", annotation_text="Dólar Hoy")
+            fig.add_hline(y=mep_now, line_dash="dash", line_color="red", annotation_text="Dólar Hoy")
             fig.add_trace(go.Scatter(x=df_matrix['Ticker'], y=df_matrix['BREAKEVEN'], mode='lines+markers+text',
                                      text=[f"${x:.0f}" for x in df_matrix['BREAKEVEN']], textposition="top center",
                                      line=dict(color='#00E676', width=3)))
-            fig.update_layout(template="plotly_dark", height=400, yaxis_title="Precio MEP de Salida")
+            fig.update_layout(template="plotly_dark", height=400)
             st.plotly_chart(fig, use_container_width=True)
             
-            st.dataframe(
-                df_matrix[['Ticker', 'Precio', 'BREAKEVEN', 'BUFFER']],
-                column_config={
-                    "BREAKEVEN": st.column_config.NumberColumn("MEP Equilibrio", format="$%.2f"),
-                    "BUFFER": st.column_config.NumberColumn("Colchón vs Deval", format="%.2f%%")
-                },
-                use_container_width=True
-            )
+            st.dataframe(df_matrix[['Ticker', 'Precio', 'BREAKEVEN', 'BUFFER']].style.format({
+                'BREAKEVEN': '${:.2f}', 'BUFFER': '{:.2%}', 'Precio': '${:.2f}'
+            }), use_container_width=True)
 
         with t3:
-            st.subheader("Simulación de Retorno en USD")
-            st.info("Ganancia neta en dólares según el precio del MEP al vencimiento.")
+            st.subheader("Retorno Neto en USD")
             scenarios = [0, 5, 10, 15, 20]
             sim = pd.DataFrame(index=df_matrix['Ticker'])
             for pct in scenarios:
-                mep_fut = mep_ref * (1 + pct/100)
-                # (Payoff / MEP Futuro) / (Precio / MEP Actual) - 1
-                ret_usd = (df_matrix.set_index('Ticker')['Payoff'] / mep_fut) / (df_matrix.set_index('Ticker')['Precio'] / mep_ref) - 1
-                sim[f"MEP +{pct}% (${mep_fut:.0f})"] = ret_usd
+                mep_fut = mep_now * (1 + pct/100)
+                sim[f"Dólar +{pct}% (${mep_fut:.0f})"] = (df_matrix.set_index('Ticker')['Payoff'] / mep_fut) / (df_matrix.set_index('Ticker')['Precio'] / mep_now) - 1
+            st.dataframe(sim.style.format("{:.2%}"), use_container_width=True, height=500)
             
-            st.dataframe(sim.style.format("{:.2%}"), use_container_width=True, height=550)
-
     else:
-        st.warning("⚠️ Sin datos de Lecaps. BYMA puede haber desconectado el feed temporalmente.")
-        with st.expander("Audit de Tickers"):
-            st.write(raw_market_df['symbol'].unique() if not raw_market_df.empty else "No hay datos")
-else:
-    st.error("Error crítico de conexión con el feed de datos.")
+        with t1: st.warning("No se encontraron coincidencias automáticas.")
 
-# Botón de refresco blindado
-if st.button("🔄 ACTUALIZAR TODO", key="master_refresh"):
-    st.cache_data.clear()
-    st.rerun()
+    # PESTAÑA DE SEGURIDAD (Si los S no aparecen, aquí verás por qué)
+    with t4:
+        st.subheader("Datos crudos recibidos de la API")
+        st.write("Si no ves las Lecaps arriba, buscá en esta tabla si el nombre 'symbol' es distinto al del código.")
+        if not df_raw.empty:
+            st.dataframe(df_raw[['symbol', 'c', 'v']], use_container_width=True)
+        else:
+            st.error("La API no devolvió ningún dato.")
+
+else:
+    st.error("Fallo de conexión total con los endpoints de mercado.")
