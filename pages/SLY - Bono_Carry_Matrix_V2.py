@@ -160,3 +160,6 @@ else:
 if st.button("🔄 ACTUALIZAR"):
     st.cache_data.clear()
     st.rerun()
+if st.button("🔄 ACTUALIZAR"):
+    st.cache_data.clear()
+    st.rerun()
