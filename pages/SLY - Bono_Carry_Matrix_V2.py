@@ -46,7 +46,7 @@ PAYOFF = {
 }
 
 # ─────────────────────────────────────────────
-# MOTOR DE DATOS (DATA912 BRIDGE)
+# MOTOR DE DATOS
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=300)
 def fetch_market_data():
@@ -65,8 +65,6 @@ def fetch_market_data():
 
 def calculate_arbitrage_metrics(mep, df):
     if df.empty or 'symbol' not in df.columns: return pd.DataFrame()
-    
-    # Filtrado por activos vigentes
     df = df[df['symbol'].isin(TICKERS_DATE.keys())].copy()
     if df.empty: return pd.DataFrame()
     
@@ -75,27 +73,27 @@ def calculate_arbitrage_metrics(mep, df):
     df['payoff'] = df.index.map(PAYOFF)
     df['expiration'] = df.index.map(TICKERS_DATE)
     
-    # Duration (Días corridos)
     today = date.today()
     df['days_to_exp'] = (pd.to_datetime(df['expiration']).dt.date - today).apply(lambda x: x.days)
-    df = df[df['days_to_exp'] > 0] # Eliminar vencidos del radar
+    df = df[df['days_to_exp'] > 0]
     
-    # Tasas Institucionales (Interés Compuesto)
-    df['tem'] = ((df['payoff'] / df['bond_price']) ** (30 / df['days_to_exp']) - 1)
+    df['tem'] = ((df['payoff'] / df['Precio' if 'Precio' in df else 'bond_price']) ** (30 / df['days_to_exp']) - 1)
     df['tna'] = ((df['payoff'] / df['bond_price']) - 1) / df['days_to_exp'] * 365
     df['tea'] = ((df['payoff'] / df['bond_price']) ** (365 / df['days_to_exp']) - 1)
     
-    # Métricas de Cobertura
     df['MEP_BREAKEVEN'] = mep * (df['payoff'] / df['bond_price'])
     df['buffer_deval'] = (df['MEP_BREAKEVEN'] / mep) - 1
-    
     return df.sort_values('days_to_exp')
 
 # ─────────────────────────────────────────────
 # INTERFAZ SNIPER
 # ─────────────────────────────────────────────
 st.title("💸 SYSTEMATRADER | ARG CARRY MATRIX")
-st.markdown("### Arbitraje de Tasas: Pesos (Lecaps/Boncaps) vs Dólar MEP")
+
+# BOTÓN SUPERIOR CON KEY ÚNICA
+if st.button("🔄 ACTUALIZAR DATOS", type="primary", key="refresh_top"):
+    st.cache_data.clear()
+    st.rerun()
 
 mep_now, df_raw = fetch_market_data()
 
@@ -104,11 +102,9 @@ if mep_now:
     df_calc = calculate_arbitrage_metrics(mep_now, df_raw)
     
     if not df_calc.empty:
-        # Pestañas de Análisis
         t1, t2, t3 = st.tabs(["📊 Matriz de Tasas", "🛡️ Cobertura Cambiaria", "📈 Proyección USD"])
         
         with t1:
-            st.subheader("Rendimiento Fijo en Pesos")
             st.dataframe(
                 df_calc[['bond_price', 'days_to_exp', 'tna', 'tem', 'tea']],
                 column_config={
@@ -122,13 +118,12 @@ if mep_now:
             )
         
         with t2:
-            st.subheader("¿A qué precio del Dólar perdés dinero?")
             fig = go.Figure()
             fig.add_hline(y=mep_now, line_dash="dash", line_color="red", annotation_text="MEP Hoy")
             fig.add_trace(go.Scatter(x=df_calc.index, y=df_calc['MEP_BREAKEVEN'], mode='lines+markers+text',
                                      text=[f"${x:.0f}" for x in df_calc['MEP_BREAKEVEN']], textposition="top center",
                                      line=dict(color='#00E676', width=3), name="MEP Equilibrio"))
-            fig.update_layout(template="plotly_dark", height=450, margin=dict(l=20, r=20, t=40, b=20))
+            fig.update_layout(template="plotly_dark", height=450)
             st.plotly_chart(fig, use_container_width=True)
             
             st.dataframe(
@@ -141,25 +136,19 @@ if mep_now:
             )
             
         with t3:
-            st.subheader("Rendimiento Neto en Dólares")
-            st.write("Escenarios de retorno directo en USD según variación del MEP al vencimiento.")
             scenarios = [0, 5, 10, 15, 20]
             sim = pd.DataFrame(index=df_calc.index)
             for pct in scenarios:
                 mep_fut = mep_now * (1 + pct/100)
                 usd_ret = (df_calc['payoff'] / mep_fut) / (df_calc['bond_price'] / mep_now) - 1
                 sim[f"MEP +{pct}% (${mep_fut:.0f})"] = usd_ret
-            
             st.dataframe(sim.style.format("{:.2%}"), use_container_width=True, height=550)
-
     else:
         st.warning("No se detectaron instrumentos vigentes en la base de datos.")
 else:
     st.error("No se pudo sincronizar con el mercado.")
 
-if st.button("🔄 ACTUALIZAR"):
-    st.cache_data.clear()
-    st.rerun()
-if st.button("🔄 ACTUALIZAR"):
+# BOTÓN INFERIOR CON KEY ÚNICA
+if st.button("🔄 ACTUALIZAR MATRIZ", key="refresh_bottom"):
     st.cache_data.clear()
     st.rerun()
