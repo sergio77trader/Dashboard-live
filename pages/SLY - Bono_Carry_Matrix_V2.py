@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import requests
 import plotly.graph_objects as go
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 import urllib3
 import numpy as np
 
@@ -18,28 +18,26 @@ st.markdown("""
     .stDataFrame { font-size: 0.85rem; font-family: 'Roboto Mono', monospace; }
     h1 { color: #00E676; font-weight: 800; border-bottom: 2px solid #00E676; }
     .stTabs [data-baseweb="tab-list"] { gap: 24px; }
-    .stTabs [data-baseweb="tab"] { height: 50px; white-space: pre-wrap; background-color: #111; border-radius: 4px; color: white; }
-    .stTabs [aria-selected="true"] { background-color: #00E676; color: black; }
+    .stTabs [aria-selected="true"] { background-color: #00E676; color: black; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
 # BÓVEDA DE DATOS: CURVA 2026 - 2027
 # ─────────────────────────────────────────────
-# Actualización de fechas y payoffs proyectados para el ciclo 2026
 TICKERS_CONFIG = {
-    # LECAPS (S)
-    "S31M6": {"vto": date(2026, 3, 31), "payoff": 103.80},
-    "S17A6": {"vto": date(2026, 4, 17), "payoff": 107.45},
-    "S29Y6": {"vto": date(2026, 5, 29), "payoff": 111.60},
-    "S30J6": {"vto": date(2026, 6, 30), "payoff": 115.35},
-    "S31L6": {"vto": date(2026, 7, 31), "payoff": 119.50},
-    "S31G6": {"vto": date(2026, 8, 31), "payoff": 124.05},
-    "S30S6": {"vto": date(2026, 9, 30), "payoff": 128.40},
-    "S30O6": {"vto": date(2026, 10, 30), "payoff": 132.80},
-    "S30N6": {"vto": date(2026, 11, 30), "payoff": 137.40},
-    "S30D6": {"vto": date(2026, 12, 30), "payoff": 142.20},
-    # BONCAPS (T / TT)
+    # LECAPS (S) - Instrumentos de Tasa Fija Mensuales
+    "S31M6": {"vto": date(2026, 3, 31), "payoff": 103.85},
+    "S17A6": {"vto": date(2026, 4, 17), "payoff": 107.50},
+    "S29Y6": {"vto": date(2026, 5, 29), "payoff": 111.65},
+    "S30J6": {"vto": date(2026, 6, 30), "payoff": 115.40},
+    "S31L6": {"vto": date(2026, 7, 31), "payoff": 119.55},
+    "S31G6": {"vto": date(2026, 8, 31), "payoff": 124.10},
+    "S30S6": {"vto": date(2026, 9, 30), "payoff": 128.45},
+    "S30O6": {"vto": date(2026, 10, 30), "payoff": 132.85},
+    "S30N6": {"vto": date(2026, 11, 30), "payoff": 137.45},
+    "S30D6": {"vto": date(2026, 12, 30), "payoff": 142.25},
+    # BONCAPS (T / TT) - Bonos de Capitalización
     "TTM26": {"vto": date(2026, 3, 16), "payoff": 135.24},
     "TTJ26": {"vto": date(2026, 6, 30), "payoff": 144.63},
     "T30J6": {"vto": date(2026, 6, 30), "payoff": 144.90},
@@ -51,133 +49,132 @@ TICKERS_CONFIG = {
 }
 
 # ─────────────────────────────────────────────
-# MOTOR DE DATOS
+# MOTOR DE DATOS (UNIFICACIÓN TOTAL)
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=60)
-def fetch_data():
+def fetch_global_data():
     try:
         h = {'User-Agent': 'Mozilla/5.0'}
-        # MEP
+        # 1. Obtener MEP
         r_mep = requests.get('https://data912.com/live/mep', verify=False, timeout=10, headers=h).json()
         mep = pd.DataFrame(r_mep)['close'].median()
-        # INSTRUMENTOS
+        # 2. Obtener Notas (T) y Bonos (S)
         r_notes = requests.get('https://data912.com/live/arg_notes', verify=False, timeout=10, headers=h).json()
         r_bonds = requests.get('https://data912.com/live/arg_bonds', verify=False, timeout=10, headers=h).json()
         df_full = pd.DataFrame(r_notes + r_bonds)
         return mep, df_full
     except: return None, None
 
-def calculate_matrix(mep, df):
+def build_carry_matrix(mep, df):
     if df.empty: return pd.DataFrame()
-    
-    # Normalización de Tickers
-    df['symbol'] = df['symbol'].str.strip().upper()
     
     results = []
     today = date.today()
-
-    for ticker, info in TICKERS_CONFIG.items():
-        # Buscamos el ticker en el feed de mercado
-        match = df[df['symbol'] == ticker]
+    
+    for ticker_id, info in TICKERS_CONFIG.items():
+        # BÚSQUEDA DIFUSA: Buscamos si el ticker está contenido en el símbolo del mercado
+        # Esto soluciona que ByMA le agregue textos extras al nombre
+        match = df[df['symbol'].str.contains(ticker_id, case=False, na=False)]
+        
         if not match.empty:
             price = float(match.iloc[0]['c'])
             days = (info['vto'] - today).days
             
             if days > 0 and price > 0:
-                # TEM (Mensual)
                 tem = ((info['payoff'] / price) ** (30 / days) - 1)
-                # TEA (Anualizada)
                 tea = ((info['payoff'] / price) ** (365 / days) - 1)
-                # TNA
                 tna = ((info['payoff'] / price) - 1) / days * 365
-                # Breakeven MEP
                 be_mep = mep * (info['payoff'] / price)
-                # Buffer
-                buffer = (be_mep / mep) - 1
                 
                 results.append({
-                    "Ticker": ticker,
+                    "Ticker": ticker_id,
+                    "Nombre Mercado": match.iloc[0]['symbol'],
                     "Precio": price,
-                    "Días Vto": days,
+                    "Días": days,
                     "Payoff": info['payoff'],
                     "TEM": tem,
                     "TNA": tna,
                     "TEA": tea,
-                    "MEP_BREAKEVEN": be_mep,
-                    "BUFFER": buffer
+                    "BREAKEVEN": be_mep,
+                    "BUFFER": (be_mep / mep) - 1
                 })
     
-    return pd.DataFrame(results).sort_values("Días Vto")
+    return pd.DataFrame(results).sort_values("Días")
 
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("💸 SYSTEMATRADER | CARRY TRADE 2026")
+st.title("💸 SYSTEMATRADER | CARRY TRADE MATRIX")
 
-mep_val, raw_df = fetch_data()
+# Botón superior con KEY única para evitar error de duplicidad
+if st.button("🔄 ACTUALIZAR DATOS DEL MERCADO", type="primary", key="btn_up"):
+    st.cache_data.clear()
+    st.rerun()
+
+mep_val, raw_df = fetch_global_data()
 
 if mep_val and not raw_df.empty:
     st.metric("Dólar MEP Referencia", f"${mep_val:,.2f}")
     
-    df_final = calculate_matrix(mep_val, raw_df)
+    df_matrix = build_carry_matrix(mep_val, raw_df)
     
-    if not df_final.empty:
-        # --- LAS 3 SOLAPAS ---
-        tab1, tab2, tab3 = st.tabs(["📊 Matriz de Tasas", "🛡️ Breakeven MEP", "📈 Escenarios USD"])
+    if not df_matrix.empty:
+        # PESTAÑAS
+        t1, t2, t3 = st.tabs(["📊 Matriz de Tasas", "🛡️ Breakeven MEP", "📈 Escenarios USD"])
         
-        with tab1:
-            st.subheader("Rendimiento Fijo en Pesos (Compuesto)")
+        with t1:
+            st.subheader("Rendimiento Fijo en Pesos (Tasa Efectiva)")
             st.dataframe(
-                df_final[['Ticker', 'Precio', 'Días Vto', 'TEM', 'TNA', 'TEA']],
+                df_matrix[['Ticker', 'Precio', 'Días', 'TEM', 'TNA', 'TEA']],
                 column_config={
                     "Precio": st.column_config.NumberColumn(format="$%.2f"),
-                    "TEM": st.column_config.NumberColumn(format="%.2f%%"),
+                    "TEM": st.column_config.NumberColumn("TEM (Mensual)", format="%.2f%%"),
                     "TNA": st.column_config.NumberColumn(format="%.2f%%"),
-                    "TEA": st.column_config.NumberColumn(format="%.2f%%"),
+                    "TEA": st.column_config.NumberColumn("TEA (Anual)", format="%.2f%%"),
                 },
-                use_container_width=True, height=600
+                use_container_width=True, height=550
             )
 
-        with tab2:
-            st.subheader("Análisis de Cobertura Cambiaria")
+        with t2:
+            st.subheader("Cobertura Cambiaria (¿Hasta cuánto aguanta el Dólar?)")
             fig = go.Figure()
             fig.add_hline(y=mep_val, line_dash="dash", line_color="red", annotation_text="Dólar Hoy")
-            fig.add_trace(go.Scatter(x=df_final['Ticker'], y=df_final['MEP_BREAKEVEN'], mode='lines+markers+text',
-                                     text=[f"${x:.0f}" for x in df_final['MEP_BREAKEVEN']], textposition="top center",
+            fig.add_trace(go.Scatter(x=df_matrix['Ticker'], y=df_matrix['BREAKEVEN'], mode='lines+markers+text',
+                                     text=[f"${x:.0f}" for x in df_matrix['BREAKEVEN']], textposition="top center",
                                      line=dict(color='#00E676', width=3)))
-            fig.update_layout(template="plotly_dark", height=400, yaxis_title="Precio Dólar ($)")
+            fig.update_layout(template="plotly_dark", height=400)
             st.plotly_chart(fig, use_container_width=True)
             
             st.dataframe(
-                df_final[['Ticker', 'Precio', 'MEP_BREAKEVEN', 'BUFFER']],
+                df_matrix[['Ticker', 'Precio', 'BREAKEVEN', 'BUFFER']],
                 column_config={
-                    "MEP_BREAKEVEN": st.column_config.NumberColumn("MEP Salida", format="$%.2f"),
+                    "BREAKEVEN": st.column_config.NumberColumn("MEP Salida", format="$%.2f"),
                     "BUFFER": st.column_config.NumberColumn("Colchón vs Deval", format="%.2f%%")
                 },
                 use_container_width=True
             )
 
-        with tab3:
+        with t3:
             st.subheader("Rendimiento Proyectado en USD")
-            st.info("Simulación de ganancia neta en dólares según el precio del MEP al vencimiento.")
+            st.info("Ganancia neta en moneda dura si el MEP sube hacia el vencimiento.")
             scenarios = [0, 5, 10, 15, 20]
-            sim = pd.DataFrame(index=df_final['Ticker'])
+            sim = pd.DataFrame(index=df_matrix['Ticker'])
             for pct in scenarios:
                 mep_fut = mep_val * (1 + pct/100)
-                # (Payoff / MEP Futuro) / (Precio / MEP Actual) - 1
-                ret_usd = (df_final.set_index('Ticker')['Payoff'] / mep_fut) / (df_final.set_index('Ticker')['Precio'] / mep_val) - 1
-                sim[f"MEP +{pct}% (${mep_fut:.0f})"] = ret_usd
+                # Cálculo: (Monto Final USD / Monto Inicial USD) - 1
+                ret_usd = (df_matrix.set_index('Ticker')['Payoff'] / mep_fut) / (df_matrix.set_index('Ticker')['Precio'] / mep_val) - 1
+                sim[f"Dólar +{pct}% (${mep_fut:.0f})"] = ret_usd
             
-            st.dataframe(sim.style.format("{:.2%}"), use_container_width=True, height=550)
+            st.dataframe(sim.style.format("{:.2%}"), use_container_width=True, height=500)
 
     else:
-        st.warning("No se encontraron instrumentos activos. BYMA puede haber cambiado los nombres de las Lecaps.")
-        with st.expander("Audit de Tickers en Mercado (Debug)"):
+        st.warning("⚠️ No se encontraron instrumentos S (Lecaps) en el feed. Verifique los nombres del mercado abajo.")
+        with st.expander("Tickers detectados hoy en BYMA (Debug)"):
             st.write(raw_df['symbol'].unique())
 else:
     st.error("Error de conexión con el feed de datos (Data912).")
 
-# Botón único con Key para evitar error
-if st.button("🔄 ACTUALIZAR MATRIZ", key="main_refresh_button"):
+# Botón inferior con KEY única
+if st.button("🔄 REFRESCAR MATRIX", key="btn_low"):
     st.cache_data.clear()
     st.rerun()
