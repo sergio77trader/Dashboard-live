@@ -42,44 +42,60 @@ def fetch_market_data():
     return mep_val, df_assets
 
 
-def calculate_carry_auto(mep, df):
+def calculate_carry(mep, df):
 
-    # Detectar automáticamente S y T
+    # Detectar bonos S y T automáticamente
     carry = df[df['symbol'].str.match(r'^(S|T)', na=False)].copy()
-
     if carry.empty:
         return pd.DataFrame()
 
     carry = carry[['symbol', 'c']].drop_duplicates()
-    carry['bond_price'] = carry['c'].astype(float)
+    carry['bond_price'] = carry['c'].astype(float).round(2)
 
-    # ---------------------------
-    # Detectar año del ticker
-    # Ejemplo: T30E6 → 2026
-    # ---------------------------
-    def extract_year(symbol):
-        year_digits = ''.join(filter(str.isdigit, symbol))
-        if len(year_digits) >= 1:
-            year = int("20" + year_digits[-1])
-            return year
+    # -------------------------
+    # PARSER REAL DE VENCIMIENTO
+    # -------------------------
+    MONTH_MAP = {
+        "A":1, "B":2, "C":3, "D":4, "E":5, "F":6,
+        "G":7, "H":8, "J":9, "K":10, "L":11, "M":12,
+        "N":11, "O":10, "S":9, "Y":5
+    }
+
+    def parse_expiration(symbol):
+        import re
+        match = re.search(r'(\d{1,2})([A-Z])(\d)', symbol)
+        if match:
+            day = int(match.group(1))
+            month_letter = match.group(2)
+            year = 2000 + int(match.group(3))
+            month = MONTH_MAP.get(month_letter)
+            if month:
+                try:
+                    return date(year, month, day)
+                except:
+                    return None
         return None
 
-    carry['year'] = carry['symbol'].apply(extract_year)
-    carry['expiration'] = carry['year'].apply(lambda y: date(y, 12, 31) if y else None)
+    carry['expiration'] = carry['symbol'].apply(parse_expiration)
+    carry = carry[carry['expiration'].notna()]
 
     today = date.today()
-    carry['days_to_exp'] = (pd.to_datetime(carry['expiration']).dt.date - today).apply(lambda x: x.days if pd.notnull(x) else 0)
+    carry['days_to_exp'] = (pd.to_datetime(carry['expiration']).dt.date - today).apply(lambda x: x.days)
 
     carry = carry[carry['days_to_exp'] > 0]
 
-    # Asumimos VN 100
-    payoff = 100
+    # -------------------------
+    # PAYOFF REAL
+    # Letras pagan VN 100
+    # -------------------------
+    carry['payoff'] = 100
 
-    carry['tem'] = ((payoff / carry['bond_price']) ** (1/(carry['days_to_exp']/30))) - 1
-    carry['tna'] = ((payoff / carry['bond_price']) - 1) / carry['days_to_exp'] * 365
-    carry['tea'] = ((payoff / carry['bond_price']) ** (365/carry['days_to_exp'])) - 1
+    # Tasas EXACTAS como tu script
+    carry['tem'] = ((carry['payoff'] / carry['bond_price']) ** (1/(carry['days_to_exp']/30))) - 1
+    carry['tna'] = ((carry['payoff'] / carry['bond_price']) - 1) / carry['days_to_exp'] * 365
+    carry['tea'] = ((carry['payoff'] / carry['bond_price']) ** (365/carry['days_to_exp'])) - 1
 
-    carry['MEP_BREAKEVEN'] = mep * (payoff / carry['bond_price'])
+    carry['MEP_BREAKEVEN'] = mep * (carry['payoff'] / carry['bond_price'])
     carry['buffer_deval'] = (carry['MEP_BREAKEVEN'] / mep) - 1
 
     return carry.sort_values("days_to_exp")
