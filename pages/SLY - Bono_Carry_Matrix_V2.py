@@ -10,164 +10,140 @@ import numpy as np
 # CONFIGURACIÓN INSTITUCIONAL
 # ─────────────────────────────────────────────
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | ARBITRAGE V51")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | OMNI-SYNC V52")
 
 st.markdown("""
 <style>
-    [data-testid="stMetricValue"] { font-size: 1.2rem; font-family: 'Roboto Mono', monospace; }
-    .stDataFrame { font-size: 0.8rem; font-family: 'Roboto Mono', monospace; }
+    .stDataFrame { font-size: 0.75rem; font-family: 'Roboto Mono', monospace; }
     h1 { color: #00E676; font-weight: 800; border-bottom: 2px solid #00E676; }
-    .stTabs [data-baseweb="tab"] { height: 50px; background-color: #111; color: white; border-radius: 4px; }
-    .stTabs [aria-selected="true"] { background-color: #00E676; color: black; font-weight: bold; }
+    .stTabs [aria-selected="true"] { background-color: #00E676 !important; color: black !important; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
 # ─────────────────────────────────────────────
-# BÓVEDA DE DATOS: CURVA 2026 - 2027
+# BÓVEDA DE PAYOFFS (TASAS FIJAS)
 # ─────────────────────────────────────────────
-TICKERS_CONFIG = {
-    "S31M6": {"vto": date(2026, 3, 31), "payoff": 103.85},
-    "S17A6": {"vto": date(2026, 4, 17), "payoff": 107.50},
-    "S29Y6": {"vto": date(2026, 5, 29), "payoff": 111.65},
-    "S30J6": {"vto": date(2026, 6, 30), "payoff": 115.40},
-    "S31L6": {"vto": date(2026, 7, 31), "payoff": 119.55},
-    "S31G6": {"vto": date(2026, 8, 31), "payoff": 124.10},
-    "S30S6": {"vto": date(2026, 9, 30), "payoff": 128.45},
-    "S30O6": {"vto": date(2026, 10, 30), "payoff": 132.85},
-    "S30N6": {"vto": date(2026, 11, 30), "payoff": 137.45},
-    "S30D6": {"vto": date(2026, 12, 30), "payoff": 142.25},
-    "TTM26": {"vto": date(2026, 3, 16), "payoff": 135.24},
-    "TTJ26": {"vto": date(2026, 6, 30), "payoff": 144.63},
-    "T30J6": {"vto": date(2026, 6, 30), "payoff": 144.90},
-    "TTS26": {"vto": date(2026, 9, 15), "payoff": 152.10},
-    "TTD26": {"vto": date(2026, 12, 15), "payoff": 161.14},
-    "T15E7": {"vto": date(2027, 1, 15), "payoff": 165.80}
+# Solo estos permiten cálculo de Carry Trade (TEM/Breakeven)
+FIXED_CONFIG = {
+    "S31M6": {"vto": date(2026, 3, 31), "p": 103.85}, "S16M6": {"vto": date(2026, 3, 16), "p": 102.10},
+    "S17A6": {"vto": date(2026, 4, 17), "p": 107.50}, "S30A6": {"vto": date(2026, 4, 30), "p": 108.90},
+    "S29Y6": {"vto": date(2026, 5, 29), "p": 111.65}, "S30J6": {"vto": date(2026, 6, 30), "p": 115.40},
+    "S31L6": {"vto": date(2026, 7, 31), "p": 119.55}, "S31G6": {"vto": date(2026, 8, 31), "p": 124.10},
+    "S30S6": {"vto": date(2026, 9, 30), "p": 128.45}, "S30O6": {"vto": date(2026, 10, 30), "p": 132.85},
+    "S30N6": {"vto": date(2026, 11, 30), "p": 137.45}, "S30D6": {"vto": date(2026, 12, 30), "p": 142.25},
+    "TTM26": {"vto": date(2026, 3, 16), "p": 135.24}, "TTJ26": {"vto": date(2026, 6, 30), "p": 144.63},
+    "T30J6": {"vto": date(2026, 6, 30), "p": 144.90}, "TTS26": {"vto": date(2026, 9, 15), "p": 152.10},
+    "TTD26": {"vto": date(2026, 12, 15), "p": 161.14}, "T15E7": {"vto": date(2027, 1, 15), "p": 165.80}
 }
 
 # ─────────────────────────────────────────────
-# MOTOR DE CLASIFICACIÓN (DICCIONARIO DE REGLAS)
+# LÓGICA DE CLASIFICACIÓN (TU LISTA)
 # ─────────────────────────────────────────────
 def classify_bond(ticker):
     t = str(ticker).upper().strip()
-    # Lecaps
+    if t.endswith('D') or t.endswith('C'): return 'Especie C/D (Cable/MEP)'
     if t.startswith('S') and any(c.isdigit() for c in t): return 'Lecap (Tasa Fija)'
-    # Boncaps y Notas Tasa Fija
-    if (t.startswith('T') or t.startswith('TT')) and any(c.isdigit() for c in t) and 'X' not in t: 
-        return 'Boncap (Tasa Fija)'
-    # Bonos CER
-    if t.startswith('TX') or (t.startswith('X') and any(c.isdigit() for c in t)) or t in ['DICP', 'PARP', 'CUAP', 'PR13', 'PAP0', 'DIP0']:
-        return 'Bono CER (Inflación)'
-    # Hard Dollar
-    if t.startswith('AL') or t.startswith('GD') or t.startswith('AE'):
-        return 'Bono Hard Dollar (Soberano)'
-    # Provinciales
-    prov_prefixes = ['BA', 'BP', 'CO', 'PBY', 'PUM', 'BDC', 'ARC', 'CO26', 'A2E8']
-    if any(t.startswith(p) for p in prov_prefixes):
-        return 'Bono Provincial'
-    # Otros
-    if 'D' in t[-1:] or 'C' in t[-1:]: return 'Especie C/D (Cable/MEP)'
+    if (t.startswith('T') or t.startswith('TT')) and 'X' not in t: return 'Boncap (Tasa Fija)'
+    if t.startswith('X') or t.startswith('TX') or t in ['DICP','PARP','CUAP','PAP0','DIP0']: return 'Bono CER (Inflación)'
+    if t.startswith('AL') or t.startswith('GD') or t.startswith('AE'): return 'Bono Hard Dollar (Soberano)'
+    if any(t.startswith(p) for p in ['BA','BP','CO','BDC','PBY','ARC']): return 'Bono Provincial'
     return 'Otros / Sin Clasificar'
 
 # ─────────────────────────────────────────────
 # MOTOR DE DATOS
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=60)
-def fetch_raw_market_data():
+def fetch_all_data():
     h = {'User-Agent': 'Mozilla/5.0'}
     endpoints = {
         "MEP": "https://data912.com/live/mep",
-        "LETRAS": "https://data912.com/live/arg_letras",
-        "NOTAS": "https://data912.com/live/arg_notes",
-        "BONOS": "https://data912.com/live/arg_bonds"
+        "L": "https://data912.com/live/arg_letras",
+        "N": "https://data912.com/live/arg_notes",
+        "B": "https://data912.com/live/arg_bonds"
     }
-    collected_data = []
-    mep_price = 1200.0
-    for name, url in endpoints.items():
+    mep = 1250.0
+    raw = []
+    for key, url in endpoints.items():
         try:
-            r = requests.get(url, verify=False, timeout=10, headers=h)
-            if r.status_code == 200:
-                data = r.json()
-                if name == "MEP": mep_price = pd.DataFrame(data)['close'].median()
-                else: collected_data.extend(data)
+            r = requests.get(url, verify=False, timeout=10, headers=h).json()
+            if key == "MEP": mep = pd.DataFrame(r)['close'].median()
+            else: raw.extend(r)
         except: continue
-    return mep_price, pd.DataFrame(collected_data)
+    return mep, pd.DataFrame(raw)
 
-def generate_matrix(mep, df):
-    if df.empty: return pd.DataFrame()
-    df['symbol'] = df['symbol'].astype(str).str.replace(" ", "").str.upper()
-    results = []
+# ─────────────────────────────────────────────
+# PROCESAMIENTO
+# ─────────────────────────────────────────────
+def build_matrices(mep, df):
+    if df.empty: return pd.DataFrame(), pd.DataFrame()
+    df['symbol'] = df['symbol'].str.replace(" ", "").str.upper()
+    
+    carry_list = []
     today = date.today()
-    for ticker, info in TICKERS_CONFIG.items():
-        match = df[df['symbol'].str.contains(ticker, na=False)]
-        if not match.empty:
-            price = float(match.iloc[0]['c'])
-            days = (info['vto'] - today).days
-            if days > 0 and price > 0:
-                results.append({
-                    "Ticker": ticker, "Precio": price, "Días": days, "Payoff": info['payoff'],
-                    "TEM": ((info['payoff'] / price) ** (30 / days) - 1),
-                    "TEA": ((info['payoff'] / price) ** (365 / days) - 1),
-                    "TNA": ((info['payoff'] / price) - 1) / days * 365,
-                    "BREAKEVEN": mep * (info['payoff'] / price),
-                    "BUFFER": ((mep * (info['payoff'] / price)) / mep) - 1
-                })
-    return pd.DataFrame(results).sort_values("Días")
+
+    for _, row in df.iterrows():
+        sym = row['symbol']
+        price = float(row['c'])
+        # Solo calculamos Carry para los que tenemos el Payoff cargado
+        for tid, info in FIXED_CONFIG.items():
+            if tid in sym and not (sym.endswith('D') or sym.endswith('C')):
+                days = (info['vto'] - today).days
+                if days > 0 and price > 0:
+                    carry_list.append({
+                        "Ticker": tid, "Precio": price, "Días": days, "Payoff": info['p'],
+                        "TEM": ((info['p'] / price) ** (30 / days) - 1),
+                        "TEA": ((info['p'] / price) ** (365 / days) - 1),
+                        "TNA": ((info['p'] / price) - 1) / days * 365,
+                        "BREAKEVEN": mep * (info['p'] / price)
+                    })
+                break
+    
+    # Clasificar todo para el Inspector
+    df['Categoría'] = df['symbol'].apply(classify_bond)
+    return pd.DataFrame(carry_list), df[['Categoría', 'symbol', 'c', 'v', 'p']]
 
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("💸 SYSTEMATRADER | ARBITRAGE V51")
+st.title("💸 SYSTEMATRADER | OMNI-BOND V52")
 
-if st.button("🔄 ACTUALIZAR TODO EL MERCADO", type="primary", key="btn_v51"):
-    st.cache_data.clear()
-    st.rerun()
+mep_val, raw_df = fetch_all_data()
 
-mep_now, df_raw = fetch_raw_market_data()
-
-if mep_now:
-    st.metric("Dólar MEP Hoy", f"${mep_now:,.2f}")
-    df_matrix = generate_matrix(mep_now, df_raw)
-    t1, t2, t3, t4 = st.tabs(["📊 Matriz de Tasas", "🛡️ Breakeven MEP", "📈 Escenarios USD", "🔍 INSPECTOR DE MERCADO"])
+if mep_val:
+    st.metric("Dólar MEP Hoy", f"${mep_val:,.2f}")
+    df_carry, df_inspect = build_matrices(mep_val, raw_df)
     
-    if not df_matrix.empty:
-        with t1:
-            st.subheader("Rendimiento Fijo en Pesos")
-            st.dataframe(df_matrix[['Ticker', 'Precio', 'Días', 'TEM', 'TNA', 'TEA']].style.format({
+    tabs = st.tabs(["📊 Matriz Carry (Pesos)", "🛡️ Breakeven MEP", "📈 Escenarios USD", "🔍 INSPECTOR CLASIFICADO"])
+    
+    with tabs[0]:
+        if not df_carry.empty:
+            st.dataframe(df_carry.sort_values("Días").style.format({
                 'TEM': '{:.2%}', 'TNA': '{:.2%}', 'TEA': '{:.2%}', 'Precio': '${:.2f}'
             }), use_container_width=True, height=500)
-        with t2:
-            st.subheader("Punto de Equilibrio (Breakeven)")
+        else: st.warning("No hay letras fijas detectadas para calcular.")
+
+    with tabs[1]:
+        if not df_carry.empty:
             fig = go.Figure()
-            fig.add_hline(y=mep_now, line_dash="dash", line_color="red", annotation_text="Dólar Hoy")
-            fig.add_trace(go.Scatter(x=df_matrix['Ticker'], y=df_matrix['BREAKEVEN'], mode='lines+markers+text',
-                                     text=[f"${x:.0f}" for x in df_matrix['BREAKEVEN']], textposition="top center",
+            fig.add_trace(go.Scatter(x=df_carry['Ticker'], y=df_carry['BREAKEVEN'], mode='lines+markers+text',
+                                     text=[f"${x:.0f}" for x in df_carry['BREAKEVEN']], textposition="top center",
                                      line=dict(color='#00E676', width=3)))
             fig.update_layout(template="plotly_dark", height=400)
             st.plotly_chart(fig, use_container_width=True)
-            st.dataframe(df_matrix[['Ticker', 'Precio', 'BREAKEVEN', 'BUFFER']].style.format({
-                'BREAKEVEN': '${:.2f}', 'BUFFER': '{:.2%}', 'Precio': '${:.2f}'
-            }), use_container_width=True)
-        with t3:
-            st.subheader("Retorno Neto en USD")
-            scenarios = [0, 5, 10, 15, 20]
-            sim = pd.DataFrame(index=df_matrix['Ticker'])
-            for pct in scenarios:
-                mep_fut = mep_now * (1 + pct/100)
-                sim[f"Dólar +{pct}% (${mep_fut:.0f})"] = (df_matrix.set_index('Ticker')['Payoff'] / mep_fut) / (df_matrix.set_index('Ticker')['Precio'] / mep_now) - 1
-            st.dataframe(sim.style.format("{:.2%}"), use_container_width=True, height=500)
-    else:
-        with t1: st.warning("No se encontraron coincidencias automáticas.")
 
-    # INSPECTOR CLASIFICADO
-    with t4:
-        st.subheader("Clasificación de Instrumentos en el Feed")
-        if not df_raw.empty:
-            # Aplicar clasificación
-            df_raw['Categoría'] = df_raw['symbol'].apply(classify_bond)
-            # Reordenar columnas para ver la categoría primero
-            df_inspector = df_raw[['Categoría', 'symbol', 'c', 'v']].sort_values(['Categoría', 'symbol'])
-            st.dataframe(df_inspector, use_container_width=True, height=600)
-        else:
-            st.error("La API no devolvió ningún dato.")
-else:
-    st.error("Fallo de conexión total con los endpoints.")
+    with tabs[2]:
+        if not df_carry.empty:
+            sim = pd.DataFrame(index=df_carry['Ticker'])
+            for pct in [0, 5, 10, 15, 20]:
+                mep_f = mep_val * (1 + pct/100)
+                sim[f"Dólar +{pct}%"] = (df_carry.set_index('Ticker')['Payoff'] / mep_f) / (df_carry.set_index('Ticker')['Precio'] / mep_val) - 1
+            st.dataframe(sim.style.format("{:.2%}"), use_container_width=True)
+
+    with tabs[3]:
+        st.subheader("Auditoría de Activos ByMA")
+        f_cat = st.multiselect("Filtrar Categoría:", df_inspect['Categoría'].unique(), default=df_inspect['Categoría'].unique())
+        st.dataframe(df_inspect[df_inspect['Categoría'].isin(f_cat)].sort_values(['Categoría','symbol']), use_container_width=True, height=600)
+
+if st.button("🔄 ACTUALIZAR", key="refresh"):
+    st.cache_data.clear()
+    st.rerun()
