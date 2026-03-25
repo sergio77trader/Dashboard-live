@@ -4,84 +4,106 @@ import pandas as pd
 import plotly.graph_objects as go
 from datetime import datetime
 
-# --- CONFIGURACIÓN INSTITUCIONAL ---
-st.set_page_config(page_title="SYSTEMATRADER: Centro de Mandos", layout="wide")
+# --- CONFIGURACIÓN DE INTERFAZ INSTITUCIONAL (LIGHT THEME) ---
+st.set_page_config(page_title="SLY: Macro Truth Monitor", layout="wide")
 
 st.markdown("""
     <style>
-    .main { background-color: #0e1117; }
-    .stMetric { background-color: #161b22; padding: 15px; border-radius: 10px; border: 1px solid #30363d; }
-    .command-box { padding: 20px; border-radius: 10px; margin-bottom: 25px; text-align: center; }
+    .stApp { background-color: #f8f9fa; color: #1c1e21; }
+    .stMetric { background-color: #ffffff; padding: 20px; border-radius: 12px; border: 1px solid #dee2e6; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    [data-testid="stMetricValue"] { color: #004a99 !important; font-weight: bold; }
+    .command-box { padding: 30px; border-radius: 15px; margin-bottom: 30px; text-align: center; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
+    h1, h2, h3 { color: #002d5a; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
     </style>
     """, unsafe_allow_html=True)
 
-@st.cache_data(ttl=300)
-def fetch_data():
-    symbols = {"ORO": "GC=F", "DXY": "DX-Y.NYB", "BRL": "USDBRL=X", "ADR": "GGAL", "LOCAL": "GGAL.BA"}
-    df = yf.download(list(symbols.values()), period="5d", interval="15m", progress=False)['Close']
-    return df, symbols
+st.title("🛡️ SLY Engine: Macro Truth Monitor v4.1")
+st.markdown("---")
 
-try:
-    df, symbols = fetch_data()
-    
-    # --- CÁLCULOS CRÍTICOS ---
-    ccl = (df[symbols["ADR"]].iloc[-1] * 10) / df[symbols["LOCAL"]].iloc[-1]
-    oro_ch = ((df[symbols["ORO"]].iloc[-1] / df[symbols["ORO"]].iloc[-2]) - 1) * 100
-    dxy_ch = ((df[symbols["DXY"]].iloc[-1] / df[symbols["DXY"]].iloc[-2]) - 1) * 100
-    brl_ch = ((df[symbols["BRL"]].iloc[-1] / df[symbols["BRL"]].iloc[-2]) - 1) * 100
-    adr_ch = ((df[symbols["ADR"]].iloc[-1] / df[symbols["ADR"]].iloc[-2]) - 1) * 100
+@st.cache_data(ttl=600)
+def fetch_data_resilient():
+    symbols = {
+        "ORO": "GC=F", "DXY": "DX-Y.NYB", 
+        "BRL": "USDBRL=X", "ADR": "GGAL", "LOCAL": "GGAL.BA"
+    }
+    # Intentamos 1h para mayor estabilidad si 15m falla
+    try:
+        df = yf.download(list(symbols.values()), period="5d", interval="1h", progress=False)['Close']
+        # Limpieza de NaNs: Llenamos huecos con el último valor conocido
+        df = df.ffill().bfill()
+        return df, symbols
+    except:
+        return None, None
 
-    # --- LÓGICA DE MANDO (EL "QUÉ HACER") ---
-    # Definimos la recomendación exacta
-    decision = ""
-    color = ""
-    detalles = ""
+df, symbols = fetch_data_resilient()
 
-    if dxy_ch < 0 and oro_ch > 0.1 and brl_ch < 0.2 and adr_ch > -0.5:
-        decision = "🚲 ESTADO: CARRY TRADE ACTIVO"
-        color = "#00ff00" # Verde
-        detalles = "El mundo está tranquilo y el Oro valida debilidad del dólar. Quédate en pesos y gana tasa (Lecaps/Plazo Fijo)."
-    
-    elif dxy_ch > 0.4 or brl_ch > 0.6:
-        decision = "🛡️ ESTADO: COBERTURA TOTAL"
-        color = "#ff4b4b" # Rojo
-        detalles = "Alerta de succión de dólares global o devaluación en Brasil. SAL DE PESOS. Compra Dólar MEP/CCL o Cripto inmediatamente."
-    
-    elif adr_ch < -2.0:
-        decision = "🚨 ESTADO: FUGA DE CAPITALES"
-        color = "#ffaa00" # Naranja
-        detalles = "Los fondos están vendiendo Argentina en NY. El dólar va a subir por presión de salida. No te quedes en pesos."
-    
-    else:
-        decision = "⏳ ESTADO: NEUTRAL / OBSERVACIÓN"
-        color = "#00aaff" # Azul
-        detalles = "No hay señales claras de desequilibrio. Mantén tus posiciones actuales. No es momento de grandes cambios."
+if df is not None and not df.empty:
+    try:
+        # --- EXTRACCIÓN SEGURA DE VALORES ---
+        def get_last(sym): return df[symbols[sym]].iloc[-1]
+        def get_prev(sym): return df[symbols[sym]].iloc[-2]
 
-    # --- UI: CENTRO DE MANDOS ---
-    st.markdown(f"""
-        <div class="command-box" style="background-color: {color}22; border: 2px solid {color};">
-            <h1 style="color: {color}; margin: 0;">{decision}</h1>
-            <p style="color: white; font-size: 1.2em; margin-top: 10px;">{detalles}</p>
-        </div>
-        """, unsafe_allow_html=True)
+        # 1. CÁLCULO DÓLAR CCL
+        # Verificamos que no sean nulos para evitar el nan
+        adr_now = get_last("ADR")
+        local_now = get_last("LOCAL")
+        ccl = (adr_now * 10) / local_now if local_now > 0 else 0
+        
+        # 2. VARIACIONES
+        oro_now = get_last("ORO")
+        oro_ch = ((oro_now / get_prev("ORO")) - 1) * 100
+        
+        dxy_now = get_last("DXY")
+        dxy_ch = ((dxy_now / get_prev("DXY")) - 1) * 100
+        
+        brl_now = get_last("BRL")
+        brl_ch = ((brl_now / get_prev("BRL")) - 1) * 100
 
-    # --- MÉTRICAS ---
-    col1, col2, col3, col4 = st.columns(4)
-    with col1: st.metric("Dólar CCL", f"${ccl:.2f}")
-    with col2: st.metric("Oro (XAU)", f"${df[symbols['ORO']].iloc[-1]:.1f}", f"{oro_ch:+.2f}%")
-    with col3: st.metric("Dólar Global", f"{df[symbols['DXY']].iloc[-1]:.2f}", f"{dxy_ch:+.2f}%", delta_color="inverse")
-    with col4: st.metric("Dólar Brasil", f"{df[symbols['BRL']].iloc[-1]:.4f}", f"{brl_ch:+.2f}%", delta_color="inverse")
+        # --- LÓGICA DE MANDO ---
+        decision, color, detalles = "NEUTRAL", "#00aaff", "No hay señales claras de desequilibrio."
 
-    # --- GRÁFICO ---
-    st.subheader("Radar de Inteligencia (Vigilancia 24/7)")
-    def norm(col): return (df[col] / df[col].iloc[0]) * 100
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df.index, y=norm(symbols["ORO"]), name="ORO", line=dict(color='gold', width=3)))
-    fig.add_trace(go.Scatter(x=df.index, y=norm(symbols["DXY"]), name="DXY (EE.UU)", line=dict(color='cyan')))
-    fig.add_trace(go.Scatter(x=df.index, y=norm(symbols["BRL"]), name="REAL (Brasil)", line=dict(color='lime')))
-    fig.add_trace(go.Scatter(x=df.index, y=norm(symbols["ADR"]), name="GGAL (NY)", line=dict(color='white', dash='dot')))
-    fig.update_layout(template="plotly_dark", height=500, margin=dict(l=0,r=0,t=0,b=0))
-    st.plotly_chart(fig, use_container_width=True)
+        if dxy_ch > 0.4 or brl_ch > 0.6:
+            decision, color, detalles = "🛡️ COBERTURA TOTAL", "#d93025", "Dólar global fuerte o Brasil devaluando. SAL DE PESOS AHORA."
+        elif dxy_ch < 0 and oro_ch > 0.2:
+            decision, color, detalles = "🚲 CARRY TRADE ACTIVO", "#188038", "Mundo estable y Oro fuerte. Buen momento para ganar tasa en Pesos."
+        elif adr_now < get_prev("ADR") * 0.98:
+            decision, color, detalles = "🚨 FUGA DE CAPITALES", "#f29900", "Fondos vendiendo ADRs en NY. Presión de subida inminente."
 
-except Exception as e:
-    st.warning("Mercados cerrados o sincronizando data...")
+        # --- UI: CENTRO DE MANDOS ---
+        st.markdown(f"""
+            <div class="command-box" style="background-color: {color}15; border: 2px solid {color};">
+                <h1 style="color: {color}; margin: 0; font-size: 2.5em;">{decision}</h1>
+                <p style="color: #3c4043; font-size: 1.4em; margin-top: 15px;">{detalles}</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # --- MÉTRICAS ---
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Dólar CCL", f"${ccl:.2f}")
+        c2.metric("Oro (XAU)", f"${oro_now:.1f}", f"{oro_ch:+.2f}%")
+        c3.metric("DXY Global", f"{dxy_now:.2f}", f"{dxy_ch:+.2f}%", delta_color="inverse")
+        c4.metric("Dólar Brasil", f"{brl_now:.3f}", f"{brl_ch:+.2f}%", delta_color="inverse")
+
+        # --- GRÁFICO ---
+        st.subheader("Tendencia de Activos (Base 100)")
+        def norm(col): return (df[col] / df[col].iloc[0]) * 100
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df.index, y=norm(symbols["ORO"]), name="ORO", line=dict(color='#d4af37', width=3)))
+        fig.add_trace(go.Scatter(x=df.index, y=norm(symbols["DXY"]), name="DXY (USA)", line=dict(color='#004a99')))
+        fig.add_trace(go.Scatter(x=df.index, y=norm(symbols["BRL"]), name="REAL (Brasil)", line=dict(color='#188038')))
+        fig.update_layout(
+            plot_bgcolor='white', paper_bgcolor='white', 
+            font=dict(color='#1c1e21'), height=500,
+            xaxis=dict(showgrid=True, gridcolor='#f1f3f4'),
+            yaxis=dict(showgrid=True, gridcolor='#f1f3f4')
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Error en el cálculo: {e}")
+else:
+    st.error("❌ ERROR CRÍTICO: No se pudo obtener data de Yahoo Finance. Reintenta en 1 minuto.")
+
+if st.button('🔄 Refrescar Datos de Mercado'):
+    st.cache_data.clear()
+    st.rerun()
