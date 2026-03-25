@@ -2,98 +2,101 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
 
-# --- CONFIGURACIÓN DE INTERFAZ PROFESIONAL ---
-st.set_page_config(page_title="SYSTEMATRADER: Comando Macro", layout="wide")
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="SYSTEMATRADER: Decision Engine", layout="wide")
 
 st.markdown("""
     <style>
-    .stApp { background-color: #fcfcfc; }
-    .stMetric { background-color: white; padding: 20px; border-radius: 10px; border: 1px solid #e0e0e0; }
-    .recommendation-box { padding: 25px; border-radius: 15px; text-align: center; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.1); }
-    .rec-title { font-size: 2.2em; font-weight: bold; margin-bottom: 5px; }
-    .rec-detail { font-size: 1.2em; color: #444; }
-    h2, h3 { color: #1a1a1a; }
+    .stApp { background-color: #f4f7f6; }
+    .stMetric { background-color: white; padding: 20px; border-radius: 10px; border: 1px solid #d1d5db; }
+    .directive-box { padding: 25px; border-radius: 15px; margin-bottom: 20px; border-left: 10px solid; }
+    .directive-title { font-size: 1.8em; font-weight: bold; }
+    .directive-text { font-size: 1.1em; color: #333; margin-top: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
-@st.cache_data(ttl=300)
-def get_data_v5():
-    # Diccionario Maestro de Activos
+@st.cache_data(ttl=600)
+def fetch_institutional_data():
     symbols = {
         "ORO": "GC=F", "DXY": "DX-Y.NYB", "BRL": "USDBRL=X", 
         "ADR": "GGAL", "LOCAL": "GGAL.BA", "SOJA": "ZS=F"
     }
-    df = yf.download(list(symbols.values()), period="5d", interval="1h", progress=False)['Close']
+    # Ampliamos a 60 días para tener contexto de tendencia
+    df = yf.download(list(symbols.values()), period="60d", interval="1d", progress=False)['Close']
     return df.ffill().bfill(), symbols
 
 try:
-    df, symbols = get_data_v5()
+    df, symbols = fetch_institutional_data()
     
-    # --- CÁLCULOS QUANTS ---
-    adr_now = df[symbols["ADR"]].iloc[-1]
-    local_now = df[symbols["LOCAL"]].iloc[-1]
-    ccl = (local_now / adr_now) * 10 if adr_now > 0 else 0
-    
-    dxy_ch = ((df[symbols["DXY"]].iloc[-1] / df[symbols["DXY"]].iloc[-2]) - 1) * 100
-    brl_ch = ((df[symbols["BRL"]].iloc[-1] / df[symbols["BRL"]].iloc[-2]) - 1) * 100
-    oro_ch = ((df[symbols["ORO"]].iloc[-1] / df[symbols["ORO"]].iloc[-2]) - 1) * 100
-    soja_ch = ((df[symbols["SOJA"]].iloc[-1] / df[symbols["SOJA"]].iloc[-2]) - 1) * 100
+    # --- CÁLCULOS DE MOMENTUM ---
+    def get_stats(key):
+        current = df[symbols[key]].iloc[-1]
+        sma20 = df[symbols[key]].rolling(20).mean().iloc[-1]
+        change_pct = ((current / df[symbols[key]].iloc[-2]) - 1) * 100
+        return current, sma20, change_pct
 
-    # --- MOTOR DE RECOMENDACIÓN (LÓGICA DE MANDO) ---
+    ccl_now = (df[symbols["LOCAL"]].iloc[-1] / df[symbols["ADR"]].iloc[-1]) * 10
+    oro_p, oro_sma, oro_ch = get_stats("ORO")
+    dxy_p, dxy_sma, dxy_ch = get_stats("DXY")
+    brl_p, brl_sma, brl_ch = get_stats("BRL")
+    soja_p, soja_sma, soja_ch = get_stats("SOJA")
+
+    # --- MOTOR DE RECOMENDACIÓN (LOGIC GATES) ---
     score = 0
-    if dxy_ch > 0.3: score -= 35 # El dólar global sube, peso baja
-    if brl_ch > 0.5: score -= 30 # Brasil devalúa, presión en ARS
-    if soja_ch < -1.0: score -= 20 # Menos dólares de la cosecha
-    if oro_ch > 0.2: score += 25 # Oro sube, dólar global débil (bueno para ARS)
+    # Regla 1: DXY por encima de su promedio = Succión de dólares (Malo)
+    if dxy_p > dxy_sma: score -= 30
+    # Regla 2: Oro por encima de su promedio = Dólar global débil (Bueno)
+    if oro_p > oro_sma: score += 25
+    # Regla 3: Brasil devaluando fuerte hoy
+    if brl_ch > 0.5: score -= 25
+    # Regla 4: Soja cayendo (Menos reservas)
+    if soja_p < soja_sma: score -= 20
 
+    # --- DETERMINACIÓN DE INSTRUCCIÓN ---
     if score <= -40:
-        rec_text, rec_color, rec_msg = "🛡️ COMPRAR DÓLARES", "#d93025", "ESTADO DE COBERTURA: El contexto global asfixia al peso argentino. Protege tu capital en moneda dura."
+        status, color, action = "🛡️ PROTECCIÓN CRÍTICA", "#d93025", "COMPRA DÓLARES / CRIPTO YA. El contexto macro es de tormenta. No mantengas pesos."
     elif score >= 20:
-        rec_text, rec_color, rec_msg = "🚲 HACER CARRY TRADE", "#188038", "ESTADO DE OPORTUNIDAD: El mundo está tranquilo. Vende dólares y gana tasa en pesos (Lecaps/Plazo Fijo)."
+        status, color, action = "🚲 CARRY TRADE (SOLO AGRESIVOS)", "#188038", "MANTÉN PESOS A TASA. El mundo y el Oro validan estabilidad temporal. Monitoreo diario obligatorio."
     else:
-        rec_text, rec_color, rec_msg = "⏳ MANTENER / NEUTRAL", "#007bff", "ESTADO DE OBSERVACIÓN: No hay señales claras de desequilibrio. Mantén tus posiciones actuales."
+        status, color, action = "⏳ POSICIÓN NEUTRAL", "#007bff", "MANTÉN TUS POSICIONES. No hay ventaja clara para cambiar de moneda hoy."
 
-    # --- UI: CENTRO DE COMANDO (RECOMENDACIÓN) ---
+    # --- UI: INSTRUCCIONES EJECUTIVAS ---
     st.markdown(f"""
-        <div class="recommendation-box" style="background-color: {rec_color}15; border: 3px solid {rec_color};">
-            <div class="rec-title" style="color: {rec_color};">{rec_text}</div>
-            <div class="rec-detail">{rec_msg}</div>
+        <div class="directive-box" style="background-color: {color}10; border-color: {color};">
+            <div class="directive-title" style="color: {color};">{status}</div>
+            <div class="directive-text"><b>ORDEN DEL SISTEMA:</b> {action}</div>
         </div>
         """, unsafe_allow_html=True)
 
-    # --- MÉTRICAS DE TRADING ---
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Dólar CCL", f"${ccl:,.1f}")
-    c2.metric("Oro (XAU)", f"${df[symbols['ORO']].iloc[-1]:.0f}", f"{oro_ch:+.2f}%")
-    c3.metric("Global (DXY)", f"{df[symbols['DXY']].iloc[-1]:.2f}", f"{dxy_ch:+.2f}%", delta_color="inverse")
-    c4.metric("Brasil (BRL)", f"{df[symbols['BRL']].iloc[-1]:.3f}", f"{brl_ch:+.2f}%", delta_color="inverse")
-    c5.metric("Soja (ZS)", f"{df[symbols['SOJA']].iloc[-1]:.1f}", f"{soja_ch:+.2f}%")
+    # --- DASHBOARD DE MÉTRICAS ---
+    st.subheader("🔍 Estado de los 'Espías' de Mercado")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Dólar CCL", f"${ccl_now:,.1f}", f"{((ccl_now/df[symbols['LOCAL']].iloc[-2]/df[symbols['ADR']].iloc[-2]*10)-1)*100:+.2f}%")
+    c2.metric("Oro (XAU/USD)", f"${oro_p:,.0f}", f"{oro_ch:+.2f}%", help="Si el Oro sube, el Dólar global está perdiendo valor real.")
+    c3.metric("DXY Global", f"{dxy_p:.2f}", f"{dxy_ch:+.2f}%", delta_color="inverse", help="Si el DXY sube, Argentina se queda sin dólares.")
+    c4.metric("Dólar Brasil", f"{brl_p:.3f}", f"{brl_ch:+.2f}%", delta_color="inverse")
 
-    # --- GRÁFICO DE CONVERGENCIA ---
-    st.subheader("📊 Gráfico de Presión Macro (Últimas 120 horas)")
+    # --- ANÁLISIS DE TENDENCIA ---
+    st.subheader("📊 Comparativa de Tendencia (Últimos 60 días)")
+    def norm(series): return (series / series.iloc[0]) * 100
     
-    # Normalización para que todas las líneas empiecen en 100 y sean comparables
-    def normalize(series): return (series / series.iloc[0]) * 100
-
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df.index, y=normalize(df[symbols["ORO"]]), name="Oro (La Verdad)", line=dict(color='#FFD700', width=4)))
-    fig.add_trace(go.Scatter(x=df.index, y=normalize(df[symbols["DXY"]]), name="Dólar Global (DXY)", line=dict(color='#1E90FF', width=2)))
-    fig.add_trace(go.Scatter(x=df.index, y=normalize(df[symbols["BRL"]]), name="Dólar Brasil (BRL)", line=dict(color='#32CD32', width=2)))
+    fig.add_trace(go.Scatter(x=df.index, y=norm(df[symbols["ORO"]]), name="ORO (Tendencia)", line=dict(color='#FFD700', width=3)))
+    fig.add_trace(go.Scatter(x=df.index, y=norm(df[symbols["DXY"]]), name="DXY (EE.UU)", line=dict(color='#1E90FF', width=2)))
+    fig.add_trace(go.Scatter(x=df.index, y=norm(df[symbols["BRL"]]), name="Brasil", line=dict(color='#32CD32', width=2)))
     
-    fig.update_layout(
-        plot_bgcolor='white', paper_bgcolor='white',
-        height=500, margin=dict(l=10,r=10,t=10,b=10),
-        xaxis=dict(showgrid=True, gridcolor='#eeeeee'),
-        yaxis=dict(showgrid=True, gridcolor='#eeeeee'),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
+    fig.update_layout(plot_bgcolor='white', height=500, margin=dict(l=10,r=10,t=10,b=10), hovermode="x unified")
     st.plotly_chart(fig, use_container_width=True)
 
-    st.info(f"SystemaTrader: Hoy es feriado en Argentina (24 de Marzo). El precio de GGAL es el cierre del viernes, pero el Oro, el DXY y Brasil son tiempo real.")
+    st.markdown("""
+    **¿Por qué este gráfico es diferente?**
+    Aquí ves quién le está ganando a quién en los últimos 2 meses. Si la línea **Azul (DXY)** sube más que las otras, la presión sobre el peso argentino es **insostenible**.
+    """)
 
 except Exception as e:
-    st.error(f"Error de conexión con la red de datos: {e}")
+    st.error(f"Sincronizando con los servidores de Londres y Nueva York... {e}")
 
-st.button("🔄 Sincronizar Mercados")
+if st.button('🔄 Forzar Recálculo de Estrategia'):
+    st.cache_data.clear()
+    st.rerun()
