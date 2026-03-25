@@ -4,8 +4,8 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
-# --- CONFIGURACIÓN INSTITUCIONAL ---
-st.set_page_config(page_title="SLY v8.1: Holiday Resilience", layout="wide")
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="SLY v8.2: Final Robust", layout="wide")
 
 st.markdown("""
     <style>
@@ -17,67 +17,55 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 @st.cache_data(ttl=600)
-def fetch_alpha_data():
+def fetch_safe_data():
     symbols = {
         "ORO": "GC=F", "DXY": "DX-Y.NYB", "BRL": "USDBRL=X", 
-        "ADR": "GGAL", "LOCAL": "GGAL.BA", "SOJA": "ZS=F",
-        "AL30": "AL30.BA", "AL30D": "AL30D.BA"
+        "ADR": "GGAL", "LOCAL": "GGAL.BA", "AL30": "AL30.BA", "AL30D": "AL30D.BA"
     }
-    # Pedimos 60 días para asegurar que haya data histórica suficiente
-    df = yf.download(list(symbols.values()), period="60d", interval="1d", progress=False)['Close']
-    # Protocolo de limpieza profunda
-    df = df.ffill().bfill()
-    return df, symbols
+    data_results = {}
+    
+    # Descarga individual para evitar que un fallo bloquee al resto
+    for key, ticker in symbols.items():
+        try:
+            # Pedimos 7 días para asegurar encontrar el último cierre (viernes)
+            df_temp = yf.download(ticker, period="7d", interval="1d", progress=False)
+            if not df_temp.empty:
+                data_results[key] = df_temp['Close'].ffill().iloc[-1]
+            else:
+                data_results[key] = 0.0
+        except:
+            data_results[key] = 0.0
+    
+    return data_results
 
 try:
-    df, symbols = fetch_alpha_data()
+    # --- EJECUCIÓN DEL MOTOR ---
+    data = fetch_safe_data()
     
-    # --- FUNCIÓN DE EXTRACCIÓN SEGURA (ANTI-NAN) ---
-    def get_valid_last(key):
-        series = df[symbols[key]].dropna()
-        return series.iloc[-1] if not series.empty else 0
-
-    # --- CÁLCULOS DE DÓLAR Y ARBITRAJE ---
-    # 1. Dólar CCL (via GGAL)
-    adr_val = get_valid_last("ADR")
-    local_val = get_valid_last("LOCAL")
-    ccl = (local_val / adr_val) * 10 if adr_val > 0 else 0
+    # 1. CÁLCULOS DE DÓLAR
+    # CCL vía GGAL
+    ccl = (data["LOCAL"] / data["ADR"]) * 10 if data["ADR"] > 0 else 0
     
-    # 2. Dólar MEP (via Bonos AL30)
-    al30_p = get_valid_last("AL30")
-    al30d_p = get_valid_last("AL30D")
-    # Si los bonos fallan, el sistema no muestra nan, muestra 0 para alertar
-    mep = al30_p / al30d_p if al30d_p > 0 else 0
+    # MEP vía AL30 (Fórmula: Bono Pesos / Bono Dólar)
+    mep = data["AL30"] / data["AL30D"] if data["AL30D"] > 0 else 0
     
-    # 3. Riesgo País Proxy
-    risk_proxy = 100 / al30d_p if al30d_p > 0 else 0
+    # Riesgo País Proxy
+    risk_proxy = 100 / data["AL30D"] if data["AL30D"] > 0 else 0
     
-    # --- MOTOR DE DECISIÓN v8.1 ---
+    # 2. MOTOR DE DECISIÓN
     score = 0
-    points = []
+    # Análisis DXY y Brasil
+    if data["DXY"] > 100: score -= 20
+    if data["BRL"] > 5.10: score -= 20
     
-    # Z-Score simplificado para evitar errores de std dev en feriados
-    returns = df[symbols["DXY"]].pct_change().dropna()
-    z_dxy = (returns.iloc[-1] - returns.mean()) / returns.std() if not returns.empty else 0
-
-    # Lógica de Alerta
-    if z_dxy > 1.2:
-        score -= 40
-        points.append(f"🔴 Dólar Global fuerte (Z:{z_dxy:.1f}) - Presión de subida.")
-    
-    if get_valid_last("BRL") > df[symbols["BRL"]].mean():
-        score -= 20
-        points.append("🔴 Brasil devaluado - Presión regional.")
-
-    # --- DETERMINACIÓN DE ACCIÓN ---
-    if score <= -40:
-        status, color, action = "PROTECCIÓN CRÍTICA", "#d93025", "COMPRA DÓLAR / USDT YA"
-    elif score >= 20:
-        status, color, action = "CARRY TRADE ACTIVO", "#188038", "MANTÉN PESOS"
+    if score <= -40 or (mep == 0):
+        status, color, action = "ALERTA DE SISTEMA", "#d93025", "ASEGURAR LIQUIDEZ EN DÓLARES / USDT"
+    elif score >= 10:
+        status, color, action = "CARRY TRADE ACTIVO", "#188038", "MANTÉN PESOS (OPORTUNIDAD)"
     else:
-        status, color, action = "POSICIÓN NEUTRAL", "#007bff", "MANTÉN POSICIÓN ACTUAL"
+        status, color, action = "POSICIÓN NEUTRAL", "#007bff", "SIN CAMBIOS OPERATIVOS"
 
-    # --- UI: CABECERA ---
+    # --- UI: PANEL DE MANDO ---
     st.markdown(f"""
         <div style="background-color: {color}; padding: 25px; border-radius: 15px; text-align: center; color: white;">
             <h1 style="margin:0;">{status}</h1>
@@ -85,45 +73,45 @@ try:
         </div>
         """, unsafe_allow_html=True)
 
-    # --- UI: PANEL ALPHA (ARBITRAJE) ---
+    # --- UI: ARBITRAJE ---
     st.write("")
     col_arb1, col_arb2 = st.columns(2)
     with col_arb1:
         spread = ((ccl / mep) - 1) * 100 if mep > 0 else 0
         st.markdown(f"""
         <div class="arbitrage-box">
-            ⚖️ ARBITRAJE: El CCL es {spread:.1f}% más caro que el MEP.<br>
-            RECOMENDACIÓN: {'Comprar MEP / USDT' if spread > 2 else 'Precios equilibrados'}
+            ⚖️ SPREAD CCL vs MEP: {spread:.1f}%<br>
+            RECOMENDACIÓN: {'Comprar MEP / Cripto (Está barato)' if spread > 2 else 'Arbitraje equilibrado'}
         </div>
         """, unsafe_allow_html=True)
     with col_arb2:
         st.markdown(f"""
         <div class="arbitrage-box" style="background-color: #d1ecf1; border-color: #bee5eb; color: #0c5460;">
             🛰️ RIESGO PAÍS PROXY: {risk_proxy:.2f} units<br>
-            ESTADO: {'🔴 PRESIÓN ALTA' if risk_proxy > 2.5 else '🟢 ESTABLE'}
+            ESTADO: {'🔴 PRESIÓN ALTA' if risk_proxy > 2.8 else '🟢 ESTABLE'}
         </div>
         """, unsafe_allow_html=True)
 
-    # --- MÉTRICAS ---
+    # --- UI: MÉTRICAS ---
     st.write("---")
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Dólar CCL", f"${ccl:,.1f}")
     m1.metric("Dólar MEP", f"${mep:,.1f}")
-    m2.metric("Oro (XAU)", f"${get_valid_last('ORO'):,.0f}")
-    m3.metric("DXY Index", f"{get_valid_last('DXY'):.2f}")
-    m4.metric("Dólar Brasil", f"{get_valid_last('BRL'):.3f}")
+    m2.metric("Oro (XAU)", f"${data['ORO']:,.0f}")
+    m3.metric("DXY Index", f"{data['DXY']:.2f}")
+    m4.metric("Dólar Brasil", f"{data['BRL']:.3f}")
 
-    # --- GRÁFICO ---
-    st.subheader("📊 Gráfico de Convergencia (Últimos 60 Días)")
-    def norm(s): return (s / s.iloc[0]) * 100
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df.index, y=norm(df[symbols["ORO"]]), name="ORO", line=dict(color='#d4af37', width=4)))
-    fig.add_trace(go.Scatter(x=df.index, y=norm(df[symbols["DXY"]]), name="DXY", line=dict(color='#004a99')))
-    fig.add_trace(go.Scatter(x=df.index, y=norm(df[symbols["AL30D"]]), name="BONO USD", line=dict(color='#d93025', dash='dot')))
-    fig.update_layout(plot_bgcolor='white', height=450)
-    st.plotly_chart(fig, use_container_width=True)
+    # --- UI: FORENSE ---
+    st.markdown(f"""
+    <div class="forensic-card">
+        <h3>🔍 Resumen Forense</h3>
+        • <b>Dólar Global:</b> {'Fuerte' if data['DXY']>100 else 'Bajo Control'}<br>
+        • <b>Contexto Regional:</b> {'Presión desde Brasil' if data['BRL']>5.2 else 'Estable'}<br>
+        • <b>Confianza Local:</b> {'Baja (Bonos cayendo)' if data['AL30D']<35 else 'Normal'}
+    </div>
+    """, unsafe_allow_html=True)
 
 except Exception as e:
-    st.error(f"Fallo de conexión o feriado: {e}")
+    st.error(f"Error en la terminal: {e}")
 
-st.info("SystemaTrader: v8.1 activa. Usando 'Fallback' de datos históricos por feriado del 24 de Marzo.")
+st.info("SystemaTrader v8.2: Motor de carga individual activado. Datos recuperados del último cierre de mercado disponible.")
