@@ -4,15 +4,14 @@ import pandas as pd
 import plotly.graph_objects as go
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="SYSTEMATRADER: Decision Engine", layout="wide")
+st.set_page_config(page_title="SLY: Decision Forensics", layout="wide")
 
 st.markdown("""
     <style>
-    .stApp { background-color: #f4f7f6; }
-    .stMetric { background-color: white; padding: 20px; border-radius: 10px; border: 1px solid #d1d5db; }
-    .directive-box { padding: 25px; border-radius: 15px; margin-bottom: 20px; border-left: 10px solid; }
-    .directive-title { font-size: 1.8em; font-weight: bold; }
-    .directive-text { font-size: 1.1em; color: #333; margin-top: 10px; }
+    .stApp { background-color: #f8f9fa; }
+    .stMetric { background-color: white; padding: 15px; border-radius: 10px; border: 1px solid #e0e0e0; }
+    .forensic-card { background-color: white; padding: 25px; border-radius: 15px; border-top: 5px solid #004a99; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+    .factor-tag { padding: 5px 12px; border-radius: 20px; font-size: 0.9em; font-weight: bold; margin-right: 10px; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -22,14 +21,12 @@ def fetch_institutional_data():
         "ORO": "GC=F", "DXY": "DX-Y.NYB", "BRL": "USDBRL=X", 
         "ADR": "GGAL", "LOCAL": "GGAL.BA", "SOJA": "ZS=F"
     }
-    # Ampliamos a 60 días para tener contexto de tendencia
     df = yf.download(list(symbols.values()), period="60d", interval="1d", progress=False)['Close']
     return df.ffill().bfill(), symbols
 
 try:
     df, symbols = fetch_institutional_data()
     
-    # --- CÁLCULOS DE MOMENTUM ---
     def get_stats(key):
         current = df[symbols[key]].iloc[-1]
         sma20 = df[symbols[key]].rolling(20).mean().iloc[-1]
@@ -42,61 +39,86 @@ try:
     brl_p, brl_sma, brl_ch = get_stats("BRL")
     soja_p, soja_sma, soja_ch = get_stats("SOJA")
 
-    # --- MOTOR DE RECOMENDACIÓN (LOGIC GATES) ---
-    score = 0
-    # Regla 1: DXY por encima de su promedio = Succión de dólares (Malo)
-    if dxy_p > dxy_sma: score -= 30
-    # Regla 2: Oro por encima de su promedio = Dólar global débil (Bueno)
-    if oro_p > oro_sma: score += 25
-    # Regla 3: Brasil devaluando fuerte hoy
-    if brl_ch > 0.5: score -= 25
-    # Regla 4: Soja cayendo (Menos reservas)
-    if soja_p < soja_sma: score -= 20
+    # --- MOTOR FORENSE (CÁLCULO DE PUNTOS) ---
+    points = []
+    total_score = 0
 
-    # --- DETERMINACIÓN DE INSTRUCCIÓN ---
-    if score <= -40:
-        status, color, action = "🛡️ PROTECCIÓN CRÍTICA", "#d93025", "COMPRA DÓLARES / CRIPTO YA. El contexto macro es de tormenta. No mantengas pesos."
-    elif score >= 20:
-        status, color, action = "🚲 CARRY TRADE (SOLO AGRESIVOS)", "#188038", "MANTÉN PESOS A TASA. El mundo y el Oro validan estabilidad temporal. Monitoreo diario obligatorio."
+    # 1. Análisis Dólar Global
+    if dxy_p > dxy_sma:
+        total_score -= 35
+        points.append(("🔴 DXY > Promedio", "-35 pts", "El dólar global está fuerte, succionando capital de emergentes."))
     else:
-        status, color, action = "⏳ POSICIÓN NEUTRAL", "#007bff", "MANTÉN TUS POSICIONES. No hay ventaja clara para cambiar de moneda hoy."
+        total_score += 10
+        points.append(("🟢 DXY bajo control", "+10 pts", "La presión global de EE.UU. es baja."))
 
-    # --- UI: INSTRUCCIONES EJECUTIVAS ---
+    # 2. Análisis Brasil
+    if brl_ch > 0.4:
+        total_score -= 30
+        points.append(("🔴 Devaluación Brasil", "-30 pts", "Brasil está devaluando fuerte hoy, forzando al peso a seguirlo."))
+    elif brl_p < brl_sma:
+        total_score += 15
+        points.append(("🟢 Real Fuerte", "+15 pts", "Nuestro principal socio comercial está estable."))
+
+    # 3. Análisis Oro (Refugio)
+    if oro_p > oro_sma:
+        total_score += 25
+        points.append(("🟢 Oro en Tendencia", "+25 pts", "El Oro valida que el dólar global está perdiendo valor real."))
+    else:
+        total_score -= 10
+        points.append(("🟡 Oro Débil", "-10 pts", "No hay refugio activo contra el dólar global."))
+
+    # 4. Análisis Soja (Caja Fuerte)
+    if soja_p < soja_sma:
+        total_score -= 20
+        points.append(("🔻 Soja a la baja", "-20 pts", "Menos ingresos proyectados por exportaciones agrícolas."))
+
+    # --- DETERMINACIÓN DE ESTADO ---
+    if total_score <= -40:
+        status, color, action = "PROTECCIÓN CRÍTICA", "#d93025", "COMPRA DÓLARES / CRIPTO YA"
+    elif total_score >= 25:
+        status, color, action = "CARRY TRADE ACTIVO", "#188038", "MANTÉN PESOS (LECAPS / PLAZO FIJO)"
+    else:
+        status, color, action = "POSICIÓN NEUTRAL", "#007bff", "MANTÉN TUS POSICIONES ACTUALES"
+
+    # --- UI: PANEL DE MANDO ---
     st.markdown(f"""
-        <div class="directive-box" style="background-color: {color}10; border-color: {color};">
-            <div class="directive-title" style="color: {color};">{status}</div>
-            <div class="directive-text"><b>ORDEN DEL SISTEMA:</b> {action}</div>
+        <div style="background-color: {color}; padding: 20px; border-radius: 15px 15px 0 0; text-align: center;">
+            <h1 style="color: white; margin: 0;">{status}</h1>
+            <h2 style="color: white; opacity: 0.9; margin: 0;">{action}</h2>
         </div>
         """, unsafe_allow_html=True)
 
-    # --- DASHBOARD DE MÉTRICAS ---
-    st.subheader("🔍 Estado de los 'Espías' de Mercado")
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Dólar CCL", f"${ccl_now:,.1f}", f"{((ccl_now/df[symbols['LOCAL']].iloc[-2]/df[symbols['ADR']].iloc[-2]*10)-1)*100:+.2f}%")
-    c2.metric("Oro (XAU/USD)", f"${oro_p:,.0f}", f"{oro_ch:+.2f}%", help="Si el Oro sube, el Dólar global está perdiendo valor real.")
-    c3.metric("DXY Global", f"{dxy_p:.2f}", f"{dxy_ch:+.2f}%", delta_color="inverse", help="Si el DXY sube, Argentina se queda sin dólares.")
-    c4.metric("Dólar Brasil", f"{brl_p:.3f}", f"{brl_ch:+.2f}%", delta_color="inverse")
+    # --- UI: PANEL FORENSE ---
+    with st.container():
+        st.markdown(f"""
+        <div class="forensic-card">
+            <h3>🔍 Forense de Decisión (Puntaje Total: {total_score})</h3>
+            <p>Por qué el sistema toma esta decisión hoy:</p>
+        """, unsafe_allow_html=True)
+        
+        for title, pts, desc in points:
+            dot_color = "red" if "-" in pts else "green"
+            st.markdown(f"**{title}** ({pts}): {desc}")
+        
+        st.markdown("</div>", unsafe_allow_html=True)
 
-    # --- ANÁLISIS DE TENDENCIA ---
-    st.subheader("📊 Comparativa de Tendencia (Últimos 60 días)")
-    def norm(series): return (series / series.iloc[0]) * 100
-    
+    # --- MÉTRICAS ---
+    st.write("---")
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Dólar CCL", f"${ccl_now:,.1f}")
+    c2.metric("Oro (XAU)", f"${oro_p:,.0f}")
+    c3.metric("DXY Global", f"{dxy_p:.2f}", delta_color="inverse")
+    c4.metric("Dólar Brasil", f"{brl_p:.3f}", delta_color="inverse")
+
+    # --- GRÁFICO ---
+    st.subheader("📊 Visualización de Convergencia (60 Días)")
+    def norm(s): return (s / s.iloc[0]) * 100
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df.index, y=norm(df[symbols["ORO"]]), name="ORO (Tendencia)", line=dict(color='#FFD700', width=3)))
-    fig.add_trace(go.Scatter(x=df.index, y=norm(df[symbols["DXY"]]), name="DXY (EE.UU)", line=dict(color='#1E90FF', width=2)))
-    fig.add_trace(go.Scatter(x=df.index, y=norm(df[symbols["BRL"]]), name="Brasil", line=dict(color='#32CD32', width=2)))
-    
-    fig.update_layout(plot_bgcolor='white', height=500, margin=dict(l=10,r=10,t=10,b=10), hovermode="x unified")
+    fig.add_trace(go.Scatter(x=df.index, y=norm(df[symbols["ORO"]]), name="ORO", line=dict(color='#d4af37', width=3)))
+    fig.add_trace(go.Scatter(x=df.index, y=norm(df[symbols["DXY"]]), name="DXY (USA)", line=dict(color='#004a99')))
+    fig.add_trace(go.Scatter(x=df.index, y=norm(df[symbols["BRL"]]), name="BRL (Brasil)", line=dict(color='#188038')))
+    fig.update_layout(plot_bgcolor='white', height=450, margin=dict(l=10,r=10,t=10,b=10))
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("""
-    **¿Por qué este gráfico es diferente?**
-    Aquí ves quién le está ganando a quién en los últimos 2 meses. Si la línea **Azul (DXY)** sube más que las otras, la presión sobre el peso argentino es **insostenible**.
-    """)
-
 except Exception as e:
-    st.error(f"Sincronizando con los servidores de Londres y Nueva York... {e}")
-
-if st.button('🔄 Forzar Recálculo de Estrategia'):
-    st.cache_data.clear()
-    st.rerun()
+    st.error(f"Sincronizando con los servidores de datos... {e}")
