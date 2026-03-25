@@ -4,8 +4,8 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
-# --- CONFIGURACIÓN ---
-st.set_page_config(page_title="SLY v8.2: Final Robust", layout="wide")
+# --- CONFIGURACIÓN INSTITUCIONAL ---
+st.set_page_config(page_title="SLY v8.3: Zero Ambiguity", layout="wide")
 
 st.markdown("""
     <style>
@@ -17,20 +17,24 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 @st.cache_data(ttl=600)
-def fetch_safe_data():
+def fetch_scalar_data():
     symbols = {
         "ORO": "GC=F", "DXY": "DX-Y.NYB", "BRL": "USDBRL=X", 
         "ADR": "GGAL", "LOCAL": "GGAL.BA", "AL30": "AL30.BA", "AL30D": "AL30D.BA"
     }
     data_results = {}
     
-    # Descarga individual para evitar que un fallo bloquee al resto
     for key, ticker in symbols.items():
         try:
-            # Pedimos 7 días para asegurar encontrar el último cierre (viernes)
+            # Descarga individual
             df_temp = yf.download(ticker, period="7d", interval="1d", progress=False)
             if not df_temp.empty:
-                data_results[key] = df_temp['Close'].ffill().iloc[-1]
+                # Forzamos la extracción del último valor como un número decimal puro (float)
+                val = df_temp['Close'].ffill().iloc[-1]
+                # Si por error devuelve una serie, tomamos el primer elemento
+                if isinstance(val, pd.Series):
+                    val = val.iloc[0]
+                data_results[key] = float(val)
             else:
                 data_results[key] = 0.0
         except:
@@ -39,33 +43,30 @@ def fetch_safe_data():
     return data_results
 
 try:
-    # --- EJECUCIÓN DEL MOTOR ---
-    data = fetch_safe_data()
+    # --- EJECUCIÓN ---
+    data = fetch_scalar_data()
     
-    # 1. CÁLCULOS DE DÓLAR
-    # CCL vía GGAL
-    ccl = (data["LOCAL"] / data["ADR"]) * 10 if data["ADR"] > 0 else 0
+    # 1. CÁLCULOS MATEMÁTICOS (Basados en escalares puros)
+    ccl = (data["LOCAL"] / data["ADR"]) * 10 if data["ADR"] > 0 else 0.0
+    mep = (data["AL30"] / data["AL30D"]) if data["AL30D"] > 0 else 0.0
+    risk_proxy = 100.0 / data["AL30D"] if data["AL30D"] > 0 else 0.0
     
-    # MEP vía AL30 (Fórmula: Bono Pesos / Bono Dólar)
-    mep = data["AL30"] / data["AL30D"] if data["AL30D"] > 0 else 0
-    
-    # Riesgo País Proxy
-    risk_proxy = 100 / data["AL30D"] if data["AL30D"] > 0 else 0
-    
-    # 2. MOTOR DE DECISIÓN
+    # 2. MOTOR DE DECISIÓN (Lógica SLY)
     score = 0
-    # Análisis DXY y Brasil
+    # Factores Externos
     if data["DXY"] > 100: score -= 20
-    if data["BRL"] > 5.10: score -= 20
+    if data["BRL"] > 5.20: score -= 20
+    # Factores Internos (Si bonos caen, dólar sube)
+    if data["AL30D"] < 35: score -= 30
     
-    if score <= -40 or (mep == 0):
-        status, color, action = "ALERTA DE SISTEMA", "#d93025", "ASEGURAR LIQUIDEZ EN DÓLARES / USDT"
-    elif score >= 10:
-        status, color, action = "CARRY TRADE ACTIVO", "#188038", "MANTÉN PESOS (OPORTUNIDAD)"
+    if score <= -40:
+        status, color, action = "ALERTA DE SISTEMA", "#d93025", "COMPRA DÓLAR / USDT - COBERTURA"
+    elif score >= 20:
+        status, color, action = "CARRY TRADE ACTIVO", "#188038", "MANTÉN PESOS - OPORTUNIDAD"
     else:
         status, color, action = "POSICIÓN NEUTRAL", "#007bff", "SIN CAMBIOS OPERATIVOS"
 
-    # --- UI: PANEL DE MANDO ---
+    # --- UI: CABECERA ---
     st.markdown(f"""
         <div style="background-color: {color}; padding: 25px; border-radius: 15px; text-align: center; color: white;">
             <h1 style="margin:0;">{status}</h1>
@@ -77,17 +78,17 @@ try:
     st.write("")
     col_arb1, col_arb2 = st.columns(2)
     with col_arb1:
-        spread = ((ccl / mep) - 1) * 100 if mep > 0 else 0
+        spread = ((ccl / mep) - 1) * 100 if mep > 0 else 0.0
         st.markdown(f"""
         <div class="arbitrage-box">
             ⚖️ SPREAD CCL vs MEP: {spread:.1f}%<br>
-            RECOMENDACIÓN: {'Comprar MEP / Cripto (Está barato)' if spread > 2 else 'Arbitraje equilibrado'}
+            RECOMENDACIÓN: {'Comprar MEP / USDT' if spread > 2 else 'Precios equilibrados'}
         </div>
         """, unsafe_allow_html=True)
     with col_arb2:
         st.markdown(f"""
         <div class="arbitrage-box" style="background-color: #d1ecf1; border-color: #bee5eb; color: #0c5460;">
-            🛰️ RIESGO PAÍS PROXY: {risk_proxy:.2f} units<br>
+            🛰️ RIESGO PAÍS PROXY: {risk_proxy:.2f}<br>
             ESTADO: {'🔴 PRESIÓN ALTA' if risk_proxy > 2.8 else '🟢 ESTABLE'}
         </div>
         """, unsafe_allow_html=True)
@@ -104,14 +105,14 @@ try:
     # --- UI: FORENSE ---
     st.markdown(f"""
     <div class="forensic-card">
-        <h3>🔍 Resumen Forense</h3>
-        • <b>Dólar Global:</b> {'Fuerte' if data['DXY']>100 else 'Bajo Control'}<br>
-        • <b>Contexto Regional:</b> {'Presión desde Brasil' if data['BRL']>5.2 else 'Estable'}<br>
-        • <b>Confianza Local:</b> {'Baja (Bonos cayendo)' if data['AL30D']<35 else 'Normal'}
+        <h3>🔍 Análisis de Situación</h3>
+        • <b>Dólar Global:</b> {'Presión Alta' if data['DXY']>100 else 'Normal'}<br>
+        • <b>Brasil:</b> {'Devaluando' if data['BRL']>5.25 else 'Estable'}<br>
+        • <b>Bonos Argentina:</b> {'Liquidación de Carteras' if data['AL30D']<35 else 'Sostenidos'}
     </div>
     """, unsafe_allow_html=True)
 
 except Exception as e:
-    st.error(f"Error en la terminal: {e}")
+    st.error(f"Fallo en el motor de cálculo: {e}")
 
-st.info("SystemaTrader v8.2: Motor de carga individual activado. Datos recuperados del último cierre de mercado disponible.")
+st.info("SystemaTrader v8.3: Error de ambigüedad resuelto. El sistema ahora garantiza valores escalares para la toma de decisiones.")
