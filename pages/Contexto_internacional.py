@@ -4,87 +4,107 @@ import pandas as pd
 import requests
 import plotly.graph_objects as go
 
-# --- CONFIGURACIÓN ---
-st.set_page_config(page_title="SLY v12.1: Mentor Edition", layout="wide")
+# --- CONFIGURACIÓN DE LA ESCUELA (INTERFAZ) ---
+st.set_page_config(page_title="SLY v13.0: Storyteller Edition", layout="wide")
 
 st.markdown("""
     <style>
     .stApp { background-color: #f8f9fa; }
-    .stMetric { background-color: white; padding: 15px; border-radius: 10px; border: 1px solid #eee; }
-    .command-box { padding: 25px; border-radius: 15px; text-align: center; color: white; margin-bottom: 20px; }
-    .logic-card { background-color: #ffffff; padding: 20px; border-radius: 10px; border-left: 10px solid #004a99; margin-top: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-    .mentor-note { background-color: #e7f3ff; padding: 15px; border-radius: 8px; border-left: 5px solid #2196f3; font-size: 0.95em; color: #1e4976; margin-top: 10px; }
+    .command-box { padding: 30px; border-radius: 20px; text-align: center; color: white; margin-bottom: 25px; box-shadow: 0 4px 15px rgba(0,0,0,0.1); }
+    .school-card { background-color: #ffffff; padding: 20px; border-radius: 15px; border-left: 10px solid #2196f3; margin-top: 15px; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+    .child-explanation { font-size: 1.1em; color: #1e4976; line-height: 1.5; }
+    .emoji-title { font-size: 1.5em; font-weight: bold; margin-bottom: 10px; display: block; }
     </style>
     """, unsafe_allow_html=True)
 
 @st.cache_data(ttl=300)
 def fetch_institutional_data():
+    # Tickers: Oro, DXY, Brasil, Galicia ADR, Galicia Local, Tasa USA 10 años
     tkrs = {"ORO": "GC=F", "DXY": "DX-Y.NYB", "BRL": "USDBRL=X", "ADR": "GGAL", "LOCAL": "GGAL.BA", "UST10Y": "^TNX"}
     df = yf.download(list(tkrs.values()), period="30d", interval="1d", progress=False)['Close'].ffill()
     return df, tkrs
 
 try:
-    st.title("🛡️ SLY Engine: Intelligence Terminal v12.1")
+    st.title("🛡️ SLY Engine: Terminal de Inteligencia v13.0")
+    st.markdown("### El Reloj de la Verdad (Explicado para todos)")
+    
     df, tkrs = fetch_institutional_data()
     
     # --- CÁLCULOS QUANTS ---
     ccl = (df["GGAL.BA"].iloc[-1] / df["GGAL"].iloc[-1]) * 10
     tasa_usa = df["^TNX"].iloc[-1]
-    
-    # OBTENER RIESGO PAÍS REAL
     res_r = requests.get("https://api.argentinadatos.com/v1/finanzas/indices/riesgo-pais/ultimo", timeout=3).json()
     riesgo = float(res_r['valor'])
-    dolar_teorico = ccl * (1 + (riesgo / 10000))
+    dolar_respaldo = ccl * (1 + (riesgo / 10000))
 
     # --- MOTOR DE DECISIÓN ---
     score = 0
     if tasa_usa > 4.4: score -= 30
-    if dolar_teorico > ccl * 1.05: score -= 20
+    if dolar_respaldo > ccl * 1.05: score -= 20
     if riesgo > 1200: score -= 20
 
-    if score <= -40: status, color, action = "PROTECCIÓN CRÍTICA", "#d93025", "COMPRA DÓLARES / USDT YA"
-    elif score >= 20: status, color, action = "CARRY TRADE", "#188038", "GANAR TASA EN PESOS"
-    else: status, color, action = "NEUTRAL", "#007bff", "SIN CAMBIOS OPERATIVOS"
+    if score <= -40: status, color, action, emoji = "PROTECCIÓN CRÍTICA", "#d93025", "COMPRA DÓLARES YA", "🚨"
+    elif score >= 20: status, color, action, emoji = "CARRY TRADE", "#188038", "GANAR INTERESES EN PESOS", "🚲"
+    else: status, color, action, emoji = "NEUTRAL", "#007bff", "QUÉDATE QUIETO / ESPERA", "⏳"
 
-    # --- UI: RENDERIZADO ---
-    st.markdown(f"""<div class="command-box" style="background-color: {color};"><h1>{status}</h1><h2>{action}</h2></div>""", unsafe_allow_html=True)
+    # --- UI: EL CARTEL DE MANDO ---
+    st.markdown(f"""
+        <div class="command-box" style="background-color: {color};">
+            <h1 style="margin:0; font-size: 3em; border:none;">{emoji} {status}</h1>
+            <h2 style="margin:0; opacity:0.9; border:none;">{action}</h2>
+        </div>
+        """, unsafe_allow_html=True)
 
-    # --- PANEL DE AUDITORÍA CON EXPLICACIÓN ---
-    st.subheader("🔍 ¿Por qué tomamos esta decisión?")
+    # --- LA EXPLICACIÓN DEL NIÑO (DINÁMICA) ---
+    st.subheader("🏫 El Cuento de hoy en la Escuela")
     col_a, col_b = st.columns(2)
-    
+
     with col_a:
-        st.markdown(f"""<div class="logic-card"><h4>🇦🇷 Monitor de Emisión y Respaldo</h4>
-        • <b>Dólar Real:</b> ${ccl:.1f}<br>
-        • <b>Dólar de Respaldo:</b> ${dolar_teorico:.1f}<br>
-        • <b>Riesgo País:</b> {riesgo:.0f} pts</div>""", unsafe_allow_html=True)
+        st.markdown('<div class="school-card">', unsafe_allow_html=True)
+        st.markdown('<span class="emoji-title">🇦🇷 Nuestras Figuritas y la Caja Fuerte</span>', unsafe_allow_html=True)
         
-        # EXPLICACIÓN DINÁMICA NIÑO - ARGENTINA
-        if dolar_teorico > ccl:
-            st.markdown("""<div class="mentor-note"><b>🏫 Lógica de la Escuela:</b> El Dólar está "barato". El Director está fabricando figuritas (Pesos) más rápido de lo que guarda Oro en la caja fuerte. <b>Peligro para el Carry Trade.</b></div>""", unsafe_allow_html=True)
+        # Lógica de las figuritas (Argentina)
+        if dolar_respaldo > ccl:
+            ar_story = f"El Director de nuestra escuela está regalando demasiadas **figuritas (Pesos)**, pero en la **Caja Fuerte** no tiene suficiente **Oro**. Por eso, el Dólar real de ${ccl:.0f} es una mentira, y el de verdad debería ser de ${dolar_respaldo:.0f}."
         else:
-            st.markdown("""<div class="mentor-note"><b>🏫 Lógica de la Escuela:</b> La caja fuerte está bien. Hay suficientes Cartas de Oro para todas las figuritas. <b>Camino libre para ahorrar en pesos.</b></div>""", unsafe_allow_html=True)
+            ar_story = "El Director se está portando bien. No está regalando figuritas de más y la Caja Fuerte tiene suficiente Oro para todos. Los ahorros en pesos están tranquilos."
+        
+        st.markdown(f'<p class="child-explanation">{ar_story}</p>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
     with col_b:
-        st.markdown(f"""<div class="logic-card" style="border-left-color: #f29900;"><h4>🇺🇸 Informe Profundo de EE.UU.</h4>
-        • <b>Tasa Bonos 10 años (TNX):</b> {tasa_usa:.2f}%<br>
-        • <b>Estado del Imán:</b> {'🔴 FUERTE' if tasa_usa > 4.2 else '🟢 DÉBIL'}</div>""", unsafe_allow_html=True)
+        st.markdown('<div class="school-card" style="border-left-color: #f29900;">', unsafe_allow_html=True)
+        st.markdown('<span class="emoji-title">🇺🇸 El Imán de la Escuela de al Lado</span>', unsafe_allow_html=True)
         
-        # EXPLICACIÓN DINÁMICA NIÑO - EEUU
+        # Lógica del imán (EEUU)
         if tasa_usa > 4.2:
-            st.markdown(f"""<div class="mentor-note"><b>🏫 Lógica de la Escuela:</b> El dueño de la fábrica de Oro subió el premio a {tasa_usa:.2f}%. Es un imán gigante que se lleva los dólares de nuestra escuela hacia la de él.</div>""", unsafe_allow_html=True)
+            us_story = f"El dueño de la fábrica de Oro (EEUU) puso un **imán gigante** (Tasa de {tasa_usa:.2f}%). Ese imán tiene mucha fuerza y se quiere llevar nuestras cartas de oro hacia su escuela. Esto hace que el Dólar quiera subir aquí."
         else:
-            st.markdown("""<div class="mentor-note"><b>🏫 Lógica de la Escuela:</b> El imán está apagado. El dueño de la fábrica no está pidiendo Oro de vuelta. Hay aire para nosotros.</div>""", unsafe_allow_html=True)
+            us_story = "El imán de la fábrica de Oro está apagado. No tienen interés en llevarse nuestro oro, así que podemos jugar tranquilos por ahora."
+            
+        st.markdown(f'<p class="child-explanation">{us_story}</p>', unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    # --- PANEL FINAL DE VEREDICTO ---
+    # --- EL PORQUÉ FINAL ---
     st.write("---")
-    st.subheader("💡 Conclusión para no olvidarte:")
+    st.markdown("### 💡 ¿Por qué el bot tomó esta decisión?")
+    
     if status == "NEUTRAL":
-        st.info(f"El bot dice NEUTRAL porque el Riesgo País ({riesgo:.0f}) muestra que los niños están tranquilos, pero la Tasa de EEUU ({tasa_usa:.2f}%) y la falta de respaldo (${dolar_teorico:.0f}) te prohíben ganar tasa en pesos. **No hay ventaja: Espera.**")
+        st.info(f"**Análisis de SystemaTrader:** Hoy es un empate. El imán de afuera tira con fuerza ({tasa_usa:.2f}%), pero en la escuela los niños están tranquilos (Riesgo País {riesgo:.0f} pts). Como nadie gana la pelea, el bot te dice que **no apuestes** y esperes a que alguien gane.")
     elif status == "PROTECCIÓN CRÍTICA":
-        st.error("El imán de EEUU y la falta de respaldo en la caja fuerte ganaron la pelea. Sal de figuritas (pesos) antes de que el dólar pegue el salto.")
+        st.error(f"**Análisis de SystemaTrader:** ¡Peligro! El imán está muy fuerte y el Director no tiene nada en la caja fuerte. Las figuritas van a perder su valor muy pronto. **¡Cambia tus figuritas por Oro (Dólar/USDT) ya!**")
     elif status == "CARRY TRADE":
-        st.success("El mundo está en paz y nuestra caja fuerte tiene respaldo. Es el momento de ganar alfajores (tasa) en pesos.")
+        st.success(f"**Análisis de SystemaTrader:** ¡Oportunidad! El imán está apagado y la caja fuerte está llena. Aprovecha para ganar los dulces (intereses) que regala el Director por quedarte en figuritas.")
+
+    # --- MÉTRICAS ---
+    st.write("---")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Precio Dólar", f"${ccl:,.1f}")
+    m2.metric("Fuerza del Imán (Tasa)", f"{tasa_usa:.2f}%")
+    m3.metric("Confianza (Riesgo)", f"{riesgo:.0f} pts")
+    m4.metric("Dólar de Verdad", f"${dolar_respaldo:,.0f}")
 
 except Exception as e:
-    st.error(f"Sincronizando... {e}")
+    st.error(f"Sincronizando la escuela... {e}")
+
+st.button("🔄 ACTUALIZAR EL CUENTO")
