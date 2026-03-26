@@ -5,7 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 
 # --- 1. CONFIGURACIÓN DE INTERFAZ ---
-st.set_page_config(page_title="SLY v8.5: Terminal Macro", layout="wide")
+st.set_page_config(page_title="SLY v9.0: Final Robust Terminal", layout="wide")
 
 st.markdown("""
     <style>
@@ -16,104 +16,99 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. MOTOR DE DATOS (RECOLECCIÓN) ---
+# --- 2. MOTOR DE DATOS (RECOLECCIÓN INDIVIDUAL) ---
 @st.cache_data(ttl=600)
-def fetch_all_data():
-    # Tickers maestros: Oro (GLD), DXY, Brasil, Galicia, Bonos AL30
-    tickers = {
+def fetch_robust_data():
+    symbols = {
         "GLD": "GLD", "DXY": "DX-Y.NYB", "BRL": "USDBRL=X",
         "ADR": "GGAL", "LOCAL": "GGAL.BA", 
         "AL30": "AL30.BA", "AL30D": "AL30D.BA"
     }
-    try:
-        # Descarga única de 30 días para tener contexto histórico y evitar ceros
-        df = yf.download(list(tickers.values()), period="30d", interval="1d", progress=False)['Close']
-        df = df.ffill().bfill()
-        return df, tickers
-    except Exception as e:
-        st.error(f"Fallo en la red de datos: {e}")
-        return pd.DataFrame(), tickers
+    data_dict = {}
+    history_dict = {}
+    
+    for key, ticker in symbols.items():
+        try:
+            # Pedimos 120 días para asegurar que los bonos aparezcan sí o sí
+            df = yf.download(ticker, period="120d", interval="1d", progress=False)['Close']
+            if not df.empty:
+                df = df.ffill().dropna()
+                data_dict[key] = float(df.iloc[-1])
+                history_dict[key] = df
+            else:
+                data_dict[key] = 0.0
+        except:
+            data_dict[key] = 0.0
+            
+    return data_dict, history_dict, symbols
 
-# --- 3. LÓGICA DE CÁLCULO ---
+# --- 3. LÓGICA DE PROCESAMIENTO ---
 try:
-    data_df, syms = fetch_all_data()
+    st.title("🛡️ SLY Engine: Macro Truth Monitor v9.0")
+    
+    val, hist, syms = fetch_robust_data()
 
-    if not data_df.empty:
-        # Función para obtener el último valor limpio (evita NaNs y ceros)
-        def get_val(key):
-            ticker = syms[key]
-            series = data_df[ticker].dropna()
-            return float(series.iloc[-1]) if not series.empty else 0.0
+    # Cálculos con validación para evitar división por cero o NaNs
+    ccl = (val["LOCAL"] / val["ADR"]) * 10 if val["ADR"] > 0 else 0.0
+    mep = (val["AL30"] / val["AL30D"]) if val["AL30D"] > 0 else 0.0
+    risk = 100 / val["AL30D"] if val["AL30D"] > 3 else 0.0
 
-        # Captura de valores actuales
-        oro = get_val("GLD") * 10
-        dxy = get_val("DXY")
-        brl = get_val("BRL")
-        adr = get_val("ADR")
-        local = get_val("LOCAL")
-        al30 = get_val("AL30")
-        al30d = get_val("AL30D")
+    # --- 4. MOTOR DE DECISIÓN SLY ---
+    score = 0
+    if val["DXY"] > 100: score -= 25
+    if val["BRL"] > 5.25: score -= 25
+    if val["AL30D"] > 0 and val["AL30D"] < 38: score -= 30
 
-        # Ratios de Moneda
-        # GGAL Ratio 1:10
-        ccl = (local / adr) * 10 if adr > 0 else 0.0
-        # MEP: Bono Pesos / Bono Dólares
-        mep = (al30 / al30d) if al30d > 0 else 0.0
-        # Riesgo País Proxy
-        risk = 100 / al30d if al30d > 0 else 0.0
+    if score <= -40:
+        status, color, action = "ALERTA CRÍTICA", "#d93025", "COMPRA DÓLAR / USDT - PROTECCIÓN"
+    elif score >= 20:
+        status, color, action = "CARRY TRADE ACTIVO", "#188038", "MANTÉN PESOS - OPORTUNIDAD"
+    else:
+        status, color, action = "POSICIÓN NEUTRAL", "#007bff", "MANTÉN TUS POSICIONES"
 
-        # --- 4. MOTOR DE DECISIÓN SLY ---
-        score = 0
-        if dxy > 100: score -= 25
-        if brl > 5.20: score -= 25
-        if al30d < 38: score -= 30
+    # --- 5. RENDERIZADO ---
+    st.markdown(f"""
+        <div class="command-box" style="background-color: {color};">
+            <h1 style="margin:0; color:white; border:none;">{status}</h1>
+            <h2 style="margin:0; color:white; opacity:0.9; border:none;">{action}</h2>
+        </div>
+        """, unsafe_allow_html=True)
 
-        if score <= -40:
-            status, color, action = "ALERTA CRÍTICA", "#d93025", "COMPRA DÓLAR / USDT - PROTECCIÓN"
-        elif score >= 20:
-            status, color, action = "CARRY TRADE ACTIVO", "#188038", "MANTÉN PESOS - OPORTUNIDAD"
-        else:
-            status, color, action = "POSICIÓN NEUTRAL", "#007bff", "MANTÉN TUS POSICIONES"
+    col_a, col_b = st.columns(2)
+    with col_a:
+        spread = ((ccl / mep) - 1) * 100 if mep > 0 else 0.0
+        msg = f"⚖️ SPREAD CCL vs MEP: {spread:.1f}%" if mep > 0 else "⚖️ SPREAD: Sin datos de Bonos"
+        st.markdown(f"""<div class="arbitrage-box">{msg}</div>""", unsafe_allow_html=True)
+    with col_b:
+        risk_txt = f"{risk:.2f}" if risk > 0 else "N/A"
+        st.markdown(f"""<div class="arbitrage-box" style="background-color: #d1ecf1; border-color: #bee5eb; color: #0c5460;">🛰️ RIESGO PAÍS PROXY: {risk_txt}</div>""", unsafe_allow_html=True)
 
-        # --- 5. RENDERIZADO DE INTERFAZ ---
-        st.title("🛡️ SLY Engine: Macro Truth Monitor v8.5")
+    st.write("---")
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Dólar CCL", f"${ccl:,.1f}")
+    m1.metric("Dólar MEP", f"${mep:,.1f}" if mep > 0 else "Cerrado")
+    m2.metric("Oro (XAU)", f"${val['GLD']*10:,.0f}")
+    m3.metric("DXY Index", f"{val['DXY']:.2f}")
+    m4.metric("Dólar Brasil", f"{val['BRL']:.3f}")
 
-        st.markdown(f"""
-            <div class="command-box" style="background-color: {color};">
-                <h1 style="margin:0; color:white; border:none;">{status}</h1>
-                <h2 style="margin:0; color:white; opacity:0.9; border:none;">{action}</h2>
-            </div>
-            """, unsafe_allow_html=True)
+    # --- 6. GRÁFICO RESILIENTE ---
+    st.subheader("📈 Tendencias (Base 100)")
+    fig = go.Figure()
+    
+    # Solo graficamos activos con data para evitar crashes
+    graph_assets = [("GLD", "#d4af37", "ORO"), ("DXY", "#004a99", "DXY"), ("AL30D", "#d93025", "BONO USD")]
+    
+    for key, color_hex, name in graph_assets:
+        if key in hist and not hist[key].empty:
+            norm_series = (hist[key] / hist[key].dropna().iloc[0]) * 100
+            fig.add_trace(go.Scatter(x=norm_series.index, y=norm_series, name=name, line=dict(color=color_hex)))
 
-        col_a, col_b = st.columns(2)
-        with col_a:
-            spread = ((ccl / mep) - 1) * 100 if mep > 0 else 0
-            st.markdown(f"""<div class="arbitrage-box">⚖️ SPREAD CCL vs MEP: {spread:.1f}%<br>RECOMENDACIÓN: {'Comprar MEP / USDT' if spread > 1.5 else 'Equilibrado'}</div>""", unsafe_allow_html=True)
-        with col_b:
-            st.markdown(f"""<div class="arbitrage-box" style="background-color: #d1ecf1; border-color: #bee5eb; color: #0c5460;">🛰️ RIESGO PAÍS PROXY: {risk:.2f}<br>ESTADO: {'🔴 PRESIÓN ALTA' if risk > 2.6 else '🟢 ESTABLE'}</div>""", unsafe_allow_html=True)
-
-        st.write("---")
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Dólar CCL", f"${ccl:,.1f}")
-        m1.metric("Dólar MEP", f"${mep:,.1f}")
-        m2.metric("Oro (XAU)", f"${oro:,.0f}")
-        m3.metric("DXY Index", f"{dxy:.2f}")
-        m4.metric("Dólar Brasil", f"{brl:.3f}")
-
-        # --- 6. GRÁFICOS ---
-        st.subheader("📈 Convergencia de Tendencias (Base 100)")
-        def norm(k): return (data_df[syms[k]] / data_df[syms[k]].dropna().iloc[0]) * 100
-        
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=data_df.index, y=norm("GLD"), name="ORO", line=dict(color='#d4af37', width=3)))
-        fig.add_trace(go.Scatter(x=data_df.index, y=norm("DXY"), name="DXY", line=dict(color='#004a99')))
-        fig.add_trace(go.Scatter(x=data_df.index, y=norm("AL30D"), name="BONO USD", line=dict(color='#d93025', dash='dot')))
-        fig.update_layout(plot_bgcolor='white', height=450, margin=dict(l=0,r=0,t=0,b=0), legend=dict(orientation="h", y=1.1))
-        st.plotly_chart(fig, use_container_width=True)
+    fig.update_layout(plot_bgcolor='white', height=450, margin=dict(l=0,r=0,t=0,b=0), legend=dict(orientation="h", y=1.1))
+    st.plotly_chart(fig, use_container_width=True)
 
 except Exception as e:
-    st.error(f"Fallo crítico en el cálculo: {e}")
+    st.error(f"Error técnico: {e}")
 
-if st.button('🔄 ACTUALIZAR SISTEMA'):
+if st.button('🔄 REFRESCAR TERMINAL'):
     st.cache_data.clear()
     st.rerun()
