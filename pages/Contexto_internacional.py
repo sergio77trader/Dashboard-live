@@ -3,9 +3,10 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
+from datetime import datetime
 
-# --- CONFIGURACIÓN INSTITUCIONAL ---
-st.set_page_config(page_title="SLY v8.3: Zero Ambiguity", layout="wide")
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="SLY v8.4: Bulletproof Terminal", layout="wide")
 
 st.markdown("""
     <style>
@@ -17,102 +18,99 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 @st.cache_data(ttl=600)
-def fetch_scalar_data():
-    symbols = {
-        "ORO": "GC=F", "DXY": "DX-Y.NYB", "BRL": "USDBRL=X", 
+def fetch_institutional_data():
+    # Diccionario de tickers. Usamos GLD para oro por estabilidad.
+    symbols_map = {
+        "GLD": "GLD", "DXY": "DX-Y.NYB", "BRL": "USDBRL=X", 
         "ADR": "GGAL", "LOCAL": "GGAL.BA", "AL30": "AL30.BA", "AL30D": "AL30D.BA"
     }
-    data_results = {}
-    
-    for key, ticker in symbols.items():
-        try:
-            # Descarga individual
-            df_temp = yf.download(ticker, period="7d", interval="1d", progress=False)
-            if not df_temp.empty:
-                # Forzamos la extracción del último valor como un número decimal puro (float)
-                val = df_temp['Close'].ffill().iloc[-1]
-                # Si por error devuelve una serie, tomamos el primer elemento
-                if isinstance(val, pd.Series):
-                    val = val.iloc[0]
-                data_results[key] = float(val)
-            else:
-                data_results[key] = 0.0
-        except:
-            data_results[key] = 0.0
-    
-    return data_results
+    try:
+        # Descarga masiva (una sola llamada al servidor para evitar bloqueos)
+        raw_data = yf.download(list(symbols_map.values()), period="30d", interval="1d", progress=False)['Close']
+        # Limpieza: Llenamos huecos y eliminamos filas totalmente vacías
+        clean_df = raw_data.ffill().dropna(how='all')
+        return clean_df, symbols_map
+    except Exception as e:
+        st.error(f"Fallo en Data Feed: {e}")
+        return pd.DataFrame(), symbols_map
 
 try:
-    # --- EJECUCIÓN ---
-    data = fetch_scalar_data()
-    
-    # 1. CÁLCULOS MATEMÁTICOS (Basados en escalares puros)
-    ccl = (data["LOCAL"] / data["ADR"]) * 10 if data["ADR"] > 0 else 0.0
-    mep = (data["AL30"] / data["AL30D"]) if data["AL30D"] > 0 else 0.0
-    risk_proxy = 100.0 / data["AL30D"] if data["AL30D"] > 0 else 0.0
-    
-    # 2. MOTOR DE DECISIÓN (Lógica SLY)
-    score = 0
-    # Factores Externos
-    if data["DXY"] > 100: score -= 20
-    if data["BRL"] > 5.20: score -= 20
-    # Factores Internos (Si bonos caen, dólar sube)
-    if data["AL30D"] < 35: score -= 30
-    
-    if score <= -40:
-        status, color, action = "ALERTA DE SISTEMA", "#d93025", "COMPRA DÓLAR / USDT - COBERTURA"
-    elif score >= 20:
-        status, color, action = "CARRY TRADE ACTIVO", "#188038", "MANTÉN PESOS - OPORTUNIDAD"
+    df, syms = fetch_institutional_data()
+
+    if not df.empty:
+        # Extraemos el último valor real disponible para cada activo (sin ceros)
+        def get_actual(key):
+            ticker = syms[key]
+            series = df[ticker].dropna()
+            return float(series.iloc[-1]) if not series.empty else 0.0
+
+        # --- CÁLCULOS QUANTS ---
+        val_oro = get_actual("GLD") * 10 # Ajuste para que se vea como onza
+        val_dxy = get_actual("DXY")
+        val_brl = get_actual("BRL")
+        val_adr = get_actual("ADR")
+        val_local = get_actual("LOCAL")
+        val_al30 = get_actual("AL30")
+        val_al30d = get_actual("AL30D")
+
+        # Ratios de Dólar
+        ccl = (val_local / val_adr) * 10 if val_adr > 0 else 0
+        mep = (val_al30 / val_al30d) if val_al30d > 0 else 0
+        risk_proxy = 100 / val_al30d if val_al30d > 0 else 0
+
+        # --- MOTOR DE DECISIÓN ---
+        score = 0
+        if val_dxy > 100: score -= 25
+        if val_brl > 5.20: score -= 25
+        if val_al30d < 38: score -= 30 # Miedo local
+
+        if score <= -40:
+            status, color, action = "ALERTA CRÍTICA", "#d93025", "COMPRA DÓLAR / USDT - PROTECCIÓN"
+        elif score >= 20:
+            status, color, action = "CARRY TRADE ACTIVO", "#188038", "MANTÉN PESOS - OPORTUNIDAD"
+        else:
+            status, color, action = "POSICIÓN NEUTRAL", "#007bff", "MANTÉN TUS POSICIONES"
+
+        # --- UI: PANEL DE MANDO ---
+        st.markdown(f"""
+            <div style="background-color: {color}; padding: 25px; border-radius: 15px; text-align: center; color: white; margin-bottom:20px;">
+                <h1 style="margin:0;">{status}</h1>
+                <h2 style="opacity:0.9; margin:0;">{action}</h2>
+            </div>
+            """, unsafe_allow_html=True)
+
+        # --- UI: ARBITRAJE ---
+        col_arb1, col_arb2 = st.columns(2)
+        with col_arb1:
+            spread = ((ccl / mep) - 1) * 100 if mep > 0 else 0
+            st.markdown(f"""<div class="arbitrage-box">⚖️ SPREAD CCL vs MEP: {spread:.1f}%<br>RECOMENDACIÓN: {'Comprar MEP / USDT' if spread > 1.5 else 'Precios equilibrados'}</div>""", unsafe_allow_html=True)
+        with col_arb2:
+            st.markdown(f"""<div class="arbitrage-box" style="background-color: #d1ecf1; border-color: #bee5eb; color: #0c5460;">🛰️ RIESGO PAÍS PROXY: {risk_proxy:.2f}<br>ESTADO: {'🔴 PRESIÓN ALTA' if risk_proxy > 2.6 else '🟢 ESTABLE'}</div>""", unsafe_allow_html=True)
+
+        # --- UI: MÉTRICAS ---
+        st.write("---")
+        m1, m2, m3, m4 = st.columns(4)
+        m1.metric("Dólar CCL", f"${ccl:,.1f}")
+        m1.metric("Dólar MEP", f"${mep:,.1f}")
+        m2.metric("Oro (XAU ETF)", f"${val_oro:,.0f}")
+        m3.metric("DXY Index", f"{val_dxy:.2f}")
+        m4.metric("Dólar Brasil", f"{val_brl:.3f}")
+
+        # --- UI: GRÁFICO ---
+        st.subheader("📊 Gráfico de Convergencia (Base 100)")
+        def norm(s): return (df[syms[s]] / df[syms[s]].dropna().iloc[0]) * 100
+        
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=df.index, y=norm("GLD"), name="ORO", line=dict(color='#d4af37', width=3)))
+        fig.add_trace(go.Scatter(x=df.index, y=norm("DXY"), name="DXY", line=dict(color='#004a99')))
+        fig.add_trace(go.Scatter(x=df.index, y=norm("AL30D"), name="BONO USD", line=dict(color='#d93025', dash='dot')))
+        fig.update_layout(plot_bgcolor='white', height=500, margin=dict(l=0,r=0,t=0,b=0))
+        st.plotly_chart(fig, use_container_width=True)
+
     else:
-        status, color, action = "POSICIÓN NEUTRAL", "#007bff", "SIN CAMBIOS OPERATIVOS"
-
-    # --- UI: CABECERA ---
-    st.markdown(f"""
-        <div style="background-color: {color}; padding: 25px; border-radius: 15px; text-align: center; color: white;">
-            <h1 style="margin:0;">{status}</h1>
-            <h2 style="opacity:0.9; margin:0;">{action}</h2>
-        </div>
-        """, unsafe_allow_html=True)
-
-    # --- UI: ARBITRAJE ---
-    st.write("")
-    col_arb1, col_arb2 = st.columns(2)
-    with col_arb1:
-        spread = ((ccl / mep) - 1) * 100 if mep > 0 else 0.0
-        st.markdown(f"""
-        <div class="arbitrage-box">
-            ⚖️ SPREAD CCL vs MEP: {spread:.1f}%<br>
-            RECOMENDACIÓN: {'Comprar MEP / USDT' if spread > 2 else 'Precios equilibrados'}
-        </div>
-        """, unsafe_allow_html=True)
-    with col_arb2:
-        st.markdown(f"""
-        <div class="arbitrage-box" style="background-color: #d1ecf1; border-color: #bee5eb; color: #0c5460;">
-            🛰️ RIESGO PAÍS PROXY: {risk_proxy:.2f}<br>
-            ESTADO: {'🔴 PRESIÓN ALTA' if risk_proxy > 2.8 else '🟢 ESTABLE'}
-        </div>
-        """, unsafe_allow_html=True)
-
-    # --- UI: MÉTRICAS ---
-    st.write("---")
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Dólar CCL", f"${ccl:,.1f}")
-    m1.metric("Dólar MEP", f"${mep:,.1f}")
-    m2.metric("Oro (XAU)", f"${data['ORO']:,.0f}")
-    m3.metric("DXY Index", f"{data['DXY']:.2f}")
-    m4.metric("Dólar Brasil", f"{data['BRL']:.3f}")
-
-    # --- UI: FORENSE ---
-    st.markdown(f"""
-    <div class="forensic-card">
-        <h3>🔍 Análisis de Situación</h3>
-        • <b>Dólar Global:</b> {'Presión Alta' if data['DXY']>100 else 'Normal'}<br>
-        • <b>Brasil:</b> {'Devaluando' if data['BRL']>5.25 else 'Estable'}<br>
-        • <b>Bonos Argentina:</b> {'Liquidación de Carteras' if data['AL30D']<35 else 'Sostenidos'}
-    </div>
-    """, unsafe_allow_html=True)
+        st.warning("Aguardando respuesta de los servidores globales de Yahoo Finance...")
 
 except Exception as e:
-    st.error(f"Fallo en el motor de cálculo: {e}")
+    st.error(f"Error crítico en terminal: {e}")
 
-st.info("SystemaTrader v8.3: Error de ambigüedad resuelto. El sistema ahora garantiza valores escalares para la toma de decisiones.")
+st.info("SystemaTrader v8.4: Protocolo de descarga masiva activado. Los datos del MEP y Oro están sincronizados con el último cierre.")info("SystemaTrader v8.3: Error de ambigüedad resuelto. El sistema ahora garantiza valores escalares para la toma de decisiones.")
