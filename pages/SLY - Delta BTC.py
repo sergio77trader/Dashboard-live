@@ -69,7 +69,7 @@ def run_sly_engine_1d(df):
     return "FUERA ⚪", "-", "-"
 
 # ─────────────────────────────────────────────
-# 3. MOTOR DE DATOS
+# 3. MOTOR DE DATOS (KUCOIN CON FILTRO DE UNICIDAD)
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchange():
@@ -80,11 +80,19 @@ def fetch_universe():
         ex = get_exchange()
         markets = ex.load_markets()
         compatible = []
+        seen_bases = set() # Para evitar duplicados de Spot vs Futuros
+        
         for s in markets:
+            if '/USDT' not in s: continue
             base = s.split('/')[0]
-            if '/USDT' in s and markets[s].get('active', True):
-                if base in BINANCE_WHITELIST or markets[s].get('quoteVolume', 0) > 300000:
+            if base in seen_bases: continue # Si ya tenemos el BTC, no tomamos el BTC:USDT
+            
+            if markets[s].get('active', True):
+                vol = markets[s].get('quoteVolume', 0)
+                if base in BINANCE_WHITELIST or vol > 300000:
                     compatible.append(s)
+                    seen_bases.add(base)
+                    
         return sorted(list(set(compatible)))
     except: return []
 
@@ -97,11 +105,11 @@ def get_recommendation(delta):
 # ─────────────────────────────────────────────
 # 4. INTERFAZ Y ESCANEO
 # ─────────────────────────────────────────────
-st.title("🛡️ SLY Alpha Terminal v3.1")
-st.markdown('<div class="status-msg">Lógica: <b>Relative Strength + SLY Engine (1D)</b> | Filtro: <b>Binance Compatible</b></div>', unsafe_allow_html=True)
+st.title("🛡️ SLY Alpha Terminal v3.2")
+st.markdown('<div class="status-msg">Estado: <b>Limpieza de duplicados activa</b>. Analizando paridad Cripto/BTC + Señal 1D.</div>', unsafe_allow_html=True)
 
 if not st.session_state["filtered_symbols"]:
-    if st.button("📡 1. SINCRONIZAR UNIVERSO BINANCE"):
+    if st.button("📡 1. SINCRONIZAR UNIVERSO UNIFICADO"):
         st.session_state["filtered_symbols"] = fetch_universe()
         st.rerun()
 
@@ -123,7 +131,7 @@ if st.session_state["filtered_symbols"]:
             prog = st.progress(0)
             for i, sym in enumerate(targets):
                 try:
-                    # Datos Diarios (100 velas para SLY)
+                    # Usamos limit=100 para asegurar convergencia del motor SLY
                     ohlcv = ex.fetch_ohlcv(sym, timeframe='1d', limit=100)
                     df = pd.DataFrame(ohlcv, columns=['t','open','high','low','close','v'])
                     df['dt'] = pd.to_datetime(df['t'], unit='ms')
@@ -132,8 +140,11 @@ if st.session_state["filtered_symbols"]:
                     delta = alt_perf - btc_perf
                     sig, fecha, pnl = run_sly_engine_1d(df)
                     
+                    # Limpiamos el nombre para que diga solo "CHZ" y no "CHZ:USDT"
+                    clean_name = sym.split('/')[0]
+                    
                     new_rows.append({
-                        "Activo": sym.replace("/USDT", ""),
+                        "Activo": clean_name,
                         "RECOMENDACIÓN": get_recommendation(delta),
                         "Precio": float(df['close'].iloc[-1]),
                         "Rend. 24h": f"{alt_perf:+.2f}%",
@@ -147,12 +158,13 @@ if st.session_state["filtered_symbols"]:
             
             if new_rows:
                 df_new = pd.DataFrame(new_rows)
-                st.session_state["accumulated_data"] = pd.concat([st.session_state["accumulated_data"], df_new]).drop_duplicates(subset="Activo")
+                # Concatenar y eliminar duplicados finales por si acaso
+                st.session_state["accumulated_data"] = pd.concat([st.session_state["accumulated_data"], df_new]).drop_duplicates(subset="Activo", keep="last")
                 st.session_state["current_pointer"] = next_limit
                 st.rerun()
 
 # ─────────────────────────────────────────────
-# 5. RENDERIZADO CON FORMATO ORIGINAL
+# 5. RENDERIZADO CON FORMATO ORIGINAL Y COLORES
 # ─────────────────────────────────────────────
 if not st.session_state["accumulated_data"].empty:
     st.divider()
@@ -167,7 +179,7 @@ if not st.session_state["accumulated_data"].empty:
             elif delta_val < 0: styles[row.index.get_loc("Vs BTC (Delta)")] = 'color: #b71c1c; font-weight: bold;'
         except: pass
 
-        # Colores para Señal SLY (Como en tu imagen de acciones)
+        # Colores para Señal SLY (Fondo completo para la celda)
         sig_val = str(row["1D Signal"])
         if "LONG" in sig_val: styles[row.index.get_loc("1D Signal")] = 'background-color: #d4edda; color: #155724; font-weight: bold;'
         elif "SHORT" in sig_val: styles[row.index.get_loc("1D Signal")] = 'background-color: #f8d7da; color: #721c24; font-weight: bold;'
