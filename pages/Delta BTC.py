@@ -4,77 +4,98 @@ import pandas as pd
 import time
 
 # --- CONFIGURACIÓN INSTITUCIONAL ---
-st.set_page_config(layout="wide", page_title="SLY | ALPHA ACCUMULATOR")
+st.set_page_config(layout="wide", page_title="SLY | ALPHA GRINDER v2.0")
 
 st.markdown("""
 <style>
     .stApp { background-color: #f8f9fa; }
-    h1 { color: #2962FF; font-weight: 800; }
-    .stButton>button { width: 100%; border-radius: 5px; height: 3em; font-weight: bold; background-color: #2962FF; color: white; }
-    .status-msg { padding: 10px; border-radius: 5px; background-color: #e3f2fd; color: #0d47a1; margin-bottom: 20px; }
+    h1 { color: #1E88E5; font-weight: 800; }
+    .stButton>button { width: 100%; border-radius: 8px; height: 3.5em; font-weight: bold; background-color: #1E88E5; color: white; border: none; }
+    .stButton>button:hover { background-color: #1565C0; color: white; }
+    .status-msg { padding: 15px; border-radius: 10px; background-color: #e3f2fd; color: #0d47a1; margin-bottom: 20px; border: 1px solid #bbdefb; }
+    .metric-box { padding: 10px; border-radius: 10px; background: white; border: 1px solid #ddd; text-align: center; }
 </style>
 """, unsafe_allow_html=True)
 
-# --- MEMORIA DE ESTADO ---
+# --- INICIALIZACIÓN DE MEMORIA (PERSISTENCIA TOTAL) ---
 if "accumulated_data" not in st.session_state:
     st.session_state["accumulated_data"] = pd.DataFrame()
 if "all_symbols" not in st.session_state:
     st.session_state["all_symbols"] = []
+if "current_pointer" not in st.session_state:
+    st.session_state["current_pointer"] = 0
 
-# --- MOTOR DE DATOS (KUCOIN - ANTI BLOCK) ---
+# --- MOTOR DE DATOS (KUCOIN) ---
 @st.cache_resource
 def get_exchange():
-    # Usamos KuCoin porque no bloquea las IPs de Streamlit Cloud
     return ccxt.kucoin({"enableRateLimit": True, "timeout": 30000})
 
 def fetch_universe():
     try:
         ex = get_exchange()
         markets = ex.load_markets()
-        # Filtramos pares con USDT que estén activos
+        # Filtramos pares USDT activos
         symbols = [s for s in markets if '/USDT' in s and markets[s].get('active', True)]
         return sorted(symbols)
     except Exception as e:
-        st.error(f"Error al cargar mercados: {e}")
+        st.error(f"Fallo de conexión: {e}")
         return []
 
-# --- LÓGICA DE RECOMENDACIÓN ---
+# --- LÓGICA DE DECISIÓN ---
 def get_recommendation(delta):
-    if delta > 5: return "🚀 ALPHA STRIKE", "Fuerza extrema. Corre mucho más que Bitcoin."
-    if delta > 1: return "🏃 CORREDOR RÁPIDO", "Superior a Bitcoin en este momento."
-    if delta > -1: return "⚖️ RITMO DE TREN", "Sincronizado con Bitcoin."
-    return "🐢 LENTO / EVITAR", "Bitcoin es más rápido. Riesgo innecesario."
+    if delta > 4: return "🔥 ALPHA STRIKE", "Fuerza excepcional. Atleta olímpico."
+    if delta > 1: return "🏃 CORREDOR", "Más rápido que el tren."
+    if delta > -1: return "⚖️ NEUTRAL", "Al ritmo de Bitcoin."
+    return "🐢 LENTO", "Bitcoin es más rápido. Evitar."
 
-# --- INTERFAZ ---
-st.title("🛡️ Alpha Accumulator v1.1")
-st.markdown('<div class="status-msg">Motor de Datos: <b>KuCoin Global</b> (Bypass de Restricciones Activo)</div>', unsafe_allow_html=True)
+# --- INTERFAZ DE MANDO ---
+st.title("🛡️ SLY Alpha Grinder v2.0")
+st.markdown(f'<div class="status-msg">Estado: Escaneo acumulativo por lotes activo. Datos vía <b>KuCoin</b>.</div>', unsafe_allow_html=True)
 
-if st.button("📡 1. CARGAR UNIVERSO DE MONEDAS"):
-    st.session_state["all_symbols"] = fetch_universe()
-    if st.session_state["all_symbols"]:
-        st.success(f"Detectados {len(st.session_state['all_symbols'])} activos en KuCoin.")
+# 1. Cargar el universo si está vacío
+if not st.session_state["all_symbols"]:
+    if st.button("📡 PASO 1: CARGAR UNIVERSO DE MONEDAS"):
+        st.session_state["all_symbols"] = fetch_universe()
+        st.rerun()
 
+# 2. Operación por Lotes
 if st.session_state["all_symbols"]:
-    col_ctrl1, col_ctrl2 = st.columns(2)
-    with col_ctrl1:
-        batch_size = st.number_input("Tamaño del lote:", value=20, step=10) # Lote más pequeño para estabilidad
-    with col_ctrl2:
-        total_scanned = len(st.session_state["accumulated_data"])
-        start_idx = st.number_input("Empezar desde el índice:", value=total_scanned)
+    total_assets = len(st.session_state["all_symbols"])
+    pointer = st.session_state["current_pointer"]
+    
+    # Dashboard de Progreso
+    col_info1, col_info2, col_info3 = st.columns(3)
+    with col_info1:
+        st.markdown(f'<div class="metric-box"><b>Total Universo</b><br><span style="font-size:20px;">{total_assets}</span></div>', unsafe_allow_html=True)
+    with col_info2:
+        st.markdown(f'<div class="metric-box"><b>Ya Escaneadas</b><br><span style="font-size:20px; color:#1E88E5;">{pointer}</span></div>', unsafe_allow_html=True)
+    with col_info3:
+        pendientes = total_assets - pointer
+        st.markdown(f'<div class="metric-box"><b>Pendientes</b><br><span style="font-size:20px;">{pendientes}</span></div>', unsafe_allow_html=True)
 
-    if st.button(f"🚀 2. ESCANEAR PRÓXIMAS {batch_size} MONEDAS"):
-        ex = get_exchange()
-        end_idx = min(start_idx + batch_size, len(st.session_state["all_symbols"]))
-        targets = st.session_state["all_symbols"][start_idx:end_idx]
-        
-        with st.spinner(f"Analizando bloque {start_idx} a {end_idx}..."):
+    st.divider()
+    
+    # Configuración del lote
+    batch_size = st.slider("Monedas por lote:", 10, 100, 50)
+    
+    next_limit = min(pointer + batch_size, total_assets)
+    
+    if pointer < total_assets:
+        if st.button(f"🚀 ESCANEAR LOTE: {pointer} al {next_limit}"):
+            ex = get_exchange()
+            targets = st.session_state["all_symbols"][pointer:next_limit]
+            
+            # 1. Obtener Benchmark (BTC)
             try:
-                # Obtener rendimiento de BTC como benchmark
                 btc_t = ex.fetch_ticker('BTC/USDT')
                 btc_perf = btc_t.get('percentage', 0)
                 
-                new_results = []
-                for sym in targets:
+                new_batch = []
+                prog_bar = st.progress(0)
+                status_text = st.empty()
+
+                for i, sym in enumerate(targets):
+                    status_text.text(f"Analizando {sym}...")
                     try:
                         t = ex.fetch_ticker(sym)
                         alt_perf = t.get('percentage', 0)
@@ -83,41 +104,57 @@ if st.session_state["all_symbols"]:
                         delta = alt_perf - btc_perf
                         rec, logic = get_recommendation(delta)
                         
-                        new_results.append({
+                        new_batch.append({
                             "Activo": sym.replace("/USDT", ""),
-                            "Precio": t.get('last', 0),
-                            "Cambio 24h": f"{alt_perf:+.2f}%",
+                            "Precio": f"${t.get('last', 0):,.4f}",
+                            "Rend. 24h": f"{alt_perf:+.2f}%",
                             "Vs BTC (Delta)": round(delta, 2),
                             "RECOMENDACIÓN": rec,
-                            "Análisis": logic
+                            "Explicación": logic
                         })
-                        time.sleep(0.1) # Evitar spam a la API
                     except: continue
+                    prog_bar.progress((i + 1) / len(targets))
+                    time.sleep(0.05) # Jitter para evitar Rate Limit
                 
-                df_new = pd.DataFrame(new_results)
-                if not df_new.empty:
+                # Acumular y actualizar puntero
+                if new_batch:
+                    df_new = pd.DataFrame(new_batch)
                     st.session_state["accumulated_data"] = pd.concat([st.session_state["accumulated_data"], df_new]).drop_duplicates(subset="Activo")
-                st.rerun()
+                    st.session_state["current_pointer"] = next_limit
+                    st.rerun()
+                    
             except Exception as e:
-                st.error(f"Error en escaneo: {e}")
+                st.error(f"Fallo en el lote: {e}")
+    else:
+        st.success("🎯 ¡Todo el universo ha sido escaneado!")
 
-# --- TABLA DE RESULTADOS ---
+# --- TABLA DE RESULTADOS ACUMULADOS ---
 if not st.session_state["accumulated_data"].empty:
     st.divider()
-    st.subheader(f"📊 Hallazgos Acumulados ({len(st.session_state['accumulated_data'])} activos)")
+    st.subheader(f"📊 Inteligencia Acumulada ({len(st.session_state['accumulated_data'])} activos)")
     
-    df_display = st.session_state["accumulated_data"].copy()
+    # Ordenar por el que más le gana a BTC
+    df_display = st.session_state["accumulated_data"].sort_values(by="Vs BTC (Delta)", ascending=False)
     
-    def color_delta(val):
-        color = '#188038' if val > 0 else '#d93025'
-        return f'color: {color}; font-weight: bold'
+    def style_delta(val):
+        color = '#1b5e20' if val > 0 else '#b71c1c'
+        return f'color: {color}; font-weight: bold;'
 
     st.dataframe(
-        df_display.style.applymap(color_delta, subset=['Vs BTC (Delta)']),
+        df_display.style.applymap(style_delta, subset=['Vs BTC (Delta)']),
         use_container_width=True,
-        height=500
+        height=600
     )
 
-    if st.button("🗑️ REINICIAR RADAR"):
-        st.session_state["accumulated_data"] = pd.DataFrame()
-        st.rerun()
+    col_foot1, col_foot2 = st.columns(2)
+    with col_foot1:
+        if st.button("🗑️ REINICIAR TODO (Limpiar Memoria)"):
+            st.session_state["accumulated_data"] = pd.DataFrame()
+            st.session_state["current_pointer"] = 0
+            st.rerun()
+    with col_foot2:
+        csv = df_display.to_csv(index=False)
+        st.download_button("📥 DESCARGAR INFORME ALPHA", csv, "alpha_report.csv", "text/csv")
+
+else:
+    st.info("Utiliza el botón de arriba para comenzar a acumular datos de fuerza relativa.")
