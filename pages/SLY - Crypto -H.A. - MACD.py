@@ -9,7 +9,7 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN DEL SISTEMA
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V26.0")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | SNIPER V26.1")
 
 st.markdown("""
 <style>
@@ -79,6 +79,7 @@ def analyze_ticker_tf(symbol, tf_code, exchange, current_price):
         ohlcv[-1][4] = current_price
         df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "vol"])
         df["dt"] = pd.to_datetime(df["time"], unit="ms")
+        
         macd = ta.macd(df["close"])
         df["Hist"], df["MACD"], df["Signal"] = macd["MACDh_12_26_9"], macd["MACD_12_26_9"], macd["MACDs_12_26_9"]
         df["RSI"] = ta.rsi(df["close"], length=14)
@@ -160,14 +161,25 @@ def scan_batch(targets, acc):
         return list(curr.values())
     return new_results
 
+# ─────────────────────────────────────────────
+# PARCHE DE ESTILO (CORRECCIÓN ATTRIBUTE ERROR)
+# ─────────────────────────────────────────────
 def style_matrix(df):
     def apply_color(val):
         v = str(val).upper()
-        if any(x in v for x in ["LONG", "SOBRE 0", "SUBIENDO", "COMPRA", "ALCISTA"]): return 'background-color: #d4edda; color: #155724;'
-        if any(x in v for x in ["SHORT", "BAJO 0", "BAJANDO", "VENTA", "BAJISTA"]): return 'background-color: #f8d7da; color: #721c24;'
-        if "GIRO" in v: return 'background-color: #fff3cd; color: #856404;'
+        if any(x in v for x in ["LONG", "SOBRE 0", "SUBIENDO", "COMPRA", "ALCISTA"]): 
+            return 'background-color: #d4edda; color: #155724;'
+        if any(x in v for x in ["SHORT", "BAJO 0", "BAJANDO", "VENTA", "BAJISTA"]): 
+            return 'background-color: #f8d7da; color: #721c24;'
+        if "GIRO" in v: 
+            return 'background-color: #fff3cd; color: #856404;'
         return ''
-    return df.style.applymap(apply_color)
+    
+    # Manejo de compatibilidad Pandas 2.1+ (.map vs .applymap)
+    try:
+        return df.style.map(apply_color)
+    except AttributeError:
+        return df.style.applymap(apply_color)
 
 # ─────────────────────────────────────────────
 # INTERFAZ DE CONTROL
@@ -175,7 +187,6 @@ def style_matrix(df):
 with st.sidebar:
     st.header("🎯 Radar Control")
     
-    # NUEVO: Selector de Modo
     analysis_mode = st.radio("Modo de Análisis:", ["Mercado (Lotes)", "Watchlist (Manual)"])
     
     targets_to_scan = []
@@ -199,6 +210,7 @@ with st.sidebar:
     if st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True):
         if targets_to_scan:
             st.session_state["sniper_results"] = scan_batch(targets_to_scan, acc)
+            st.rerun()
         else:
             st.warning("Seleccione al menos un activo para analizar.")
 
@@ -211,11 +223,35 @@ with st.sidebar:
         f_mac = st.multiselect("MACD Rec.:", options=df_temp["MACD REC."].unique(), default=df_temp["MACD REC."].unique())
     
     if st.button("Limpiar Memoria"):
-        st.session_state["sniper_results"] = []; st.rerun()
+        st.session_state["sniper_results"] = []
+        st.rerun()
 
 # ─────────────────────────────────────────────
-# MANUAL OPERATIVO
+# RENDERIZADO FINAL
 # ─────────────────────────────────────────────
+st.title("🦅 SLY - Crypto Sniper")
+
+if st.session_state["sniper_results"]:
+    df_f = pd.DataFrame(st.session_state["sniper_results"])
+    
+    if not df_f.empty:
+        # Aplicar Post-Filtros
+        df_f = df_f[df_f["VEREDICTO"].isin(f_ver) & 
+                    df_f["ESTRATEGIA"].isin(f_est) & 
+                    df_f["MACD REC."].isin(f_mac)]
+        
+        if not df_f.empty:
+            prio = ["Activo", "VEREDICTO", "ESTRATEGIA", "MACD REC.", "Precio"]
+            cols_to_show = prio + [c for c in df_f.columns if c not in prio]
+            df_f = df_f[cols_to_show]
+            
+            # Ejecución con parche de estilo
+            st.dataframe(style_matrix(df_f), use_container_width=True, height=800)
+        else:
+            st.warning("⚠️ Los filtros aplicados eliminaron todos los resultados.")
+else:
+    st.info("👈 Seleccione activos o un lote para iniciar el radar.")
+
 with st.expander("📘 MANUAL OPERATIVO"):
     st.markdown("""
     ### 🎯 LÓGICA DE MANDO
@@ -223,17 +259,3 @@ with st.expander("📘 MANUAL OPERATIVO"):
     *   **ESTRATEGIA:** Fase técnica detectada (Sync, Recovery, Correction).
     *   **MACD REC.:** Momentum de bloques intermedios (15m, 1H, 4H).
     """)
-
-# ─────────────────────────────────────────────
-# RENDERIZADO FINAL
-# ─────────────────────────────────────────────
-if st.session_state["sniper_results"]:
-    df_f = pd.DataFrame(st.session_state["sniper_results"])
-    # Aplicar Post-Filtros
-    df_f = df_f[df_f["VEREDICTO"].isin(f_ver) & df_f["ESTRATEGIA"].isin(f_est) & df_f["MACD REC."].isin(f_mac)]
-    
-    prio = ["Activo", "VEREDICTO", "ESTRATEGIA", "MACD REC.", "Precio"]
-    df_f = df_f[prio + [c for c in df_f.columns if c not in prio]]
-    st.dataframe(style_matrix(df_f), use_container_width=True, height=800)
-else:
-    st.info("👈 Seleccione activos o un lote para iniciar el radar.")
