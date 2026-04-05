@@ -8,16 +8,16 @@ import time
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN DEL SISTEMA
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY | MACD MATRIX v27.5")
+st.set_page_config(layout="wide", page_title="SLY | MACD MATRIX v27.6")
 
-# CSS para máxima legibilidad institucional
 st.markdown("""
 <style>
     .stApp { background-color: #F8F9FA; color: #1C1E21; }
     h1 { color: #004D40; font-weight: 800; border-bottom: 3px solid #00E676; padding-bottom: 10px; }
     .stDataFrame { background-color: white; border-radius: 10px; }
-    .stNumberInput, .stRadio, .stCheckbox { background-color: white; padding: 10px; border-radius: 8px; border: 1px solid #DDD; }
+    .sidebar .sidebar-content { background-image: linear-gradient(#FFFFFF, #F8F9FA); }
     [data-testid="stMetricValue"] { color: #004D40; font-size: 20px; font-weight: bold; }
+    .stSelectbox, .stNumberInput { background-color: white; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -39,7 +39,6 @@ def get_filtered_symbols(min_vol):
     try:
         ex = get_exchange()
         tickers = ex.fetch_tickers()
-        # Filtramos por par USDT y por volumen mínimo
         valid_symbols = []
         for s, t in tickers.items():
             if "/USDT:USDT" in s:
@@ -78,13 +77,12 @@ def scan_batch(targets, acc):
     prog = st.progress(0)
     
     for idx, sym in enumerate(targets):
-        prog.progress((idx+1)/len(targets), text=f"Procesando {sym.split(':')[0]}...")
+        prog.progress((idx+1)/len(targets), text=f"Analizando {sym.split(':')[0]}...")
         try:
             ticker = ex.fetch_ticker(sym)
-            price = ticker["last"]
             row = {
                 "Activo": sym.split(":")[0].replace("/USDT", ""),
-                "Precio": f"{price:,.4f}"
+                "Precio": f"{ticker['last']:,.4f}"
             }
             
             for label, tf_code in TIMEFRAMES.items():
@@ -115,7 +113,6 @@ def style_matrix(df):
         if any(x in v for x in ["BAJO 0", "BAJANDO", "BAJISTA"]): 
             return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
         return ''
-    
     try:
         return df.style.map(apply_color)
     except:
@@ -124,35 +121,42 @@ def style_matrix(df):
 # ─────────────────────────────────────────────
 # INTERFAZ DE CONTROL
 # ─────────────────────────────────────────────
-st.title("🛡️ SLY - MACD IMPULSE MATRIX v27.5")
+st.title("🛡️ SLY - MACD MATRIX v27.6")
 
 with st.sidebar:
     st.header("⚙️ Configuración")
     
     min_vol = st.number_input("Volumen Mínimo 24h (USDT):", value=1000000, step=100000)
+    all_sym = get_filtered_symbols(min_vol)
     
-    analysis_mode = st.radio("Filtro de Activos:", ["Mercado x Volumen", "Watchlist"])
-    
-    if analysis_mode == "Mercado x Volumen":
-        all_sym = get_filtered_symbols(min_vol)
-        st.success(f"Activos con Vol > {min_vol:,}: {len(all_sym)}")
-        b_size = st.number_input("Lote a escanear:", 5, 50, 20)
-        pointer = st.number_input("Desde el índice:", 0, max(0, len(all_sym)-1), 0)
-        targets_to_scan = all_sym[pointer:pointer+b_size]
-    else:
-        full_list = get_filtered_symbols(0)
-        targets_to_scan = st.multiselect("Activos específicos:", full_list)
-
-    acc = st.checkbox("Acumular resultados", value=True)
-    
-    if st.button("🚀 INICIAR ESCANEO", type="primary"):
-        if targets_to_scan:
+    if all_sym:
+        st.success(f"Activos Líquidos: {len(all_sym)}")
+        
+        batch_size = st.number_input("Monedas por lote:", 5, 100, 20)
+        
+        # Cálculo de Lotes
+        num_lotes = len(all_sym) // batch_size + (1 if len(all_sym) % batch_size > 0 else 0)
+        
+        lote_options = []
+        for i in range(num_lotes):
+            start_num = i * batch_size
+            end_num = min((i + 1) * batch_size, len(all_sym))
+            lote_options.append(f"Lote {i+1} ({start_num} a {end_num})")
+        
+        selected_lote_str = st.selectbox("Seleccionar Lote:", lote_options)
+        selected_lote_idx = lote_options.index(selected_lote_str)
+        
+        targets_to_scan = all_sym[selected_lote_idx * batch_size : (selected_lote_idx + 1) * batch_size]
+        
+        acc = st.checkbox("Acumular resultados", value=True)
+        
+        if st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True):
             st.session_state["matrix_results"] = scan_batch(targets_to_scan, acc)
             st.rerun()
-        else:
-            st.warning("No hay activos que cumplan el criterio.")
+    else:
+        st.warning("No hay activos con ese volumen.")
 
-    if st.button("🗑️ Limpiar Pantalla"):
+    if st.button("🗑️ Limpiar Pantalla", use_container_width=True):
         st.session_state["matrix_results"] = []
         st.rerun()
 
@@ -172,11 +176,11 @@ if st.session_state["matrix_results"]:
     
     st.dataframe(style_matrix(df), use_container_width=True, height=700)
 else:
-    st.info("👈 Ajuste el volumen mínimo y el lote, luego presione Iniciar Escaneo.")
+    st.info("👈 Seleccione un lote y presione Iniciar para procesar la data.")
 
-with st.expander("📘 NOTAS TÉCNICAS"):
+with st.expander("📘 MANUAL OPERATIVO"):
     st.markdown(f"""
-    *   **Volumen Mínimo:** Solo se analizan activos que mueven más de {min_vol:,} USDT en las últimas 24h.
-    *   **MACD Matrix:** Detecta la convergencia de impulso entre 1m y 1D.
-    *   **Colores:** Verde (Aceleración/Tendencia +), Rojo (Desaceleración/Tendencia -).
+    1.  **Lotes:** El universo se divide automáticamente. Procesa el Lote 1, luego el 2, etc.
+    2.  **Acumular:** Si está marcado, los resultados del Lote 2 se sumarán a los del Lote 1.
+    3.  **Confluencia:** Busca activos donde múltiples temporalidades estén en **verde**.
     """)
