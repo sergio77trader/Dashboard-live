@@ -8,28 +8,24 @@ import time
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN DEL SISTEMA
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | MACD MATRIX")
+st.set_page_config(layout="wide", page_title="SLY | MACD MATRIX v27.5")
 
+# CSS para máxima legibilidad institucional
 st.markdown("""
 <style>
-    .stApp { background-color: #0E1117; color: #E0E0E0; }
-    [data-testid="stMetricValue"] { font-size: 14px; }
-    .stDataFrame { font-size: 11px; }
-    h1 { color: #00E676; font-weight: 800; border-bottom: 2px solid #00E676; padding-bottom: 10px; }
+    .stApp { background-color: #F8F9FA; color: #1C1E21; }
+    h1 { color: #004D40; font-weight: 800; border-bottom: 3px solid #00E676; padding-bottom: 10px; }
+    .stDataFrame { background-color: white; border-radius: 10px; }
+    .stNumberInput, .stRadio, .stCheckbox { background-color: white; padding: 10px; border-radius: 8px; border: 1px solid #DDD; }
+    [data-testid="stMetricValue"] { color: #004D40; font-size: 20px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
 if "matrix_results" not in st.session_state:
     st.session_state["matrix_results"] = []
 
-# Temporalidades solicitadas
 TIMEFRAMES = {
-    "1m": "1m",
-    "30m": "30m",
-    "1H": "1h",
-    "4H": "4h",
-    "12H": "12h",
-    "1D": "1d"
+    "1m": "1m", "30m": "30m", "1H": "1h", "4H": "4h", "12H": "12h", "1D": "1d"
 }
 
 # ─────────────────────────────────────────────
@@ -37,30 +33,33 @@ TIMEFRAMES = {
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchange():
-    # Usamos KuCoin Futures por compatibilidad y menor restricción de IP
     return ccxt.kucoinfutures({"enableRateLimit": True, "timeout": 30000})
 
-@st.cache_data(ttl=300)
-def get_all_symbols():
+def get_filtered_symbols(min_vol):
     try:
         ex = get_exchange()
         tickers = ex.fetch_tickers()
-        return [s for s in tickers if "/USDT:USDT" in s]
+        # Filtramos por par USDT y por volumen mínimo
+        valid_symbols = []
+        for s, t in tickers.items():
+            if "/USDT:USDT" in s:
+                vol = t.get('quoteVolume', 0)
+                if vol >= min_vol:
+                    valid_symbols.append(s)
+        return sorted(valid_symbols)
     except: return []
 
 # ─────────────────────────────────────────────
-# NÚCLEO TÉCNICO
+# NÚCLEO TÉCNICO MACD
 # ─────────────────────────────────────────────
 def analyze_macd_logic(symbol, tf_code, exchange):
     try:
-        # Descarga optimizada: 100 velas son suficientes para MACD (12,26,9)
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf_code, limit=100)
         if not ohlcv or len(ohlcv) < 35: return None
         
         df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "vol"])
-        
-        # Cálculo MACD (12, 26, 9)
         macd = ta.macd(df["close"], fast=12, slow=26, signal=9)
+        
         m_line = macd["MACD_12_26_9"].iloc[-1]
         m_sig = macd["MACDs_12_26_9"].iloc[-1]
         m_hist = macd["MACDh_12_26_9"].iloc[-1]
@@ -79,7 +78,7 @@ def scan_batch(targets, acc):
     prog = st.progress(0)
     
     for idx, sym in enumerate(targets):
-        prog.progress((idx+1)/len(targets), text=f"Analizando {sym.split(':')[0]}...")
+        prog.progress((idx+1)/len(targets), text=f"Procesando {sym.split(':')[0]}...")
         try:
             ticker = ex.fetch_ticker(sym)
             price = ticker["last"]
@@ -95,12 +94,10 @@ def scan_batch(targets, acc):
                     row[f"{label} Hist."] = data["hist"]
                     row[f"{label} Cruce"] = data["cross"]
                 else:
-                    row[f"{label} MACD 0"] = "-"
-                    row[f"{label} Hist."] = "-"
-                    row[f"{label} Cruce"] = "-"
+                    for c in ["MACD 0", "Hist.", "Cruce"]: row[f"{label} {c}"] = "-"
             
             new_results.append(row)
-            time.sleep(0.05) # Jitter de seguridad
+            time.sleep(0.05)
         except: continue
         
     prog.empty()
@@ -114,9 +111,9 @@ def style_matrix(df):
     def apply_color(val):
         v = str(val).upper()
         if any(x in v for x in ["SOBRE 0", "SUBIENDO", "ALCISTA"]): 
-            return 'color: #00E676; font-weight: bold;'
+            return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
         if any(x in v for x in ["BAJO 0", "BAJANDO", "BAJISTA"]): 
-            return 'color: #FF5252;'
+            return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
         return ''
     
     try:
@@ -127,22 +124,24 @@ def style_matrix(df):
 # ─────────────────────────────────────────────
 # INTERFAZ DE CONTROL
 # ─────────────────────────────────────────────
-st.title("🛡️ SLY - MACD IMPULSE MATRIX")
+st.title("🛡️ SLY - MACD IMPULSE MATRIX v27.5")
 
 with st.sidebar:
-    st.header("🎯 Configuración")
+    st.header("⚙️ Configuración")
     
-    analysis_mode = st.radio("Modo:", ["Mercado (Lotes)", "Watchlist"])
+    min_vol = st.number_input("Volumen Mínimo 24h (USDT):", value=1000000, step=100000)
     
-    if analysis_mode == "Mercado (Lotes)":
-        all_sym = get_all_symbols()
-        st.write(f"Total: {len(all_sym)} activos")
-        b_size = st.number_input("Lote:", 10, 50, 20)
-        pointer = st.number_input("Desde índice:", 0, len(all_sym), 0)
+    analysis_mode = st.radio("Filtro de Activos:", ["Mercado x Volumen", "Watchlist"])
+    
+    if analysis_mode == "Mercado x Volumen":
+        all_sym = get_filtered_symbols(min_vol)
+        st.success(f"Activos con Vol > {min_vol:,}: {len(all_sym)}")
+        b_size = st.number_input("Lote a escanear:", 5, 50, 20)
+        pointer = st.number_input("Desde el índice:", 0, max(0, len(all_sym)-1), 0)
         targets_to_scan = all_sym[pointer:pointer+b_size]
     else:
-        full_list = get_all_symbols()
-        targets_to_scan = st.multiselect("Activos:", full_list)
+        full_list = get_filtered_symbols(0)
+        targets_to_scan = st.multiselect("Activos específicos:", full_list)
 
     acc = st.checkbox("Acumular resultados", value=True)
     
@@ -150,8 +149,10 @@ with st.sidebar:
         if targets_to_scan:
             st.session_state["matrix_results"] = scan_batch(targets_to_scan, acc)
             st.rerun()
+        else:
+            st.warning("No hay activos que cumplan el criterio.")
 
-    if st.button("Limpiar Pantalla"):
+    if st.button("🗑️ Limpiar Pantalla"):
         st.session_state["matrix_results"] = []
         st.rerun()
 
@@ -161,7 +162,7 @@ with st.sidebar:
 if st.session_state["matrix_results"]:
     df = pd.DataFrame(st.session_state["matrix_results"])
     
-    # Reordenamiento lógico de columnas
+    # Reordenamiento lógico
     base_cols = ["Activo", "Precio"]
     tf_cols = []
     for tf in TIMEFRAMES.keys():
@@ -169,14 +170,13 @@ if st.session_state["matrix_results"]:
     
     df = df[base_cols + tf_cols]
     
-    st.dataframe(style_matrix(df), use_container_width=True, height=800)
+    st.dataframe(style_matrix(df), use_container_width=True, height=700)
 else:
-    st.info("👈 Configure los activos y presione Iniciar para generar la matriz de impulso.")
+    st.info("👈 Ajuste el volumen mínimo y el lote, luego presione Iniciar Escaneo.")
 
 with st.expander("📘 NOTAS TÉCNICAS"):
-    st.markdown("""
-    *   **MACD 0:** Define si la tendencia es de valor positivo o negativo.
-    *   **Histograma:** Indica si el momentum actual se está acelerando o frenando.
-    *   **Cruce:** Confirmación de entrada/salida (MACD vs Signal).
-    *   *Datos procesados directamente desde KuCoin Futures.*
+    st.markdown(f"""
+    *   **Volumen Mínimo:** Solo se analizan activos que mueven más de {min_vol:,} USDT en las últimas 24h.
+    *   **MACD Matrix:** Detecta la convergencia de impulso entre 1m y 1D.
+    *   **Colores:** Verde (Aceleración/Tendencia +), Rojo (Desaceleración/Tendencia -).
     """)
