@@ -7,144 +7,147 @@ import time
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN INSTITUCIONAL
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY | VOLUME CLIMAX TERMINAL")
+st.set_page_config(layout="wide", page_title="SLY | VOLUME CLIMAX v30.1")
 
 st.markdown("""
 <style>
     .stApp { background-color: #0E1117; color: #E0E0E0; }
     h1 { color: #00E676; font-weight: 800; border-bottom: 2px solid #00E676; }
-    .stDataFrame { border: 1px solid #333; }
-    .alert-box { padding: 10px; border-radius: 5px; background-color: #1B5E20; color: white; font-weight: bold; margin-bottom: 10px; }
+    .stDataFrame { border: 1px solid #333; background-color: #161B22; }
+    .status-panel { padding: 15px; border-radius: 10px; background-color: #1E1E1E; border: 1px solid #333; margin-bottom: 20px; }
 </style>
 """, unsafe_allow_html=True)
 
+if "matrix_data" not in st.session_state:
+    st.session_state["matrix_data"] = []
+
 # ─────────────────────────────────────────────
-# MOTOR DE DATOS (REDUNDANCIA BINANCE/KUCOIN)
+# MOTOR DE DATOS RESILIENTE
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchange():
-    # Usamos KuCoin por defecto para evitar bloqueos de IP en Streamlit Cloud
-    return ccxt.kucoinfutures({"enableRateLimit": True, "timeout": 30000})
+    # Probamos con Kucoin estándar (más estable para tickers)
+    return ccxt.kucoin({"enableRateLimit": True, "timeout": 40000})
 
-def fetch_tickers(min_volume_filter):
+def fetch_tickers_robust(min_vol):
     try:
         ex = get_exchange()
+        st.write("📡 Conectando con el servidor de datos...")
         tickers = ex.fetch_tickers()
-        # Filtramos solo activos líquidos y pares USDT
+        
         valid = []
         for s, t in tickers.items():
-            if "/USDT:USDT" in s and t.get("quoteVolume", 0) >= min_volume_filter:
-                valid.append({"symbol": s, "vol_24h": t["quoteVolume"]})
-        df = pd.DataFrame(valid).sort_values("vol_24h", ascending=False)
-        return df["symbol"].tolist()
-    except: return []
+            # Filtro más permisivo: que sea par USDT y que tenga volumen
+            if "/USDT" in s:
+                v_24h = t.get('quoteVolume') or t.get('baseVolume') or 0
+                if v_24h >= min_vol:
+                    valid.append({"symbol": s, "vol_24h": v_24h})
+        
+        df = pd.DataFrame(valid)
+        if not df.empty:
+            df = df.sort_values("vol_24h", ascending=False)
+            return df["symbol"].tolist()
+        return []
+    except Exception as e:
+        st.error(f"⚠️ Error de conexión API: {str(e)}")
+        return []
 
 # ─────────────────────────────────────────────
-# CÁLCULOS DE VOLUMEN (LÓGICA SLY ORIGINAL)
+# CÁLCULOS TÉCNICOS
 # ─────────────────────────────────────────────
 def calculate_cumulative_vol(symbol, tf, exchange):
     try:
-        # Pedimos 100 velas para cubrir el periodo de 42 y sus comparativas
+        # Descarga de 100 velas para tener margen de comparación
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=100)
-        df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
+        if len(ohlcv) < 85: return None
         
+        df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
         periods = [2, 3, 4, 6, 21, 42]
-        results = {"Activo": symbol.split(":")[0].replace("/USDT", ""), "Precio": df['c'].iloc[-1]}
-        alerts = []
+        results = {"Activo": symbol.replace("/USDT", ""), "Precio": df['c'].iloc[-1]}
 
         for p in periods:
-            # Volumen Acumulado Actual
+            # Bloque actual
             curr_vol = df['v'].tail(p).sum()
-            # Volumen Acumulado Anterior (el bloque de P velas antes de las actuales)
+            # Bloque anterior para comparar %
             prev_vol = df['v'].iloc[-(p*2):-p].sum()
             
-            # % Cambio (Delta de Volumen)
             change = ((curr_vol - prev_vol) / prev_vol * 100) if prev_vol > 0 else 0
-            
             results[f"Vol {p}v"] = f"{curr_vol:,.0f}"
             results[f"Chg {p}v (%)"] = round(change, 2)
-            
-            # Umbral de Alerta Institucional: > 100% de aumento de volumen
-            if change > 100:
-                alerts.append(f"{p}v")
 
-        return results, alerts
-    except: return None, []
+        return results
+    except:
+        return None
 
 # ─────────────────────────────────────────────
 # INTERFAZ DE CONTROL
 # ─────────────────────────────────────────────
 st.title("🛡️ SLY - VOLUME CLIMAX MATRIX")
-st.sidebar.header("🎯 Parámetros de Escaneo")
 
-min_vol = st.sidebar.number_input("Volumen 24h Mínimo (USDT)", value=5000000, step=1000000)
-tf = st.sidebar.selectbox("Temporalidad", ["1m", "5m", "15m", "1H", "4H", "1D"], index=2)
-batch_size = st.sidebar.slider("Activos por escaneo", 5, 50, 20)
-
-if "matrix_data" not in st.session_state:
-    st.session_state["matrix_data"] = []
-
-if st.sidebar.button("🚀 INICIAR ESCANEO DE VOLUMEN"):
-    symbols = fetch_tickers(min_vol)
-    targets = symbols[:batch_size]
+with st.sidebar:
+    st.header("⚙️ Parámetros")
+    min_vol_input = st.number_input("Volumen Mínimo 24h (USDT)", value=1000000, min_value=1)
+    tf_input = st.selectbox("Temporalidad", ["1m", "5m", "15m", "1h", "4h", "1d"], index=3)
+    limit_input = st.slider("Cantidad de activos", 5, 50, 20)
     
-    ex = get_exchange()
-    new_results = []
-    
-    prog = st.progress(0)
-    for i, sym in enumerate(targets):
-        prog.progress((i+1)/len(targets), text=f"Analizando flujo de órdenes: {sym}")
-        res, alerts = calculate_cumulative_vol(sym, tf, ex)
-        if res:
-            if alerts:
-                st.toast(f"🚨 Anomalía detectada en {res['Activo']} ({', '.join(alerts)})")
-            new_results.append(res)
-        time.sleep(0.1) # Jitter de seguridad
-
-    st.session_state["matrix_data"] = new_results
-    st.rerun()
+    execute = st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True)
 
 # ─────────────────────────────────────────────
-# RENDERIZADO DE LA MATRIZ
+# LÓGICA DE EJECUCIÓN
+# ─────────────────────────────────────────────
+if execute:
+    symbols = fetch_tickers_robust(min_vol_input)
+    
+    if symbols:
+        st.toast(f"✅ Universo cargado: {len(symbols)} monedas encontradas.")
+        targets = symbols[:limit_input]
+        
+        ex = get_exchange()
+        new_results = []
+        
+        prog = st.progress(0)
+        status_text = st.empty()
+        
+        for i, sym in enumerate(targets):
+            status_text.text(f"Analizando flujo: {sym}")
+            res = calculate_cumulative_vol(sym, tf_input, ex)
+            if res:
+                new_results.append(res)
+            prog.progress((i+1)/len(targets))
+            time.sleep(0.1) # Evitar saturación
+        
+        st.session_state["matrix_data"] = new_results
+        status_text.success(f"Análisis completado para {len(new_results)} activos.")
+        st.rerun()
+    else:
+        st.error("No se encontraron activos. Verifica la conexión o baja el filtro de volumen.")
+
+# ─────────────────────────────────────────────
+# RENDERIZADO DE RESULTADOS
 # ─────────────────────────────────────────────
 if st.session_state["matrix_data"]:
     df_final = pd.DataFrame(st.session_state["matrix_data"])
     
-    # Estilo de la tabla
-    def color_vol(val):
+    def style_vol(val):
         try:
             v = float(val)
-            if v > 200: return 'background-color: #1B5E20; color: #white;' # Explosión masiva
-            if v > 100: return 'background-color: #2E7D32; color: white;'  # Inyección institucional
-            if v < -50: return 'color: #FF5252;' # Secado de volumen
+            if v > 150: return 'background-color: #1B5E20; color: white; font-weight: bold;'
+            if v > 80: return 'background-color: #2E7D32; color: white;'
+            if v < -40: return 'color: #FF5252;'
         except: pass
         return ''
 
-    # Mostrar alertas críticas primero
-    st.subheader(f"📊 Matriz de Volumen Acumulado - {tf}")
-    
-    # Columnas de porcentaje para aplicar color
     chg_cols = [c for c in df_final.columns if "(%)" in c]
     
+    st.subheader(f"📊 Anomalías de Volumen en {tf_input.upper()}")
     st.dataframe(
-        df_final.style.map(color_vol, subset=chg_cols),
+        df_final.style.map(style_vol, subset=chg_cols),
         use_container_width=True,
         height=600
     )
     
-    if st.button("🗑️ Limpiar Resultados"):
+    if st.button("🗑️ Limpiar Pantalla"):
         st.session_state["matrix_data"] = []
         st.rerun()
 else:
-    st.info("👈 Ajuste el filtro de volumen y presione 'Iniciar Escaneo'. El sistema buscará anomalías en los periodos de 2 a 42 velas.")
-
-# ─────────────────────────────────────────────
-# MANUAL PARA EL OPERADOR
-# ─────────────────────────────────────────────
-with st.expander("📘 LÓGICA DE DETECCIÓN (SystemaTrader)"):
-    st.markdown("""
-    ### ¿Cómo interpretar el Delta de Volumen?
-    1.  **Chg 2v/3v/4v > 100%:** Entrada inminente de dinero. Si el precio acompaña, es el inicio de un 'Pump' o ruptura institucional.
-    2.  **Chg 21v/42v > 50%:** Acumulación macro. Las ballenas están posicionándose en este activo de forma sostenida.
-    3.  **Color Verde Oscuro:** El volumen actual duplica al volumen anterior. Es una **Anomalía Crítica**.
-    """)
+    st.info("👈 Ajuste parámetros y presione el botón rojo para iniciar el motor.")
