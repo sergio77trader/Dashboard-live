@@ -7,7 +7,7 @@ import time
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN INSTITUCIONAL
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY | VOLUME PERSISTENCE ENGINE")
+st.set_page_config(layout="wide", page_title="SLY | VOLUME & MOMENTUM ENGINE")
 
 st.markdown("""
 <style>
@@ -20,7 +20,7 @@ st.markdown("""
 
 # --- INICIALIZACIÓN DE MEMORIA BLINDADA ---
 if "persistent_list" not in st.session_state:
-    st.session_state["persistent_list"] = [] # Usamos lista para evitar errores de concatenación
+    st.session_state["persistent_list"] = []
 if "all_symbols" not in st.session_state:
     st.session_state["all_symbols"] = []
 if "ptr" not in st.session_state:
@@ -42,35 +42,80 @@ def fetch_universe(min_vol):
     except: return []
 
 # ─────────────────────────────────────────────
+# CÁLCULOS TÉCNICOS (MACD & HEIKIN ASHI)
+# ─────────────────────────────────────────────
+def calculate_indicators(df):
+    # 1. MACD (12, 26, 9)
+    ema12 = df['close'].ewm(span=12, adjust=False).mean()
+    ema26 = df['close'].ewm(span=26, adjust=False).mean()
+    macd_line = ema12 - ema26
+    signal_line = macd_line.ewm(span=9, adjust=False).mean()
+    hist = macd_line - signal_line
+    
+    # 2. Heikin Ashi Recursivo
+    ha_close = (df['open'] + df['high'] + df['low'] + df['close']) / 4
+    ha_open = np.zeros(len(df))
+    ha_open[0] = (df['open'].iloc[0] + df['close'].iloc[0]) / 2
+    for i in range(1, len(df)):
+        ha_open[i] = (ha_open[i-1] + ha_close.iloc[i-1]) / 2
+    
+    # Estados actuales
+    hist_now = hist.iloc[-1]
+    hist_prev = hist.iloc[-2]
+    macd_now = macd_line.iloc[-1]
+    signal_now = signal_line.iloc[-1]
+    ha_o_now = ha_open[-1]
+    ha_c_now = ha_close.iloc[-1]
+    
+    return {
+        "Histograma": "SUBIENDO 📈" if hist_now > hist_prev else "BAJANDO 📉",
+        "Cruce MACD": "ALCISTA 🟢" if macd_now > signal_now else "BAJISTA 🔴",
+        "Vela HA": "VERDE 🟢" if ha_c_now > ha_o_now else "ROJA 🔴"
+    }
+
+# ─────────────────────────────────────────────
 # LÓGICA DE RECOMENDACIÓN
 # ─────────────────────────────────────────────
-def get_verdict(v2, v4, v21, v42):
-    if v2 > 150 and v4 > 100: return "🔥 PUMP INMINENTE", "Inyección explosiva."
-    if v21 > 60 and v42 > 40: return "🐳 ACUMULACIÓN", "Manos grandes comprando."
-    if v2 < -50: return "❄️ SECADO", "Sin interés."
-    return "⚖️ NEUTRAL", "Flujo normal."
+def get_verdict(v2, v4, v21, indicators):
+    # Una recomendación profesional exige volumen + dirección
+    if v2 > 150 and indicators["Vela HA"] == "VERDE 🟢" and indicators["Histograma"] == "SUBIENDO 📈":
+        return "🔥 COMPRA INMINENTE", "Volumen explosivo con dirección confirmada."
+    if v21 > 60 and indicators["Vela HA"] == "VERDE 🟢":
+        return "🐳 ACUMULACIÓN PRO", "Manos fuertes comprando sostenidamente."
+    if v2 > 150 and indicators["Vela HA"] == "ROJA 🔴":
+        return "🩸 VENTA AGRESIVA", "Distribución masiva detectada."
+    return "⚖️ NEUTRAL", "Sin desequilibrio claro."
 
-def analyze_volume(symbol, tf, exchange):
+def analyze_asset(symbol, tf, exchange):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe=tf, limit=100)
-        df = pd.DataFrame(ohlcv, columns=['t', 'o', 'h', 'l', 'c', 'v'])
-        res = {"Activo": symbol.replace("/USDT", ""), "Precio": df['c'].iloc[-1]}
+        df = pd.DataFrame(ohlcv, columns=['t', 'open', 'high', 'low', 'close', 'v'])
+        
+        # Obtener indicadores de confluencia
+        tech = calculate_indicators(df)
+        
+        res = {
+            "Activo": symbol.replace("/USDT", ""),
+            "Precio": f"{df['close'].iloc[-1]:,.4f}",
+            "HA": tech["Vela HA"],
+            "MACD Hist": tech["Histograma"],
+            "MACD Cross": tech["Cruce MACD"]
+        }
         
         for p in [2, 4, 21, 42]:
             curr = df['v'].tail(p).sum()
             prev = df['v'].iloc[-(p*2):-p].sum()
             chg = ((curr - prev) / prev * 100) if prev > 0 else 0
-            res[f"Vol {p}v"] = f"{curr:,.0f}"
             res[f"Chg {p}v (%)"] = round(chg, 2)
             
-        res["RECOMENDACIÓN"], res["Análisis"] = get_verdict(res["Chg 2v (%)"], res["Chg 4v (%)"], res["Chg 21v (%)"], res["Chg 42v (%)"])
+        res["RECOMENDACIÓN"], res["Análisis"] = get_verdict(res["Chg 2v (%)"], res["Chg 4v (%)"], res["Chg 21v (%)"], tech)
         return res
     except: return None
 
 # ─────────────────────────────────────────────
 # INTERFAZ DE CONTROL
 # ─────────────────────────────────────────────
-st.title("🛡️ SLY - PERSISTENT VOLUME TERMINAL")
+st.title("🛡️ SLY - CONFLUENCE & VOLUME TERMINAL")
 
 with st.sidebar:
     st.header("⚙️ Configuración")
@@ -84,25 +129,21 @@ with st.sidebar:
 
     if st.session_state["all_symbols"]:
         total = len(st.session_state["all_symbols"])
-        current_ptr = st.session_state["ptr"]
+        ptr = st.session_state["ptr"]
         batch_size = st.slider("Activos por lote", 10, 100, 30)
         
-        if current_ptr < total:
-            limit = min(current_ptr + batch_size, total)
-            if st.button(f"🚀 ANALIZAR LOTE: {current_ptr} al {limit}", type="primary"):
+        if ptr < total:
+            limit = min(ptr + batch_size, total)
+            if st.button(f"🚀 ANALIZAR LOTE: {ptr} al {limit}", type="primary"):
                 ex = get_exchange()
-                targets = st.session_state["all_symbols"][current_ptr:limit]
-                
+                targets = st.session_state["all_symbols"][ptr:limit]
                 prog = st.progress(0)
                 for i, sym in enumerate(targets):
-                    res = analyze_volume(sym, tf, ex)
-                    if res:
-                        # AGREGAR A LA LISTA PERSISTENTE
-                        st.session_state["persistent_list"].append(res)
+                    res = analyze_asset(sym, tf, ex)
+                    if res: st.session_state["persistent_list"].append(res)
                     prog.progress((i+1)/len(targets))
-                
                 st.session_state["ptr"] = limit
-                st.rerun() # Forzar refresco para mostrar datos acumulados
+                st.rerun()
 
     if st.button("🗑️ LIMPIAR TODO"):
         st.session_state["persistent_list"] = []
@@ -113,26 +154,30 @@ with st.sidebar:
 # RENDERIZADO DE RESULTADOS
 # ─────────────────────────────────────────────
 if st.session_state["persistent_list"]:
-    # Convertir lista a DataFrame
     df_accumulated = pd.DataFrame(st.session_state["persistent_list"]).drop_duplicates(subset="Activo", keep="last")
     
-    st.subheader(f"📊 Inteligencia Acumulada: {len(df_accumulated)} activos")
+    st.subheader(f"📊 Inteligencia de Confluencia: {len(df_accumulated)} activos")
     
-    # Estilo institucional
     def style_rows(val):
         try:
-            if "PUMP" in str(val): return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
-            if "ACUMULACIÓN" in str(val): return 'background-color: #E3F2FD; color: #0D47A1; font-weight: bold;'
+            v = str(val)
+            if "VERDE" in v or "SUBIENDO" in v or "ALCISTA" in v or "COMPRA" in v: 
+                return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
+            if "ROJA" in v or "BAJANDO" in v or "BAJISTA" in v or "VENTA" in v: 
+                return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
             if isinstance(val, (int, float)) and val > 100: return 'color: #1B5E20; font-weight: bold;'
-            if isinstance(val, (int, float)) and val < -40: return 'color: #B71C1C;'
         except: pass
         return ''
 
-    # Ordenar por el mayor cambio de volumen en las últimas 2 velas
+    # Ordenar por el mayor cambio de volumen inmediato
     df_accumulated = df_accumulated.sort_values(by="Chg 2v (%)", ascending=False)
     
+    # Reordenar columnas para prioridad visual
+    prio_cols = ["Activo", "RECOMENDACIÓN", "HA", "MACD Hist", "MACD Cross", "Precio"]
+    other_cols = [c for c in df_accumulated.columns if c not in prio_cols and c != "Análisis"]
+    df_accumulated = df_accumulated[prio_cols + other_cols + ["Análisis"]]
+
     st.dataframe(df_accumulated.style.map(style_rows), use_container_width=True, height=600)
-    
-    st.download_button("📥 Bajar Reporte", df_accumulated.to_csv(index=False), "sly_volume.csv")
+    st.download_button("📥 Descargar Reporte", df_accumulated.to_csv(index=False), "sly_confluence.csv")
 else:
-    st.info("👈 Presiona 'Sincronizar' y luego 'Analizar Lote' para ir acumulando monedas.")
+    st.info("👈 Sincroniza y analiza un lote para obtener señales de confluencia.")
