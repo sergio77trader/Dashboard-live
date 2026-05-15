@@ -1,120 +1,127 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-from datetime import datetime, timedelta
-import time
+from datetime import datetime
+import requests
 
 # ─────────────────────────────────────────────
-# CONFIGURACIÓN INSTITUCIONAL
+# CONFIGURACIÓN INSTITUCIONAL - SLY V3.0
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY | EVENT TRACKER v2.0")
+st.set_page_config(layout="wide", page_title="SLY | EVENT TRACKER v3.0")
 
 st.markdown("""
 <style>
     .stApp { background-color: #F8F9FA; }
-    h1 { color: #004D40; font-weight: 800; border-bottom: 3px solid #00E676; }
-    .stDataFrame { background-color: white; border-radius: 10px; }
-    .status-panel { padding: 10px; border-radius: 5px; background-color: #E8F5E9; color: #2E7D32; font-weight: bold; margin-bottom: 20px; }
+    h1 { color: #002D5A; font-weight: 800; border-bottom: 2px solid #004A99; }
+    .metric-card { background-color: white; padding: 15px; border-radius: 10px; border: 1px solid #DDD; }
 </style>
 """, unsafe_allow_html=True)
 
-# Lista Maestra reducida para el test inicial
-DEFAULT_TICKERS = 'AAPL, NVDA, MSFT, TSLA, GGAL, YPF, MELI, META, AMZN, KO, JPM'
+# ─────────────────────────────────────────────
+# MOTOR DE SIGILO (ANTI-BOT)
+# ─────────────────────────────────────────────
+def get_stealth_session():
+    session = requests.Session()
+    # Simulamos un navegador real para que Yahoo no bloquee la IP del servidor
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    })
+    return session
 
-# ─────────────────────────────────────────────
-# MOTOR DE EXTRACCIÓN v2.0 (HISTORICAL ANALYSIS)
-# ─────────────────────────────────────────────
-@st.cache_data(ttl=86400)
-def fetch_robust_events(symbol_list):
+@st.cache_data(ttl=3600)
+def fetch_events_v3(symbol_list):
+    session = get_stealth_session()
     results = []
-    prog = st.progress(0)
     
+    # Barra de progreso para monitoreo
+    prog = st.progress(0)
+    status_text = st.empty()
+
     for idx, t in enumerate(symbol_list):
         try:
-            asset = yf.Ticker(t)
+            status_text.text(f"Auditando: {t}")
+            asset = yf.Ticker(t, session=session)
             
-            # 1. BÚSQUEDA DE BALANCE (EARNINGS)
-            # Intentamos obtener la tabla de fechas de ganancias
-            earnings_df = asset.get_earnings_dates(limit=5)
-            next_earning = "S/D"
-            days_to_earn = 999
+            # Extraemos del diccionario principal (más estable que .calendar)
+            info = asset.info
             
-            if earnings_df is not None and not earnings_df.empty:
-                # Las fechas futuras suelen tener el campo 'Reported EPS' vacío
-                future_dates = earnings_df[earnings_df.index > datetime.now(earnings_df.index.tz)]
-                if not future_dates.empty:
-                    date_obj = future_dates.index[0]
-                    next_earning = date_obj.strftime('%d/%m/%Y')
-                    days_to_earn = (date_obj.replace(tzinfo=None) - datetime.now()).days
-                else:
-                    # Si no hay fecha confirmada, Yahoo a veces la pone en .calendar
-                    cal = asset.calendar
-                    date_cal = cal.get('Earnings Date', [None])[0] if isinstance(cal, dict) else None
-                    if date_cal:
-                        next_earning = date_cal.strftime('%d/%m/%Y')
-                        days_to_earn = (date_cal.replace(tzinfo=None) - datetime.now()).days
+            # 1. Obtener Próximo Balance
+            # yfinance suele ponerlo en 'nextEarningsDate' o lo buscamos en earnings_dates
+            next_earning_raw = info.get('nextEarningsDate') or 0
+            if next_earning_raw > 0:
+                next_earning_dt = datetime.fromtimestamp(next_earning_raw)
+            else:
+                # Fallback: intentar tabla de fechas
+                e_df = asset.get_earnings_dates(limit=1)
+                next_earning_dt = e_df.index[0] if e_df is not None and not e_df.empty else None
 
-            # 2. BÚSQUEDA DE DIVIDENDOS
-            # En lugar de .info, miramos el historial real de pagos
-            div_history = asset.dividends
-            last_div_date = "No paga"
-            div_yield = "0.00%"
-            
-            if not div_history.empty:
-                last_div_date = div_history.index[-1].strftime('%d/%m/%Y')
-                # Intentamos sacar el Yield del info
-                try:
-                    yield_val = asset.info.get('dividendYield')
-                    if yield_val: div_yield = f"{yield_val*100:.2f}%"
-                except: pass
+            # 2. Obtener Dividendos
+            div_yield = info.get('dividendYield', 0)
+            ex_div_raw = info.get('exDividendDate', 0)
+            ex_div_dt = datetime.fromtimestamp(ex_div_raw) if ex_div_raw > 0 else None
+
+            # 3. Calcular Días Restantes
+            days_to = 999
+            if next_earning_dt:
+                # Normalizar para resta
+                now = datetime.now()
+                d_target = next_earning_dt.replace(tzinfo=None)
+                days_to = (d_target - now).days
 
             results.append({
                 "Activo": t,
-                "Próximo Balance": next_earning,
-                "Días restantes": days_to_earn,
-                "Último Dividendo": last_div_date,
-                "Div. Yield": div_yield
+                "Próximo Balance": next_earning_dt.strftime('%d/%m/%Y') if next_earning_dt else "S/D",
+                "Días": days_to,
+                "Ex-Dividendo": ex_div_dt.strftime('%d/%m/%Y') if ex_div_dt else "N/A",
+                "Yield": f"{div_yield*100:.2f}%" if div_yield else "0.00%",
+                "Precio Actual": f"${info.get('currentPrice', 0):.2f}"
             })
-            time.sleep(0.2) # Jitter para evitar baneo
+            
         except Exception as e:
+            # En caso de error, dejamos constancia para el analista
+            print(f"Error en {t}: {e}")
             continue
         prog.progress((idx+1)/len(symbol_list))
-    
+
+    status_text.empty()
     prog.empty()
     return pd.DataFrame(results)
 
 # ─────────────────────────────────────────────
-# INTERFAZ DE USUARIO
+# INTERFAZ OPERATIVA
 # ─────────────────────────────────────────────
-st.title("🛡️ SLY - Calendario de Eventos v2.0")
-st.markdown('<div class="status-panel">Motor de Análisis Histórico Activo: Detectando fechas ocultas.</div>', unsafe_allow_html=True)
+st.title("🛡️ SLY - Terminal de Eventos Corporativos")
 
-input_tickers = st.text_area("Ingresa los activos para auditar:", DEFAULT_TICKERS)
-filter_days = st.slider("Rango de búsqueda (días):", 1, 120, 90)
+# Usamos pocos activos para el test de visibilidad inicial
+TICKERS_TEST = "AAPL, NVDA, TSLA, MSFT, META, GGAL, YPF, PAMP"
 
-if st.button("🚀 AUDITAR MERCADO"):
+input_tickers = st.text_area("Auditando activos (Separar por coma):", TICKERS_TEST)
+
+if st.button("🚀 INICIAR ESCANEO DE EVENTOS"):
     t_list = [x.strip().upper() for x in input_tickers.split(",") if x.strip()]
-    df = fetch_robust_events(t_list)
+    
+    with st.spinner("Conectando con el Feed de Datos Global..."):
+        df = fetch_events_v3(t_list)
     
     if not df.empty:
-        # Lógica de color para riesgo
-        def style_logic(row):
+        # Lógica de color de grado institucional
+        def style_risk(row):
             styles = [''] * len(row)
-            d = row["Días restantes"]
-            if 0 <= d <= 5: # EMERGENCIA: Balance en menos de 5 días
-                styles = ['background-color: #FF5252; color: white; font-weight: bold;'] * len(row)
-            elif 5 < d <= 15: # ADVERTENCIA: Balance en menos de 15 días
-                styles = ['background-color: #FFF9C4; color: #333;'] * len(row)
+            d = row["Días"]
+            if 0 <= d <= 5: # PELIGRO INMINENTE
+                styles = ['background-color: #D32F2F; color: white; font-weight: bold;'] * len(row)
+            elif 5 < d <= 15: # ADVERTENCIA
+                styles = ['background-color: #FFF176; color: black;'] * len(row)
             return styles
 
-        # Ordenar por cercanía
-        df_final = df.sort_values("Días restantes", ascending=True)
+        # Ordenar por cercanía del balance
+        df_display = df.sort_values("Días", ascending=True)
         
-        # Ocultar la columna de cálculo interna "Días restantes" para limpieza visual
-        st.dataframe(df_final.style.apply(style_logic, axis=1), use_container_width=True)
+        st.subheader("📅 Cronograma de Balances y Dividendos")
+        st.dataframe(df_display.style.apply(style_risk, axis=1), use_container_width=True)
         
-        st.success(f"Análisis completado para {len(df)} activos.")
+        st.success(f"Analizado con éxito: {len(df)} activos.")
     else:
-        st.error("No se pudo extraer información. Yahoo Finance podría estar limitando las peticiones.")
+        st.error("No se recibió información. Posible bloqueo de Yahoo o tickers mal escritos.")
 
-st.info("Nota técnica: Si un activo dice 'S/D' es porque la empresa aún no ha reportado su cronograma a la bolsa de valores.")
+st.info("SystemaTrader: v3.0 activa. Si el activo dice 'S/D' es porque aún no confirmó fecha oficial de balance.")
