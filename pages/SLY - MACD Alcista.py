@@ -3,14 +3,15 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 from datetime import datetime
+import calendar
 
 # 1. CONFIGURACIÓN DE LA APP
-st.set_page_config(page_title="Escáner MACD Pro - 150 Activos", layout="wide")
+st.set_page_config(page_title="Escáner MACD Estratégico", layout="wide")
 
-st.title("🔍 Escáner de Momentum: Cruces MACD Ascendentes")
-st.write("Analizando cambios de tendencia de alta convicción en temporalidades largas.")
+st.title("🔍 Escáner de Momentum con Filtros de PnL y Ciclos")
+st.write("Analizando la calidad de los cruces MACD y su rendimiento desde la señal.")
 
-# 2. LISTA MAESTRA DE TICKERS
+# 2. LISTA MAESTRA
 MASTER_TICKERS = sorted([
     'GGAL', 'YPF', 'BMA', 'PAMP', 'TGS', 'CEPU', 'EDN', 'BFR', 'SUPV', 'CRESY', 'IRS', 'TEO', 'LOMA', 'DESP', 'VIST', 'GLOB', 'MELI', 'BIOX', 'TX',
     'AAPL', 'MSFT', 'NVDA', 'GOOGL', 'AMZN', 'META', 'TSLA', 'NFLX', 'CRM', 'ORCL', 'ADBE', 'IBM', 'CSCO', 'PLTR', 'SNOW', 'SHOP', 'SPOT', 'UBER', 'ABNB', 'AMD', 'INTC', 'QCOM', 'AVGO', 'TXN', 'MU', 'ADI', 'AMAT', 'ARM', 'SMCI', 'TSM', 'ASML', 'LRCX',
@@ -19,116 +20,128 @@ MASTER_TICKERS = sorted([
     'SPY', 'QQQ', 'IWM', 'DIA', 'EEM', 'EWZ', 'FXI', 'XLE', 'XLF', 'XLK', 'XLV', 'XLI', 'XLP', 'XLU', 'XLY', 'ARKK', 'SMH', 'TAN', 'GLD', 'SLV', 'GDX'
 ])
 
-# 3. SIDEBAR - CONTROLES
-st.sidebar.header("Parámetros del Escáner")
-temp = st.sidebar.radio("Selecciona Temporalidad:", ["Semanal", "Mensual"])
+# 3. SIDEBAR
+st.sidebar.header("1. Configurar Escaneo")
+temp = st.sidebar.radio("Temporalidad:", ["Semanal", "Mensual"])
+intervalo = "1wk" if temp == "Semanal" else "1mo"
+periodo_data = "5y" if temp == "Semanal" else "max"
 
-# Ajuste de configuración según temporalidad
-if temp == "Semanal":
-    intervalo = "1wk"
-    periodo_data = "5y"  # Necesitamos historia para comparar 2 cruces
-else:
-    intervalo = "1mo"
-    periodo_data = "max"
-
-# 4. MOTOR DE ANÁLISIS
-def escanear_momentum(ticker):
+# 4. FUNCIÓN DE ANÁLISIS MEJORADA
+def analizar_ticker(ticker):
     try:
-        # Descarga
         df = yf.download(ticker, period=periodo_data, interval=intervalo, progress=False)
         if df.empty or len(df) < 35: return None
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
 
-        # Limpiar columnas
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-
-        # Cálculo de MACD (12, 26, 9)
-        macd_output = ta.macd(df['Close'], fast=12, slow=26, signal=9)
-        df = pd.concat([df, macd_output], axis=1)
+        # Indicador
+        macd_data = ta.macd(df['Close'], fast=12, slow=26, signal=9)
+        df = pd.concat([df, macd_data], axis=1)
         
-        macd_col = 'MACD_12_26_9'
-        signal_col = 'MACDs_12_26_9'
-
-        # Detectar Cruces Alcistas
-        # MACD hoy > Signal hoy Y MACD ayer <= Signal ayer
-        df['Cruce_Alcista'] = (df[macd_col] > df[signal_col]) & (df[macd_col].shift(1) <= df[signal_col].shift(1))
+        m_col, s_col = 'MACD_12_26_9', 'MACDs_12_26_9'
+        df['Cruce_Alcista'] = (df[m_col] > df[s_col]) & (df[m_col].shift(1) <= df[s_col].shift(1))
         
-        # Obtener los últimos dos cruces
         df_cruces = df[df['Cruce_Alcista'] == True].copy()
         
         if len(df_cruces) >= 2:
-            ultimo = df_cruces.iloc[-1]
-            anterior = df_cruces.iloc[-2]
+            u_cruce = df_cruces.iloc[-1]
+            p_cruce = df_cruces.iloc[-2]
             
-            val_u = ultimo[macd_col]
-            val_a = anterior[macd_col]
+            # Condición de Momentum Ascendente
+            piso_ascendente = u_cruce[m_col] > p_cruce[m_col]
             
-            cumple = val_u > val_a
+            # Precio al momento de la señal y actual
+            precio_señal = u_cruce['Close']
+            precio_actual = df['Close'].iloc[-1]
+            pnl = ((precio_actual / precio_señal) - 1) * 100
+            
+            # Ubicación respecto a 0
+            ubicacion = "Sobre 0 (Continuación)" if u_cruce[m_col] > 0 else "Bajo 0 (Recuperación)"
             
             return {
                 "Ticker": ticker,
-                "Resultado": "🚀 CUMPLE" if cumple else "Bajo Momentum",
-                "Valor Cruce Actual": round(val_u, 3),
-                "Valor Cruce Anterior": round(val_a, 3),
-                "Precio": round(df['Close'].iloc[-1], 2),
-                "Fecha Últ. Cruce": ultimo.name.strftime('%Y-%m-%d')
+                "Ascendente": piso_ascendente,
+                "Mes": calendar.month_name[u_cruce.name.month],
+                "Zona": ubicacion,
+                "PnL %": round(pnl, 2),
+                "Valor Cruce": round(u_cruce[m_col], 3),
+                "Precio Señal": round(precio_señal, 2),
+                "Precio Actual": round(precio_actual, 2),
+                "Fecha Señal": u_cruce.name.date()
             }
-    except:
-        return None
+    except: return None
     return None
 
-# 5. EJECUCIÓN
-if st.button(f"🚀 Iniciar Escaneo Maestro ({temp})"):
-    st.write(f"Escaneando {len(MASTER_TICKERS)} activos... esto puede demorar un minuto.")
-    
-    resultados = []
-    barra = st.progress(0)
-    
-    for i, t in enumerate(MASTER_TICKERS):
-        res = escanear_momentum(t)
-        if res:
-            resultados.append(res)
-        barra.progress((i + 1) / len(MASTER_TICKERS))
-    
-    if resultados:
-        full_df = pd.DataFrame(resultados)
-        
-        # Filtramos solo los que cumplen tu condición
-        final_df = full_df[full_df["Resultado"] == "🚀 CUMPLE"].sort_values(by="Valor Cruce Actual", ascending=False)
-        
-        st.subheader(f"✅ Resultados: Cruces con Pisos Ascendentes ({temp})")
-        if not final_df.empty:
-            st.success(f"Se encontraron {len(final_df)} activos que cumplen tu criterio.")
-            st.dataframe(final_df, use_container_width=True, hide_index=True)
-            
-            # Análisis detallado del primer ticker de la lista
-            st.divider()
-            t_top = final_df['Ticker'].iloc[0]
-            st.write(f"### Ejemplo Técnico: {t_top}")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.write("Gráfico de Precio (6 meses)")
-                st.line_chart(yf.download(t_top, period="2y" if temp == "Semanal" else "10y", interval=intervalo)['Close'])
-            with c2:
-                st.metric("Nivel MACD Actual", final_df['Valor Cruce Actual'].iloc[0])
-                st.metric("Nivel MACD Anterior", final_df['Valor Cruce Anterior'].iloc[0])
-                st.write("Si el nivel actual es mayor al anterior, la 'potencia' de compra está aumentando.")
-        else:
-            st.warning("Ningún activo cumple la condición de pisos ascendentes en el MACD en este momento.")
-        
-        with st.expander("Ver lista completa analizada"):
-            st.dataframe(full_df)
-    else:
-        st.error("No se pudieron procesar los datos.")
+# 5. BOTÓN DE ESCANEO Y PERSISTENCIA
+if 'resultados_brutos' not in st.session_state:
+    st.session_state.resultados_brutos = None
 
-# 6. EDUCACIÓN TÉCNICA
+if st.sidebar.button("🚀 Iniciar Gran Escaneo"):
+    with st.spinner("Analizando 150+ activos..."):
+        data_lista = []
+        progreso = st.progress(0)
+        for i, t in enumerate(MASTER_TICKERS):
+            res = analizar_ticker(t)
+            if res: data_lista.append(res)
+            progreso.progress((i + 1) / len(MASTER_TICKERS))
+        st.session_state.resultados_brutos = pd.DataFrame(data_lista)
+        st.success("Escaneo completado.")
+
+# 6. FILTROS INTERACTIVOS (Solo si hay datos)
+if st.session_state.resultados_brutos is not None:
+    df_res = st.session_state.resultados_brutos.copy()
+
+    st.divider()
+    st.subheader("🎯 Refinar Resultados")
+    
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        meses_disp = ["Todos"] + sorted(df_res["Mes"].unique().tolist())
+        filtro_mes = st.selectbox("Filtrar por Mes de la Señal:", meses_disp)
+    with c2:
+        zona_disp = ["Todas"] + df_res["Zona"].unique().tolist()
+        filtro_zona = st.selectbox("Filtrar por Zona (Sobre/Bajo 0):", zona_disp)
+    with c3:
+        solo_asc = st.checkbox("Solo Pisos Ascendentes (Fuerza Progresiva)", value=True)
+
+    # Aplicar filtros
+    if filtro_mes != "Todos":
+        df_res = df_res[df_res["Mes"] == filtro_mes]
+    if filtro_zona != "Todas":
+        df_res = df_res[df_res["Zona"] == filtro_zona]
+    if solo_asc:
+        df_res = df_res[df_res["Ascendente"] == True]
+
+    # 7. VISUALIZACIÓN
+    st.write(f"Mostrando **{len(df_res)}** activos que coinciden con los filtros.")
+    
+    # Formatear tabla para visualización
+    st.dataframe(
+        df_res.drop(columns=["Ascendente"]).sort_values(by="PnL %", ascending=False),
+        column_config={
+            "PnL %": st.column_config.NumberColumn("PnL desde Señal", format="%.2f%%"),
+            "Valor Cruce": st.column_config.NumberColumn("Nivel MACD"),
+            "Fecha Señal": st.column_config.DateColumn("Fecha"),
+        },
+        hide_index=True,
+        use_container_width=True
+    )
+
+    # 8. ANÁLISIS DE RENDIMIENTO
+    st.divider()
+    col_a, col_b = st.columns(2)
+    with col_a:
+        st.metric("Promedio PnL de la lista filtrada", f"{round(df_res['PnL %'].mean(), 2)}%")
+    with col_b:
+        best_ticker = df_res.loc[df_res['PnL %'].idxmax()] if not df_res.empty else None
+        if best_ticker is not None:
+            st.metric(f"Mejor Rendimiento: {best_ticker['Ticker']}", f"{best_ticker['PnL %']}%")
+
+# 9. EXPLICACIÓN DE CONCEPTOS
 st.sidebar.divider()
-st.sidebar.subheader("¿Qué estoy buscando?")
-st.sidebar.info("""
-Estás buscando **Divergencias de Momentum**. 
-
-- **En Semanal:** Ideal para detectar el inicio de una tendencia que durará varios meses. 
-- **En Mensual:** Detecta cambios en el ciclo macroeconómico.
-
-**Criterio:** El cruce alcista actual debe ocurrir en un nivel del MACD más alto que el cruce anterior. Esto indica que el interés comprador está apareciendo con mucha más fuerza que la vez pasada.
+st.sidebar.subheader("Diccionario Técnico")
+st.sidebar.write("""
+- **Bajo 0 (Recuperación):** El cruce ocurre mientras la tendencia previa era bajista. Son los cruces con mayor potencial de recorrido (suelos).
+- **Sobre 0 (Continuación):** El cruce ocurre en tendencia alcista. Indica una "pausa que terminó" para seguir subiendo.
+- **PnL desde Señal:** Cuánto varió el precio desde que el MACD confirmó el cruce hasta el último precio de hoy.
+- **Piso Ascendente:** El indicador tiene más fuerza ahora que en su señal anterior.
 """)
