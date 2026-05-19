@@ -3,95 +3,128 @@ import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
 
-# Configuración
-st.set_page_config(page_title="Scanner MACD Pro", layout="wide")
-st.title("🔍 Escáner de Cruces MACD (Pisos Ascendentes)")
+# 1. Configuración de la App
+st.set_page_config(page_title="Scanner MACD Multi-Timeframe", layout="wide")
+st.title("🔍 Escáner MACD: Pisos Ascendentes")
+st.write("Buscando cruces alcistas donde el momentum es superior al cruce anterior.")
 
-# Lista de Tickers sugeridos (puedes agregar más de tus 150 acciones)
-tickers_default = ["AAPL", "MSFT", "NVDA", "PBR", "GGAL", "YPF", "KO", "TSLA", "MELI", "BBD", "VALE"]
-
+# 2. Sidebar - Configuración de búsqueda
 st.sidebar.header("Configuración")
-tickers_input = st.sidebar.text_area("Lista de Tickers (separados por coma):", value=",".join(tickers_default))
-periodo = st.sidebar.selectbox("Periodo de análisis:", ["6mo", "1y", "2y"], index=0)
+# Tickers de ejemplo (puedes pegar tus 150 aquí)
+tickers_sugeridos = "AAPL, MSFT, NVDA, PBR, BBD, ITUB, GGAL, YPFD, KO, TSLA, MELI, VALE, ALUA, TXAR"
+tickers_input = st.sidebar.text_area("Lista de Tickers (separados por coma):", value=tickers_sugeridos)
 
-def analizar_macd(ticker):
+# Selección de Temporalidad
+temporalidad = st.sidebar.selectbox(
+    "Selecciona la Temporalidad:",
+    options=["Diario", "Semanal", "Mensual"],
+    index=1  # Por defecto Semanal
+)
+
+# Mapeo de parámetros según temporalidad
+config_time = {
+    "Diario":  {"interval": "1d",  "period": "1y",   "label": "Días"},
+    "Semanal": {"interval": "1wk", "period": "5y",   "label": "Semanas"},
+    "Mensual": {"interval": "1mo", "period": "max",  "label": "Meses"}
+}
+
+conf = config_time[temporalidad]
+
+# 3. Lógica de Cálculo
+def analizar_ticker(ticker, interval, period):
     try:
-        # Descargar datos
-        df = yf.download(ticker, period=periodo, interval="1d", progress=False)
-        if df.empty: return None
+        # Descarga de datos (ajustamos el periodo para tener suficiente historia)
+        df = yf.download(ticker, period=period, interval=interval, progress=False)
+        
+        if df.empty or len(df) < 35: # Mínimo de velas para MACD
+            return None
+
+        # Limpiar datos multi-índice de yfinance si fuera necesario
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
 
         # Calcular MACD (12, 26, 9)
-        macd_data = ta.macd(df['Close'].squeeze(), fast=12, slow=26, signal=9)
-        df = pd.concat([df, macd_data], axis=1)
+        # macd = línea rápida, signal = línea lenta, hist = histograma
+        macd_df = ta.macd(df['Close'], fast=12, slow=26, signal=9)
+        df = pd.concat([df, macd_df], axis=1)
         
-        # Identificar cruces alcistas (MACD cruza por encima de Signal)
-        # Condición: MACD hoy > Signal hoy Y MACD ayer <= Signal ayer
         macd_col = 'MACD_12_26_9'
         signal_col = 'MACDs_12_26_9'
-        
+
+        # Identificar Cruces Alcistas (MACD cruza por arriba de la Signal)
         df['Cruce_Alcista'] = (df[macd_col] > df[signal_col]) & (df[macd_col].shift(1) <= df[signal_col].shift(1))
         
-        # Obtener los registros donde hubo cruce
-        cruces = df[df['Cruce_Alcista'] == True].copy()
+        # Filtrar solo los puntos de cruce
+        df_cruces = df[df['Cruce_Alcista'] == True].copy()
         
-        if len(cruces) >= 2:
-            ultimo_cruce_val = cruces[macd_col].iloc[-1]
-            penultimo_cruce_val = cruces[macd_col].iloc[-2]
-            fecha_ultimo = cruces.index[-1].strftime('%Y-%m-%d')
+        if len(df_cruces) >= 2:
+            ultimo_cruce = df_cruces.iloc[-1]
+            penultimo_cruce = df_cruces.iloc[-2]
             
-            # Condición solicitada: Cruce actual más alto que el anterior
-            cumple = ultimo_cruce_val > penultimo_cruce_val
+            val_actual = ultimo_cruce[macd_col]
+            val_previo = penultimo_cruce[macd_col]
+            
+            # Condición: Cruce actual > Cruce anterior (Piso ascendente en el indicador)
+            cumple = val_actual > val_previo
             
             return {
                 "Ticker": ticker,
-                "Cumple": "SÍ" if cumple else "No",
-                "Valor Cruce Actual": round(ultimo_cruce_val, 3),
-                "Valor Cruce Anterior": round(penultimo_cruce_val, 3),
-                "Fecha Último Cruce": fecha_ultimo,
+                "Estado": "✅ CUMPLE" if cumple else "❌ No cumple",
+                "Valor Cruce Actual": round(val_actual, 4),
+                "Valor Cruce Anterior": round(val_previo, 4),
+                "Fecha Últ. Cruce": ultimo_cruce.name.strftime('%d/%m/%Y'),
                 "Precio Actual": round(df['Close'].iloc[-1], 2)
             }
     except Exception as e:
         return None
     return None
 
-# Ejecutar escáner
-if st.button("🚀 Iniciar Escaneo"):
-    lista_tickers = [t.strip().upper() for t in tickers_input.split(",")]
+# 4. Ejecución
+if st.button(f"🚀 Escanear Mercado ({temporalidad})"):
+    tickers = [t.strip().upper() for t in tickers_input.split(",")]
     resultados = []
     
-    progress_bar = st.progress(0)
-    for i, t in enumerate(lista_tickers):
-        res = analizar_macd(t)
+    progreso = st.progress(0)
+    for i, t in enumerate(tickers):
+        res = analizar_ticker(t, conf['interval'], conf['period'])
         if res:
             resultados.append(res)
-        progress_bar.progress((i + 1) / len(lista_tickers))
+        progreso.progress((i + 1) / len(tickers))
     
     if resultados:
-        df_res = pd.DataFrame(resultados)
+        df_final = pd.DataFrame(resultados)
         
-        # Mostrar solo las que cumplen en una tabla destacada
-        st.subheader("✅ Acciones con Momentum Ascendente")
-        cumplen_df = df_res[df_res["Cumple"] == "SÍ"]
+        # Separar los que cumplen
+        favoritos = df_final[df_final["Estado"] == "✅ CUMPLE"]
         
-        if not cumplen_df.empty:
-            st.dataframe(cumplen_df, use_container_width=True, hide_index=True)
+        st.subheader(f"📊 Resultados en Temporalidad {temporalidad}")
+        
+        if not favoritos.empty:
+            st.success(f"Se encontraron {len(favoritos)} acciones con momentum ascendente.")
+            st.dataframe(favoritos, use_container_width=True, hide_index=True)
             
-            # Gráfico de ayuda para el primer ticker que cumple
+            # Gráfico de ejemplo de la primera que cumple
             st.divider()
-            st.subheader(f"Vista Técnica: {cumplen_df['Ticker'].iloc[0]}")
-            ticker_plot = cumplen_df['Ticker'].iloc[0]
-            data_plot = yf.download(ticker_plot, period="6mo", interval="1d")
+            t_ejemplo = favoritos['Ticker'].iloc[0]
+            st.write(f"### Análisis Visual: {t_ejemplo}")
+            data_plot = yf.download(t_ejemplo, period=conf['period'], interval=conf['interval'], progress=False)
             st.line_chart(data_plot['Close'])
-            st.write(f"En {ticker_plot}, el MACD está cruzando en niveles de mayor confianza que la vez anterior.")
         else:
-            st.warning("Ninguna acción de la lista cumple la condición de pisos ascendentes en el MACD actualmente.")
-            
-        st.subheader("📊 Todos los resultados")
-        st.table(df_res)
+            st.warning("No se encontraron acciones con pisos ascendentes en esta temporalidad.")
+        
+        with st.expander("Ver todos los activos analizados"):
+            st.table(df_final)
     else:
-        st.error("No se pudieron obtener datos. Verifica los tickers.")
+        st.error("No se pudieron obtener datos. Revisa la conexión o los Tickers.")
 
-st.info("""
-**Nota:** El valor del cruce es el valor de la línea MACD en el momento del corte. 
-Si el valor actual es mayor al anterior (ej: -0.5 es mayor a -1.2), significa que la tendencia bajista perdió fuerza o la alcista se aceleró.
+# 5. Explicación Educativa
+st.sidebar.divider()
+st.sidebar.subheader("¿Qué estoy viendo?")
+st.sidebar.write(f"""
+Al elegir **{temporalidad}**, el escáner busca que la fuerza del mercado (MACD) 
+esté haciendo 'pisos' más altos. 
+
+**¿Por qué es importante?**
+- En **Semanal/Mensual**, esto filtra el 'ruido' diario.
+- Si el precio está lateral pero el cruce MACD es más alto, hay **acumulación institucional**.
 """)
