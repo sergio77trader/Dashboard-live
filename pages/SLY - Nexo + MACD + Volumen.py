@@ -9,13 +9,15 @@ from datetime import datetime
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN DEL SISTEMA
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SYSTEMATRADER | VOLUME MATRIX V47.3")
+st.set_page_config(layout="wide", page_title="SYSTEMATRADER | WEEKLY VOLUME V47.4")
 
 st.markdown("""
 <style>
     .stDataFrame { font-size: 11px; font-family: 'Roboto Mono', monospace; }
     h1 { color: #00897B; font-weight: 800; border-bottom: 2px solid #00897B; }
+    h2 { color: #E64A19; font-weight: 600; }
     .stProgress > div > div > div > div { background-color: #00897B; }
+    .vol-info { background-color: #FFF3E0; padding: 10px; border-left: 5px solid #E64A19; border-radius: 5px; margin-bottom: 20px; color: #BF360C; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -37,15 +39,12 @@ BIL, SPY, QQQ, ARKK, BOTZ, DBC, GLD, BND, VWO, VNQ, HYG, VEA, EMB, AAPL, AMZN, T
 MASTER_TICKERS = sorted(list(set([t.strip() for t in RAW_TICKERS.split(",") if t.strip()])))
 
 # ─────────────────────────────────────────────
-# LÓGICA DE VOLUMEN (TRADUCCIÓN DE PINE SCRIPT)
+# LÓGICA DE VOLUMEN (VELAS SEMANALES)
 # ─────────────────────────────────────────────
 def calculate_volume_pct_change(df, length):
     if len(df) < (length * 2): return 0.0
-    # Volumen Acumulado Actual (últimas 'length' velas)
     current_acc_vol = df['Volume'].tail(length).sum()
-    # Volumen Acumulado Anterior (el bloque anterior de 'length' velas)
     previous_acc_vol = df['Volume'].iloc[-(length*2):-length].sum()
-    
     if previous_acc_vol > 0:
         return ((current_acc_vol - previous_acc_vol) / previous_acc_vol) * 100
     return 0.0
@@ -83,24 +82,22 @@ def run_sly_engine(df):
 def analyze_triple_cycle(symbol):
     row = {"Activo": symbol}
     current_price = None
-    
-    # Períodos de volumen solicitados en el Pine Script
     vol_lengths = [2, 3, 4, 6, 21, 42]
     
     for tf_key, config in MACRO_CONFIG.items():
         try:
             df = yf.download(symbol, interval=config['int'], period=config['per'], progress=False, auto_adjust=True)
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-            
             if df.empty or len(df) < 35:
                 row[f"{tf_key} Signal"] = "S/D"
                 continue
             
-            if tf_key == "1D": 
-                current_price = df['Close'].iloc[-1]
-                # Cálculo de Volumen Acumulado % (Lógica Pine Script)
+            if tf_key == "1D": current_price = df['Close'].iloc[-1]
+            
+            # --- CÁLCULO DE VOLUMEN (SÓLO EN EL BLOQUE SEMANAL) ---
+            if tf_key == "1S":
                 for length in vol_lengths:
-                    row[f"Vol {length}v %"] = f"{calculate_volume_pct_change(df, length):.2f}%"
+                    row[f"Vol {length}v (S) %"] = f"{calculate_volume_pct_change(df, length):.2f}%"
 
             st_val, px_in, tm_in = run_sly_engine(df)
             if st_val != 0:
@@ -120,11 +117,16 @@ def analyze_triple_cycle(symbol):
 # ─────────────────────────────────────────────
 # INTERFAZ Streamlit
 # ─────────────────────────────────────────────
+st.title("🛡️ SLY MEGA MATRIX V47.4")
+
+# ACLARACIÓN VISIBLE INSTITUCIONAL
+st.markdown('<div class="vol-info">📊 ANALÍTICA DE VOLUMEN: Las columnas de % de Cambio de Volumen se calculan estrictamente sobre VELAS SEMANALES (1S).</div>', unsafe_allow_html=True)
+
 with st.sidebar:
-    st.header("🦅 Control Mega Matrix V47.3")
-    st.info(f"Activos: {len(MASTER_TICKERS)}")
+    st.header("⚙️ Radar Control")
+    st.info(f"Total Activos: {len(MASTER_TICKERS)}")
     
-    b_size = st.selectbox("Lote:", [10, 25, 50, 100], index=1)
+    b_size = st.selectbox("Tamaño Lote:", [10, 25, 50, 100], index=1)
     batches = [MASTER_TICKERS[i:i+b_size] for i in range(0, len(MASTER_TICKERS), b_size)]
     sel_batch = st.selectbox("Seleccionar Lote:", range(len(batches)), format_func=lambda x: f"Lote {x+1} ({len(batches[x])} activos)")
     
@@ -135,7 +137,7 @@ with st.sidebar:
         prog = st.progress(0)
         targets = batches[sel_batch]
         for idx, sym in enumerate(targets):
-            prog.progress((idx+1)/len(targets), text=f"Procesando: {sym}")
+            prog.progress((idx+1)/len(targets), text=f"Calculando Macro: {sym}")
             res = analyze_triple_cycle(sym)
             results.append(res)
             time.sleep(0.01)
@@ -153,17 +155,15 @@ with st.sidebar:
         st.rerun()
 
 # ─────────────────────────────────────────────
-# TABLA FINAL
+# RENDERIZADO DE TABLA
 # ─────────────────────────────────────────────
-st.title("🦅 SLY TRIPLE MACRO MATRIX + VOLUMEN")
-
 if st.session_state["sniper_results"]:
     df_final = pd.DataFrame(st.session_state["sniper_results"])
     
-    # Definición de orden de columnas: Activo, Precio, Volumenes, Señales
-    vol_cols = ["Vol 2v %", "Vol 3v %", "Vol 4v %", "Vol 6v %", "Vol 21v %", "Vol 42v %"]
-    signal_cols = ["1D Signal", "1D Fecha", "1D PnL", "1S Signal", "1S Fecha", "1S PnL", "1M Signal", "1M Fecha", "1M PnL"]
-    cols_order = ["Activo", "Precio"] + vol_cols + signal_cols
+    # Orden de columnas: Activo, Precio, Volúmenes (S), Señales
+    vol_cols = [f"Vol {l}v (S) %" for l in [2, 3, 4, 6, 21, 42]]
+    sig_cols = ["1D Signal", "1D Fecha", "1D PnL", "1S Signal", "1S Fecha", "1S PnL", "1M Signal", "1M Fecha", "1M PnL"]
+    cols_order = ["Activo", "Precio"] + vol_cols + sig_cols
     
     df_final = df_final[[c for c in cols_order if c in df_final.columns]]
 
@@ -174,7 +174,6 @@ if st.session_state["sniper_results"]:
         if "%" in str_val:
             try:
                 v = float(str_val.replace("%",""))
-                # Colores para volumen y PnL
                 return f'color: {"#2E7D32" if v >= 0 else "#C62828"}; font-weight: bold;'
             except: return ''
         return ''
