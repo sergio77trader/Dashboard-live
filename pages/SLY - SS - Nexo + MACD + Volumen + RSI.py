@@ -62,6 +62,7 @@ def analyze_triple_cycle(symbol):
             df = yf.download(symbol, interval=config['int'], period=config['per'], progress=False, auto_adjust=True)
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             if df.empty or len(df) < 35: continue
+            
             if tf == "1D": row["Precio"] = float(df['Close'].iloc[-1])
             
             # --- CÁLCULO DE RSI (1S y 1M) ---
@@ -73,10 +74,15 @@ def analyze_triple_cycle(symbol):
                     trend = "Subiendo" if curr_rsi > prev_rsi else "Bajando"
                     row[f"{tf} RSI"] = f"{curr_rsi:.1f} {trend}"
 
+            # --- CÁLCULO DE VOLUMEN ACUMULADO (SÓLO SEMANAL 1S) ---
             if tf == "1S":
                 for l in [2, 3, 4, 6, 21, 42]:
-                    curr, prev = df['Volume'].tail(l).sum(), df['Volume'].iloc[-(l*2):-l].sum()
-                    row[f"Vol {l}v(S)%"] = round(((curr-prev)/prev*100), 2) if prev > 0 else 0.0
+                    if len(df) >= (l * 2):
+                        curr = df['Volume'].tail(l).sum()
+                        prev = df['Volume'].iloc[-(l*2):-l].sum()
+                        row[f"Vol {l}v(S)%"] = round(((curr-prev)/prev*100), 2) if prev > 0 else 0.0
+                    else:
+                        row[f"Vol {l}v(S)%"] = 0.0
             
             st_val, px_in, tm_in = run_sly_engine(df)
             pnl = ((df['Close'].iloc[-1]-px_in)/px_in*100) if st_val == 1 else ((px_in-df['Close'].iloc[-1])/px_in*100) if st_val == -1 else 0.0
@@ -89,7 +95,8 @@ def analyze_triple_cycle(symbol):
 # ─────────────────────────────────────────────
 # INTERFAZ Y FILTROS
 # ─────────────────────────────────────────────
-st.title("🛡️ SLY OMNI-FILTER MATRIX V48.0")
+st.title("🛡️ SLY OMNI-FILTER MATRIX V48.1")
+st.markdown('<div class="vol-info">📊 ANALÍTICA: Volumen Semanal (1S) | RSI Semántico | Señales MTF.</div>', unsafe_allow_html=True)
 
 with st.sidebar:
     st.header("⚙️ Configuración")
@@ -102,7 +109,7 @@ with st.sidebar:
         prog = st.progress(0)
         targets = batches[sel_batch]
         for idx, sym in enumerate(targets):
-            prog.progress((idx+1)/len(targets), text=f"Procesando: {sym}")
+            prog.progress((idx+1)/len(targets), text=f"Analizando: {sym}")
             results.append(analyze_triple_cycle(sym))
         
         current = {x["Activo"]: x for x in st.session_state["sniper_results"]}
@@ -124,6 +131,7 @@ with st.sidebar:
 if st.session_state["sniper_results"]:
     df = pd.DataFrame(st.session_state["sniper_results"])
     
+    # Filtros
     if f_vol == "Positivo (>0)": df = df[df["Vol 2v(S)%"] > 0]
     elif f_vol == "Negativo (<0)": df = df[df["Vol 2v(S)%"] < 0]
     df = df[df["1D Signal"].isin(f_sig)]
@@ -139,14 +147,15 @@ if st.session_state["sniper_results"]:
             if v < 0: return 'color: #C62828; font-weight: bold;'
         return ''
 
-    # Orden lógico de columnas solicitado
-    cols_order = ["Activo", "Precio", 
-                  "1D Signal", "1D Fecha", "1D PnL%",
-                  "1S Signal", "1S Fecha", "1S PnL%", "1S RSI",
-                  "1M Signal", "1M Fecha", "1M PnL%", "1M RSI",
-                  "Vol 2v(S)%", "Vol 42v(S)%"]
+    # Orden jerárquico de columnas
+    cols_order = [
+        "Activo", "Precio", 
+        "1D Signal", "1D Fecha", "1D PnL%",
+        "1S Signal", "1S Fecha", "1S PnL%", "1S RSI",
+        "1M Signal", "1M Fecha", "1M PnL%", "1M RSI",
+        "Vol 2v(S)%", "Vol 3v(S)%", "Vol 4v(S)%", "Vol 6v(S)%", "Vol 21v(S)%", "Vol 42v(S)%"
+    ]
     
-    # Filtro de columnas existentes para evitar errores
     final_cols = [c for c in cols_order if c in df.columns]
 
     st.dataframe(
@@ -159,6 +168,10 @@ if st.session_state["sniper_results"]:
             "1S PnL%": st.column_config.NumberColumn(format="%.2f%%"),
             "1M PnL%": st.column_config.NumberColumn(format="%.2f%%"),
             "Vol 2v(S)%": st.column_config.NumberColumn(format="%.2f%%"),
+            "Vol 3v(S)%": st.column_config.NumberColumn(format="%.2f%%"),
+            "Vol 4v(S)%": st.column_config.NumberColumn(format="%.2f%%"),
+            "Vol 6v(S)%": st.column_config.NumberColumn(format="%.2f%%"),
+            "Vol 21v(S)%": st.column_config.NumberColumn(format="%.2f%%"),
             "Vol 42v(S)%": st.column_config.NumberColumn(format="%.2f%%"),
         }
     )
