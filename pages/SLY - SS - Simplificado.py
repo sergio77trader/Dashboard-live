@@ -78,17 +78,14 @@ def analyze_triple_cycle(symbol):
             if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
             if df.empty or len(df) < 35: continue
             
-            # --- PRECIO ACTUAL ---
             row["Precio"] = float(df['Close'].iloc[-1])
             
-            # --- SEÑALES BASE (SLY ENGINE) ---
             st_val, px_in, tm_in = run_sly_engine(df)
             pnl = ((df['Close'].iloc[-1]-px_in)/px_in*100) if st_val == 1 else ((px_in-df['Close'].iloc[-1])/px_in*100) if st_val == -1 else 0.0
             row[f"{tf} Signal"] = "LONG 🟢" if st_val == 1 else "SHORT 🔴" if st_val == -1 else "FUERA ⚪"
             row[f"{tf} PnL%"] = round(pnl, 2)
             row[f"{tf} Fecha"] = tm_in.strftime("%Y-%m-%d") if tm_in else "-"
 
-            # --- INERCIA Y VFD ---
             row[f"{tf} Inercia"] = run_inertia_engine(df)
             row[f"{tf} VFD"] = run_vfd_engine(df)
 
@@ -97,13 +94,21 @@ def analyze_triple_cycle(symbol):
             hist = macd['MACDh_12_26_9']
             row[f"{tf} MACD Hist"] = "Subiendo 📈" if hist.iloc[-1] > hist.iloc[-2] else "Bajando 📉"
 
+            # --- RSI SEMÁNTICO (NUEVO) ---
+            rsi = ta.rsi(df['Close'], length=14)
+            if rsi is not None and len(rsi) >= 2:
+                curr_rsi = rsi.iloc[-1]
+                prev_rsi = rsi.iloc[-2]
+                rsi_trend = "Subiendo" if curr_rsi > prev_rsi else "Bajando"
+                row[f"{tf} RSI"] = f"{curr_rsi:.1f} {rsi_trend}"
+
         except: pass
     return row
 
 # ─────────────────────────────────────────────
 # UI Y RENDERIZADO
 # ─────────────────────────────────────────────
-st.title("🛡️ SLY MACRO MATRIX V49.0")
+st.title("🛡️ SLY MACRO MATRIX V49.1")
 
 with st.sidebar:
     st.header("⚙️ Configuración")
@@ -133,8 +138,8 @@ if st.session_state["sniper_results"]:
 
     cols_order = [
         "Activo", "Precio", 
-        "1S Signal", "1S PnL%", "1S Fecha", "1S Inercia", "1S VFD", "1S MACD Hist",
-        "1M Signal", "1M PnL%", "1M Fecha", "1M Inercia", "1M VFD", "1M MACD Hist"
+        "1S Signal", "1S PnL%", "1S Inercia", "1S VFD", "1S MACD Hist", "1S RSI", "1S Fecha",
+        "1M Signal", "1M PnL%", "1M Inercia", "1M VFD", "1M MACD Hist", "1M RSI", "1M Fecha"
     ]
     
     st.dataframe(df[[c for c in cols_order if c in df.columns]].style.map(style_matrix), use_container_width=True, height=800)
