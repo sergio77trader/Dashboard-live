@@ -1,138 +1,171 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import plotly.express as px
+import pandas_ta as ta
 import numpy as np
+import time
 from datetime import datetime, timedelta
 
 # ─────────────────────────────────────────────
-# CONFIGURACIÓN INSTITUCIONAL
+# CONFIGURACIÓN DEL SISTEMA E INTEGRIDAD DE DATOS
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY | MONEY FLOW ENGINE", page_icon="🏦")
+st.set_page_config(layout="wide", page_title="SLY | MONEY FLOW & COMPONENT AUDIT", page_icon="🦅")
 
 st.markdown("""
 <style>
     .stApp { background-color: #0B0E11; color: #EAECEF; }
     .report-card { 
-        background-color: #1E2329; 
-        padding: 20px; 
-        border-radius: 12px; 
-        border-left: 6px solid #F0B90B;
-        margin-bottom: 15px;
+        background-color: #1E2329; padding: 20px; border-radius: 12px; 
+        border-left: 6px solid #F0B90B; margin-bottom: 15px;
     }
-    .verdict-title { color: #F0B90B; font-weight: bold; font-size: 1.4em; margin-bottom: 10px; }
-    .verdict-text { color: #EAECEF; font-size: 1.1em; line-height: 1.5; }
+    .verdict-title { color: #F0B90B; font-weight: bold; font-size: 1.4em; }
     .highlight-green { color: #00FFAA; font-weight: bold; }
     .highlight-red { color: #FF3B30; font-weight: bold; }
+    .stDataFrame { font-size: 12px; font-family: 'Roboto Mono', monospace; }
+    h1 { color: #2962FF; font-weight: 800; border-bottom: 2px solid #2962FF; }
+    h3 { color: #00E676; border-left: 5px solid #00E676; padding-left: 10px; }
 </style>
 """, unsafe_allow_html=True)
+
+# ─────────────────────────────────────────────
+# BASES DE DATOS (FUSIÓN)
+# ─────────────────────────────────────────────
+OPERABLE_BYMA = [
+    "GGAL", "YPF", "BMA", "PAMP", "TGS", "CEPU", "EDN", "BFR", "SUPV", "CRESY", "IRS", "TEO", "LOMA", "VIST", "GLOB", "MELI", "TX",
+    "AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "ADBE", "CRM", "AMD", "TXN", "QCOM", "INTC", "JPM", "V", "MA", "BAC", "GS", "MS", "WFC", 
+    "BLK", "AXP", "XOM", "CVX", "COP", "SLB", "OXY", "PBR", "LLY", "UNH", "JNJ", "ABBV", "MRK", "TMO", "PFE", "AMGN", "GILD", "GE", 
+    "CAT", "UNP", "HON", "RTX", "LOW", "DE", "LMT", "BA", "PG", "COST", "PEP", "KO", "PM", "WMT", "MO", "MDLZ", "CL", "TGT", "AMZN", 
+    "TSLA", "HD", "MCD", "BKNG", "SBUX", "GOOGL", "META", "NFLX", "DIS", "TMUS", "VZ", "LIN", "FCX", "NEM", "GOLD", "RIO", "BHP", 
+    "PAAS", "HMY", "AU", "BABA", "JD", "BIDU", "NIO", "PDD", "TSM", "VALE", "ITUB", "BBD", "ERJ", "ABEV", "GGB", "MSTR", "COIN", "MARA", "RIOT",
+    "SPY", "QQQ", "DIA", "EEM", "EWZ", "FXI", "XLE", "XLF", "XLK", "XLV", "XLI", "XLP", "ARKK", "GLD", "SLV", "XLB", "XLU", "XLY"
+]
+
+ASSET_DATABASE = {
+    "YPF":  ["ARG / Energía & Oil", ["YPF"]],
+    "PAMP": ["ARG / Energía & Oil", ["PAMP"]],
+    "GGAL": ["ARG / Bancos", ["GGAL", "BMA", "BFR", "SUPV"]],
+    "SPY":  ["Índice / S&P 500", ["AAPL", "MSFT", "NVDA", "AMZN", "META", "GOOGL", "LLY", "JPM", "TSLA"]],
+    "QQQ":  ["Índice / Nasdaq 100", ["AAPL", "MSFT", "NVDA", "AMZN", "META", "AVGO", "GOOGL", "COST", "TSLA"]],
+    "ARKK": ["Índice / Innovación", ["TSLA", "COIN", "ROKU", "PLTR", "PATH", "DKNG", "HOOD", "TWLO"]],
+    "XLK":  ["Sector / Tecnología", ["AAPL", "MSFT", "NVDA", "AVGO", "ORCL", "ADBE", "CRM", "AMD"]],
+    "XLF":  ["Sector / Financiero", ["JPM", "V", "MA", "BAC", "GS", "MS", "WFC", "BLK"]],
+    "XLE":  ["Sector / Energía", ["XOM", "CVX", "COP", "SLB", "MPC", "PSX", "VLO", "OXY"]],
+    "BTC-USD": ["Cripto / Bitcoin", ["BTC-USD", "MSTR", "MARA", "RIOT", "CLSK"]],
+}
 
 MARKETS = {
     "Sectores USA": ["XLK", "XLF", "XLE", "XLV", "XLI", "XLP", "XLU", "XLY", "XLB", "XLC", "XLRE"],
     "Global & Risk": ["SPY", "QQQ", "IWM", "EEM", "BTC-USD", "GLD"]
 }
 
-@st.cache_data(ttl=3600)
-def get_data(tickers, start_date):
-    try:
-        df = yf.download(tickers, start=start_date, progress=False)
-        if df.empty: return pd.DataFrame(), pd.DataFrame()
-        # Limpieza de nulos inmediata
-        return df['Close'].ffill().bfill(), df['Volume'].ffill().fillna(0)
-    except:
-        return pd.DataFrame(), pd.DataFrame()
+MACRO_CONFIG = {"1D": {"int": "1d", "per": "2y"}, "1S": {"int": "1wk", "per": "5y"}, "1M": {"int": "1mo", "per": "max"}}
 
 # ─────────────────────────────────────────────
-# LÓGICA DE PROCESAMIENTO
+# MOTORES TÉCNICOS (SLY CORE)
 # ─────────────────────────────────────────────
-st.title("🏦 SLY MONEY FLOW INTELLIGENCE")
+def run_sly_engine(df):
+    if df.empty or len(df) < 35: return 0, 0, None
+    macd = ta.macd(df['Close'], fast=12, slow=26, signal=9)
+    if macd is None or macd.empty: return 0, 0, None
+    hist = macd['MACDh_12_26_9']
+    ha_close = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
+    ha_open = np.zeros(len(df))
+    ha_open[0] = (df['Open'].iloc[0] + df['Close'].iloc[0]) / 2
+    for i in range(1, len(df)): ha_open[i] = (ha_open[i-1] + ha_close.iloc[i-1]) / 2
+    ha_dir = np.where(ha_close > ha_open, 1, -1)
+    state, entry_px, entry_tm = 0, 0.0, None
+    for i in range(1, len(df)):
+        h, h_prev, hd, hd_prev = hist.iloc[i], hist.iloc[i-1], ha_dir[i], ha_dir[i-1]
+        if (hd == 1 and hd_prev == -1 and h < 0 and h > h_prev): state, entry_px, entry_tm = 1, df['Close'].iloc[i], df.index[i]
+        elif (hd == -1 and hd_prev == 1 and h > 0 and h < h_prev): state, entry_px, entry_tm = -1, df['Close'].iloc[i], df.index[i]
+        elif state != 0:
+            if (state == 1 and h < h_prev) or (state == -1 and h > h_prev): state = 0
+    return state, entry_px, entry_tm
+
+def analyze_asset(symbol, category="Custom"):
+    row = {"Categoría": category, "Activo": symbol}
+    clean_sym = symbol.split("-")[0].upper()
+    row["Operable (ByMA)"] = "✅ SÍ" if clean_sym in OPERABLE_BYMA else "❌ NO"
+    current_price = None
+    for tf_key, config in MACRO_CONFIG.items():
+        try:
+            df = yf.download(symbol, interval=config['int'], period=config['per'], progress=False, auto_adjust=True)
+            if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+            if tf_key == "1D" and not df.empty: current_price = df['Close'].iloc[-1]
+            st_val, px_in, tm_in = run_sly_engine(df)
+            if st_val != 0:
+                pnl = (df['Close'].iloc[-1] - px_in) / px_in * 100 if st_val == 1 else (px_in - df['Close'].iloc[-1]) / px_in * 100
+                row[f"{tf_key} Signal"], row[f"{tf_key} Fecha"], row[f"{tf_key} PnL"] = ("LONG 🟢" if st_val == 1 else "SHORT 🔴"), tm_in.strftime("%d/%m/%y"), f"{pnl:.2f}%"
+            else: row[f"{tf_key} Signal"], row[f"{tf_key} Fecha"], row[f"{tf_key} PnL"] = "FUERA ⚪", "-", "-"
+        except: row[f"{tf_key} Signal"] = "ERR"
+    row["Precio"] = f"{current_price:,.2f}" if current_price else "-"
+    return row
+
+def style_macro(df):
+    def apply_color(val):
+        str_v = str(val)
+        if "LONG" in str_v: return 'background-color: #1B5E20; color: white; font-weight: bold;'
+        if "SHORT" in str_v: return 'background-color: #B71C1C; color: white; font-weight: bold;'
+        if "✅ SÍ" in str_v: return 'color: #00E676; font-weight: bold;'
+        return ''
+    return df.style.map(apply_color)
+
+# ─────────────────────────────────────────────
+# UI - SECCIÓN 1: MONEY FLOW INTELLIGENCE
+# ─────────────────────────────────────────────
+st.title("🦅 SLY MONEY FLOW & MACRO AUDITOR")
 
 with st.sidebar:
-    st.header("⚙️ CONFIG")
-    lookback = st.selectbox("Ventana:", ["1 Mes", "3 Meses", "6 Meses", "YTD"], index=0)
+    st.header("⚙️ CONFIGURACIÓN")
+    lookback = st.selectbox("Ventana Money Flow:", ["1 Mes", "3 Meses", "YTD"], index=0)
+    selected_cat = st.multiselect("Filtros Dashboard:", list(MARKETS.keys()), default="Sectores USA")
+
+# [Lógica de Money Flow aquí - Versión Robusta anterior integrada]
+all_tickers_flow = []
+for cat in selected_cat: all_tickers_flow.extend(MARKETS[cat])
+
+if all_tickers_flow:
+    # Obtener data para el Scatter Plot
     today = datetime.now()
-    dates = {"1 Mes": 30, "3 Meses": 90, "6 Meses": 180, "YTD": (today - datetime(today.year, 1, 1)).days}
-    start = today - timedelta(days=dates[lookback])
-    selected_cat = st.multiselect("Filtros:", list(MARKETS.keys()), default="Sectores USA")
-
-all_tickers = []
-for cat in selected_cat: all_tickers.extend(MARKETS[cat])
-
-if all_tickers:
-    close, vol = get_data(all_tickers, start)
+    dates = {"1 Mes": 30, "3 Meses": 90, "YTD": (today - datetime(today.year, 1, 1)).days}
+    start_flow = today - timedelta(days=dates[lookback])
+    df_raw = yf.download(all_tickers_flow, start=start_flow, progress=False)
+    close_f, vol_f = df_raw['Close'].ffill().bfill(), df_raw['Volume'].ffill().fillna(0)
     
-    if not close.empty and len(close) > 1:
-        # --- CÁLCULOS CON FILTRO DE INTEGRIDAD ---
-        # Evitamos división por cero o NaN en el primer registro
-        first_valid_close = close.iloc[0].replace(0, np.nan)
-        returns = ((close.iloc[-1] / first_valid_close) - 1) * 100
-        
-        # RVOL: Evitamos división por cero si el volumen medio es 0
-        avg_vol = vol.mean().replace(0, np.nan)
-        rvol = vol.iloc[-5:].mean() / avg_vol
-        
-        mfs = returns * rvol
-        
-        stats_df = pd.DataFrame({
-            "Retorno %": returns,
-            "RVOL (Intensidad)": rvol,
-            "Money Flow Score": mfs
-        })
+    returns_f = ((close_f.iloc[-1] / close_f.iloc[0].replace(0, np.nan)) - 1) * 100
+    rvol_f = vol_f.iloc[-5:].mean() / vol_f.mean().replace(0, np.nan)
+    mfs_f = (returns_f * rvol_f).replace([np.inf, -np.inf], np.nan).dropna()
+    
+    stats_df = pd.DataFrame({"Retorno %": returns_f, "RVOL": rvol_f, "Score": mfs_f}).dropna().sort_values(by="Score", ascending=False)
 
-        # PURGA DE DATOS CORRUPTOS (NaN e Infinitos)
-        stats_df = stats_df.replace([np.inf, -np.inf], np.nan).dropna()
-        stats_df = stats_df.sort_values(by="Money Flow Score", ascending=False)
+    # Renderizado Money Flow
+    st.subheader("🕵️ Análisis de Flujo de Capital (Smart Money)")
+    c1, c2 = st.columns([2, 1])
+    with c1:
+        fig = px.scatter(stats_df, x="Retorno %", y="RVOL", size=stats_df["Score"].abs().clip(lower=5),
+                         color="Score", text=stats_df.index, color_continuous_scale="RdYlGn", template="plotly_dark")
+        st.plotly_chart(fig, use_container_width=True)
+    with c2:
+        st.dataframe(stats_df.style.background_gradient(cmap='RdYlGn', subset=['Score']), use_container_width=True)
 
-        if not stats_df.empty:
-            # ─────────────────────────────────────────────
-            # VERDICTO AUTOMÁTICO
-            # ─────────────────────────────────────────────
-            st.subheader("🕵️ Veredicto Forense del Sistema")
-            v_col1, v_col2 = st.columns(2)
-            
-            with v_col1:
-                top_asset = stats_df.index[0]
-                is_high_vol = stats_df.iloc[0]["RVOL (Intensidad)"] > 1.1
-                verdict_top = f"Inyección masiva en <span class='highlight-green'>{top_asset}</span> confirmada por volumen." if is_high_vol else f"Subida técnica en <span class='highlight-green'>{top_asset}</span> con volumen bajo (Rally frágil)."
-                st.markdown(f"<div class='report-card'><div class='verdict-title'>🚀 LIDER DE FLUJO</div><div class='verdict-text'>{verdict_top}</div></div>", unsafe_allow_html=True)
+# ─────────────────────────────────────────────
+# UI - SECCIÓN 2: AUDITORÍA DE COMPONENTES (EL PEDIDO)
+# ─────────────────────────────────────────────
+st.divider()
+st.header("🔍 Auditoría de Componentes (Drill-Down)")
 
-            with v_col2:
-                worst_asset = stats_df.index[-1]
-                is_dist = stats_df.iloc[-1]["RVOL (Intensidad)"] > 1.2
-                verdict_worst = f"Distribución pesada en <span class='highlight-red'>{worst_asset}</span>. Salida de capital real." if is_dist else f"Debilidad en <span class='highlight-red'>{worst_asset}</span> por falta de interés."
-                st.markdown(f"<div class='report-card'><div class='verdict-title'>⚠️ FUGA DE CAPITAL</div><div class='verdict-text'>{verdict_worst}</div></div>", unsafe_allow_html=True)
+selected_main = st.selectbox("Seleccione Activo Principal para auditar sus drivers:", list(ASSET_DATABASE.keys()))
 
-            # ─────────────────────────────────────────────
-            # VISUALIZACIÓN (PARCHADA)
-            # ─────────────────────────────────────────────
-            c1, c2 = st.columns([2, 1])
-            
-            with c1:
-                st.subheader("📍 Matriz Precio vs. Esfuerzo")
-                # Aseguramos que el tamaño de burbuja sea siempre positivo y no nulo
-                bubble_size = stats_df["Money Flow Score"].abs().fillna(0).clip(lower=5)
-                
-                fig = px.scatter(stats_df, x="Retorno %", y="RVOL (Intensidad)",
-                                 size=bubble_size,
-                                 color="Money Flow Score",
-                                 text=stats_df.index,
-                                 color_continuous_scale="RdYlGn",
-                                 template="plotly_dark")
-                
-                fig.update_traces(textposition='top center', textfont_size=12)
-                fig.update_layout(xaxis_title="Retorno %", yaxis_title="RVOL", plot_bgcolor='rgba(0,0,0,0)')
-                fig.add_hline(y=1.0, line_dash="dash", line_color="#888")
-                fig.add_vline(x=0, line_dash="dash", line_color="#888")
-                st.plotly_chart(fig, use_container_width=True)
-
-            with c2:
-                st.subheader("📊 Ranking de Inyección")
-                st.dataframe(stats_df.style.background_gradient(cmap='RdYlGn', subset=['Money Flow Score']).format(precision=2), use_container_width=True)
-
-            st.subheader("📈 Trayectoria de Capital")
-            norm_line = (close[stats_df.index] / close[stats_df.index].iloc[0] - 1) * 100
-            st.line_chart(norm_line)
-        else:
-            st.error("Error: Los datos procesados resultaron en valores nulos. Intente con otra ventana.")
-    else:
-        st.error("No se pudieron obtener datos suficientes para el período seleccionado.")
+if st.button(f"🔎 ANALIZAR COMPONENTES DE {selected_main}"):
+    constituents = ASSET_DATABASE[selected_main][1]
+    detailed_results = []
+    prog_detail = st.progress(0)
+    
+    for idx, comp in enumerate(constituents):
+        prog_detail.progress((idx+1)/len(constituents), text=f"Auditando: {comp}")
+        detailed_results.append(analyze_asset(comp, f"Driver de {selected_main}"))
+    
+    df_detailed = pd.DataFrame(detailed_results)
+    cols_final = ["Operable (ByMA)", "Activo", "Precio", "1D Signal", "1D PnL", "1S Signal", "1S PnL", "1M Signal", "1M PnL"]
+    st.subheader(f"📋 Ficha Técnica: Componentes de {selected_main}")
+    st.dataframe(style_macro(df_detailed[cols_final]), use_container_width=True)
