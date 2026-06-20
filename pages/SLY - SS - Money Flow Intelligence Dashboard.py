@@ -114,10 +114,13 @@ for c in selected_cat: all_f.extend(MARKETS[c])
 if all_f:
     today = datetime.now()
     dates = {"1 Mes": 30, "3 Meses": 90, "YTD": (today - datetime(today.year, 1, 1)).days}
-    df_raw = yf.download(all_f, start=today - timedelta(days=dates[lookback]), progress=False)
+    start_date = today - timedelta(days=dates[lookback])
+    df_raw = yf.download(all_f, start=start_date, progress=False)
     
     if not df_raw.empty:
         c_f, v_f = df_raw['Close'].ffill().bfill(), df_raw['Volume'].ffill().fillna(0)
+        
+        # Cálculos de Flujo
         ret_f = ((c_f.iloc[-1] / c_f.iloc[0].replace(0, np.nan)) - 1) * 100
         rv_f = v_f.iloc[-5:].mean() / v_f.mean().replace(0, np.nan)
         score_f = (ret_f * rv_f).replace([np.inf, -np.inf], np.nan).dropna()
@@ -143,6 +146,13 @@ if all_f:
             st.plotly_chart(fig, use_container_width=True)
         with c2:
             st.dataframe(stats_df.style.background_gradient(cmap='RdYlGn', subset=['Score']).format(precision=2), use_container_width=True)
+
+        # --- GRÁFICO DE LÍNEAS (TRAYECTORIA) ---
+        st.subheader("📈 Trayectoria de Capital (Rendimiento Acumulado)")
+        norm_data = (c_f / c_f.iloc[0] - 1) * 100
+        fig_line = px.line(norm_data, template="plotly_dark", labels={"value": "Retorno %", "Date": "Fecha"})
+        fig_line.update_layout(hovermode="x unified", legend_title="Activos")
+        st.plotly_chart(fig_line, use_container_width=True)
 
 # ─────────────────────────────────────────────
 # UI - SECCIÓN 2: AUDITORÍA DE COMPONENTES
