@@ -10,7 +10,6 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 st.set_page_config(layout="wide", page_title="SLY | MONEY FLOW ENGINE", page_icon="🏦")
 
-# CSS para Legibilidad Extrema
 st.markdown("""
 <style>
     .stApp { background-color: #0B0E11; color: #EAECEF; }
@@ -25,7 +24,6 @@ st.markdown("""
     .verdict-text { color: #EAECEF; font-size: 1.1em; line-height: 1.5; }
     .highlight-green { color: #00FFAA; font-weight: bold; }
     .highlight-red { color: #FF3B30; font-weight: bold; }
-    .highlight-yellow { color: #FFCC00; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -36,11 +34,16 @@ MARKETS = {
 
 @st.cache_data(ttl=3600)
 def get_data(tickers, start_date):
-    df = yf.download(tickers, start=start_date, progress=False)
-    return df['Close'].ffill(), df['Volume'].ffill()
+    try:
+        df = yf.download(tickers, start=start_date, progress=False)
+        if df.empty: return pd.DataFrame(), pd.DataFrame()
+        # Limpieza de nulos inmediata
+        return df['Close'].ffill().bfill(), df['Volume'].ffill().fillna(0)
+    except:
+        return pd.DataFrame(), pd.DataFrame()
 
 # ─────────────────────────────────────────────
-# LÓGICA DE CONTROL
+# LÓGICA DE PROCESAMIENTO
 # ─────────────────────────────────────────────
 st.title("🏦 SLY MONEY FLOW INTELLIGENCE")
 
@@ -58,94 +61,78 @@ for cat in selected_cat: all_tickers.extend(MARKETS[cat])
 if all_tickers:
     close, vol = get_data(all_tickers, start)
     
-    # Cálculos Forenses
-    returns = ((close.iloc[-1] / close.iloc[0]) - 1) * 100
-    rvol = vol.iloc[-5:].mean() / vol.mean()
-    mfs = returns * rvol
-    
-    stats_df = pd.DataFrame({
-        "Retorno %": returns,
-        "RVOL (Intensidad)": rvol,
-        "Money Flow Score": mfs
-    }).sort_values(by="Money Flow Score", ascending=False)
-
-    # ─────────────────────────────────────────────
-    # MÓDULO DE INTERPRETACIÓN AUTOMÁTICA (EL VERDICTO)
-    # ─────────────────────────────────────────────
-    st.subheader("🕵️ Veredicto Forense del Sistema")
-    
-    col_v1, col_v2 = st.columns(2)
-    
-    with col_v1:
-        # Detectar Inyección Institucional
-        top_asset = stats_df.index[0]
-        if stats_df.iloc[0]["RVOL (Intensidad)"] > 1.1:
-            verdict_top = f"El capital está fluyendo agresivamente hacia <span class='highlight-green'>{top_asset}</span>. El volumen confirma que las instituciones están comprando la tendencia."
-        else:
-            verdict_top = f"<span class='highlight-green'>{top_asset}</span> lidera en precio, pero el volumen es bajo. Es un rally de 'escasez de vendedores', cuidado con la falta de liquidez."
-            
-        st.markdown(f"""<div class="report-card">
-            <div class="verdict-title">🚀 LÍDER DE FLUJO REAL</div>
-            <div class="verdict-text">{verdict_top}</div>
-        </div>""", unsafe_allow_html=True)
-
-    with col_v2:
-        # Detectar Fuga o Distribución
-        worst_asset = stats_df.index[-1]
-        if stats_df.iloc[-1]["RVOL (Intensidad)"] > 1.2:
-            verdict_worst = f"ALERTA: <span class='highlight-red'>{worst_asset}</span> está bajo <b>Distribución Institucional</b>. El volumen alto en la caída confirma salida masiva de capital."
-        else:
-            verdict_worst = f"<span class='highlight-red'>{worst_asset}</span> está cayendo con volumen bajo. Podría ser un retroceso técnico saludable o falta de interés temporal."
-
-        st.markdown(f"""<div class="report-card">
-            <div class="verdict-title">⚠️ FUGA DE CAPITAL</div>
-            <div class="verdict-text">{verdict_worst}</div>
-        </div>""", unsafe_allow_html=True)
-
-    # Análisis de Rotación Especial
-    st.info(f"**ANÁLISIS DE ROTACIÓN:** El sector **{stats_df.index[0]}** presenta la mayor eficiencia de capital, mientras que el mercado está castigando severamente a **{stats_df.index[-1]}**.")
-
-    # ─────────────────────────────────────────────
-    # VISUALIZACIÓN MEJORADA
-    # ─────────────────────────────────────────────
-    c1, c2 = st.columns([2, 1])
-    
-    with c1:
-        st.subheader("📍 Matriz Precio vs. Esfuerzo")
-        fig = px.scatter(stats_df, x="Retorno %", y="RVOL (Intensidad)",
-                         size=np.abs(stats_df["Money Flow Score"]).clip(lower=5),
-                         color="Money Flow Score",
-                         text=stats_df.index,
-                         color_continuous_scale="RdYlGn",
-                         template="plotly_dark")
+    if not close.empty and len(close) > 1:
+        # --- CÁLCULOS CON FILTRO DE INTEGRIDAD ---
+        # Evitamos división por cero o NaN en el primer registro
+        first_valid_close = close.iloc[0].replace(0, np.nan)
+        returns = ((close.iloc[-1] / first_valid_close) - 1) * 100
         
-        # Ajustes de legibilidad en el gráfico
-        fig.update_traces(textposition='top center', textfont_size=12)
-        fig.update_layout(
-            xaxis_title="Retorno Nominal (%)",
-            yaxis_title="Intensidad de Volumen (RVOL)",
-            plot_bgcolor='rgba(0,0,0,0)',
-            paper_bgcolor='rgba(0,0,0,0)'
-        )
-        fig.add_hline(y=1.0, line_dash="dash", line_color="#888")
-        fig.add_vline(x=0, line_dash="dash", line_color="#888")
-        st.plotly_chart(fig, use_container_width=True)
+        # RVOL: Evitamos división por cero si el volumen medio es 0
+        avg_vol = vol.mean().replace(0, np.nan)
+        rvol = vol.iloc[-5:].mean() / avg_vol
+        
+        mfs = returns * rvol
+        
+        stats_df = pd.DataFrame({
+            "Retorno %": returns,
+            "RVOL (Intensidad)": rvol,
+            "Money Flow Score": mfs
+        })
 
-    with c2:
-        st.subheader("📊 Ranking de Inyección")
-        st.dataframe(stats_df.style.background_gradient(cmap='RdYlGn', subset=['Money Flow Score'])
-                     .format(precision=2), use_container_width=True, height=450)
+        # PURGA DE DATOS CORRUPTOS (NaN e Infinitos)
+        stats_df = stats_df.replace([np.inf, -np.inf], np.nan).dropna()
+        stats_df = stats_df.sort_values(by="Money Flow Score", ascending=False)
 
-    # Gráfico de Líneas con mejor contraste
-    st.subheader("📈 Trayectoria de Capital")
-    norm_line = (close / close.iloc[0] - 1) * 100
-    fig_line = px.line(norm_line, template="plotly_dark")
-    fig_line.update_layout(
-        yaxis_title="Rendimiento Relativo %",
-        legend_title="Activos",
-        hovermode="x unified"
-    )
-    st.plotly_chart(fig_line, use_container_width=True)
+        if not stats_df.empty:
+            # ─────────────────────────────────────────────
+            # VERDICTO AUTOMÁTICO
+            # ─────────────────────────────────────────────
+            st.subheader("🕵️ Veredicto Forense del Sistema")
+            v_col1, v_col2 = st.columns(2)
+            
+            with v_col1:
+                top_asset = stats_df.index[0]
+                is_high_vol = stats_df.iloc[0]["RVOL (Intensidad)"] > 1.1
+                verdict_top = f"Inyección masiva en <span class='highlight-green'>{top_asset}</span> confirmada por volumen." if is_high_vol else f"Subida técnica en <span class='highlight-green'>{top_asset}</span> con volumen bajo (Rally frágil)."
+                st.markdown(f"<div class='report-card'><div class='verdict-title'>🚀 LIDER DE FLUJO</div><div class='verdict-text'>{verdict_top}</div></div>", unsafe_allow_html=True)
 
-else:
-    st.warning("Seleccione activos para iniciar el motor.")
+            with v_col2:
+                worst_asset = stats_df.index[-1]
+                is_dist = stats_df.iloc[-1]["RVOL (Intensidad)"] > 1.2
+                verdict_worst = f"Distribución pesada en <span class='highlight-red'>{worst_asset}</span>. Salida de capital real." if is_dist else f"Debilidad en <span class='highlight-red'>{worst_asset}</span> por falta de interés."
+                st.markdown(f"<div class='report-card'><div class='verdict-title'>⚠️ FUGA DE CAPITAL</div><div class='verdict-text'>{verdict_worst}</div></div>", unsafe_allow_html=True)
+
+            # ─────────────────────────────────────────────
+            # VISUALIZACIÓN (PARCHADA)
+            # ─────────────────────────────────────────────
+            c1, c2 = st.columns([2, 1])
+            
+            with c1:
+                st.subheader("📍 Matriz Precio vs. Esfuerzo")
+                # Aseguramos que el tamaño de burbuja sea siempre positivo y no nulo
+                bubble_size = stats_df["Money Flow Score"].abs().fillna(0).clip(lower=5)
+                
+                fig = px.scatter(stats_df, x="Retorno %", y="RVOL (Intensidad)",
+                                 size=bubble_size,
+                                 color="Money Flow Score",
+                                 text=stats_df.index,
+                                 color_continuous_scale="RdYlGn",
+                                 template="plotly_dark")
+                
+                fig.update_traces(textposition='top center', textfont_size=12)
+                fig.update_layout(xaxis_title="Retorno %", yaxis_title="RVOL", plot_bgcolor='rgba(0,0,0,0)')
+                fig.add_hline(y=1.0, line_dash="dash", line_color="#888")
+                fig.add_vline(x=0, line_dash="dash", line_color="#888")
+                st.plotly_chart(fig, use_container_width=True)
+
+            with c2:
+                st.subheader("📊 Ranking de Inyección")
+                st.dataframe(stats_df.style.background_gradient(cmap='RdYlGn', subset=['Money Flow Score']).format(precision=2), use_container_width=True)
+
+            st.subheader("📈 Trayectoria de Capital")
+            norm_line = (close[stats_df.index] / close[stats_df.index].iloc[0] - 1) * 100
+            st.line_chart(norm_line)
+        else:
+            st.error("Error: Los datos procesados resultaron en valores nulos. Intente con otra ventana.")
+    else:
+        st.error("No se pudieron obtener datos suficientes para el período seleccionado.")
