@@ -2,141 +2,150 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
 import numpy as np
+from datetime import datetime, timedelta
 
 # ─────────────────────────────────────────────
-# CONFIGURACIÓN INSTITUCIONAL - SLY ENGINE
+# CONFIGURACIÓN INSTITUCIONAL
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY | MONEY FLOW INTELLIGENCE", page_icon="🏦")
+st.set_page_config(layout="wide", page_title="SLY | MONEY FLOW ENGINE", page_icon="🏦")
 
-# CSS para Estética de Terminal Bloomberg/Dark
+# CSS para Legibilidad Extrema
 st.markdown("""
 <style>
-    .stApp { background-color: #0E1117; color: #E0E0E0; }
-    h1, h2, h3 { color: #00FFAA; font-family: 'Inter', sans-serif; }
-    .metric-box { 
-        background-color: #161B22; 
+    .stApp { background-color: #0B0E11; color: #EAECEF; }
+    .report-card { 
+        background-color: #1E2329; 
         padding: 20px; 
-        border-radius: 10px; 
-        border-left: 5px solid #00FFAA;
-        margin-bottom: 20px;
+        border-radius: 12px; 
+        border-left: 6px solid #F0B90B;
+        margin-bottom: 15px;
     }
-    .stDataFrame { background-color: #161B22; }
+    .verdict-title { color: #F0B90B; font-weight: bold; font-size: 1.4em; margin-bottom: 10px; }
+    .verdict-text { color: #EAECEF; font-size: 1.1em; line-height: 1.5; }
+    .highlight-green { color: #00FFAA; font-weight: bold; }
+    .highlight-red { color: #FF3B30; font-weight: bold; }
+    .highlight-yellow { color: #FFCC00; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-# DICCIONARIO MAESTRO EXPANDIDO (Sectores y Flujos)
 MARKETS = {
-    "Risk-On (Equities)": ["SPY", "QQQ", "IWM", "DIA"],
     "Sectores USA": ["XLK", "XLF", "XLE", "XLV", "XLI", "XLP", "XLU", "XLY", "XLB", "XLC", "XLRE"],
-    "Defensivos & Metales": ["GLD", "SLV", "GDX", "TLT", "TIP"],
-    "Global Flow": ["EEM", "EWZ", "FXI", "VGK", "FEZ"],
-    "Crypto & High Beta": ["BTC-USD", "ETH-USD", "COIN", "MSTR", "ARKK"]
+    "Global & Risk": ["SPY", "QQQ", "IWM", "EEM", "BTC-USD", "GLD"]
 }
 
 @st.cache_data(ttl=3600)
-def get_institutional_data(tickers, start_date):
-    # Descargamos Close y Volume para análisis de flujo
+def get_data(tickers, start_date):
     df = yf.download(tickers, start=start_date, progress=False)
-    close = df['Close'].ffill()
-    volume = df['Volume'].ffill()
-    return close, volume
+    return df['Close'].ffill(), df['Volume'].ffill()
 
 # ─────────────────────────────────────────────
-# CONTROL DE MANDOS
+# LÓGICA DE CONTROL
 # ─────────────────────────────────────────────
 st.title("🏦 SLY MONEY FLOW INTELLIGENCE")
-st.markdown("---")
 
 with st.sidebar:
-    st.header("⚙️ ENGINE CONFIG")
-    lookback_period = st.selectbox("Ventana de Análisis:", 
-                                   ["1 Mes", "3 Meses", "6 Meses", "YTD", "1 Año"], index=3)
-    
+    st.header("⚙️ CONFIG")
+    lookback = st.selectbox("Ventana:", ["1 Mes", "3 Meses", "6 Meses", "YTD"], index=0)
     today = datetime.now()
-    dates = {"1 Mes": 30, "3 Meses": 90, "6 Meses": 180, "YTD": (today - datetime(today.year, 1, 1)).days, "1 Año": 365}
-    start = today - timedelta(days=dates[lookback_period])
+    dates = {"1 Mes": 30, "3 Meses": 90, "6 Meses": 180, "YTD": (today - datetime(today.year, 1, 1)).days}
+    start = today - timedelta(days=dates[lookback])
+    selected_cat = st.multiselect("Filtros:", list(MARKETS.keys()), default="Sectores USA")
 
-    selected_cat = st.multiselect("Categorías de Flujo:", options=list(MARKETS.keys()), 
-                                  default=["Sectores USA", "Risk-On (Equities)"])
-
-# PROCESAMIENTO FORENSE
 all_tickers = []
-for cat in selected_cat:
-    all_tickers.extend(MARKETS[cat])
+for cat in selected_cat: all_tickers.extend(MARKETS[cat])
 
 if all_tickers:
-    close_data, vol_data = get_institutional_data(all_tickers, start)
+    close, vol = get_data(all_tickers, start)
     
-    # 1. Rendimiento Normalizado
-    norm_data = (close_data / close_data.iloc[0] - 1) * 100
-    
-    # 2. Cálculo de RVOL (Relative Volume)
-    # Comparamos volumen promedio de las últimas 5 sesiones vs el histórico de la ventana
-    avg_vol_window = vol_data.mean()
-    recent_vol = vol_data.iloc[-5:].mean()
-    rvol = recent_vol / avg_vol_window
-    
-    # 3. Momentum (Returns)
-    returns = norm_data.iloc[-1]
-    
-    # 4. Money Flow Score (MFS)
-    # Si el retorno es (+) y RVOL es (>1), el dinero está entrando con fuerza.
+    # Cálculos Forenses
+    returns = ((close.iloc[-1] / close.iloc[0]) - 1) * 100
+    rvol = vol.iloc[-5:].mean() / vol.mean()
     mfs = returns * rvol
-
-    # Consolidación en Matrix
-    stats_df = pd.DataFrame({
-        "Ticker": returns.index,
-        "Retorno %": returns.values,
-        "RVOL (Intensidad)": rvol.values,
-        "Money Flow Score": mfs.values
-    }).set_index("Ticker").sort_values(by="Money Flow Score", ascending=False)
-
-    # ─────────────────────────────────────────────
-    # VISUALIZACIÓN: MAPA DE CALOR DE FLUJO REAL
-    # ─────────────────────────────────────────────
     
-    col1, col2 = st.columns([2, 1])
-
-    with col1:
-        st.subheader("🚀 Matriz de Flujo Capital (Retorno vs Intensidad)")
-        # Gráfico de burbujas: Eje X = Retorno, Eje Y = RVOL, Tamaño = MFS
-        fig_flow = px.scatter(stats_df, x="Retorno %", y="RVOL (Intensidad)",
-                            size=np.abs(stats_df["Money Flow Score"]),
-                            color="Money Flow Score",
-                            hover_name=stats_df.index,
-                            color_continuous_scale="RdYlGn",
-                            template="plotly_dark")
-        fig_flow.add_hline(y=1.0, line_dash="dash", line_color="white", annotation_text="Media de Volumen")
-        fig_flow.add_vline(x=0, line_dash="dash", line_color="white")
-        st.plotly_chart(fig_flow, use_container_width=True)
-
-    with col2:
-        st.subheader("💎 Smart Money Top Picks")
-        # Mostrar los 5 activos donde el volumen confirma la tendencia
-        top_picks = stats_df.head(5)
-        for ticker, row in top_picks.iterrows():
-            st.markdown(f"""
-            <div class="metric-box">
-                <span style="font-size:1.2em; font-weight:bold;">{ticker}</span><br>
-                <span style="color:#00FFAA;">MFS: {row['Money Flow Score']:.2f}</span> | 
-                <span>RVOL: {row['RVOL (Intensidad)']:.2f}x</span>
-            </div>
-            """, unsafe_allow_html=True)
+    stats_df = pd.DataFrame({
+        "Retorno %": returns,
+        "RVOL (Intensidad)": rvol,
+        "Money Flow Score": mfs
+    }).sort_values(by="Money Flow Score", ascending=False)
 
     # ─────────────────────────────────────────────
-    # EVOLUCIÓN TEMPORAL
+    # MÓDULO DE INTERPRETACIÓN AUTOMÁTICA (EL VERDICTO)
     # ─────────────────────────────────────────────
-    st.subheader("📈 Convergencia de Tendencias")
-    fig_perf = px.line(norm_data, template="plotly_dark", color_discrete_sequence=px.colors.qualitative.Plotly)
-    fig_perf.update_layout(hovermode="x unified", plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)')
-    st.plotly_chart(fig_perf, use_container_width=True)
+    st.subheader("🕵️ Veredicto Forense del Sistema")
+    
+    col_v1, col_v2 = st.columns(2)
+    
+    with col_v1:
+        # Detectar Inyección Institucional
+        top_asset = stats_df.index[0]
+        if stats_df.iloc[0]["RVOL (Intensidad)"] > 1.1:
+            verdict_top = f"El capital está fluyendo agresivamente hacia <span class='highlight-green'>{top_asset}</span>. El volumen confirma que las instituciones están comprando la tendencia."
+        else:
+            verdict_top = f"<span class='highlight-green'>{top_asset}</span> lidera en precio, pero el volumen es bajo. Es un rally de 'escasez de vendedores', cuidado con la falta de liquidez."
+            
+        st.markdown(f"""<div class="report-card">
+            <div class="verdict-title">🚀 LÍDER DE FLUJO REAL</div>
+            <div class="verdict-text">{verdict_top}</div>
+        </div>""", unsafe_allow_html=True)
 
-    # Tabla Final con Formato Forense
-    st.subheader("📊 Data Forensics: Flujo de Volumen")
-    st.dataframe(stats_df.style.background_gradient(cmap='RdYlGn', subset=['Money Flow Score']), use_container_width=True)
+    with col_v2:
+        # Detectar Fuga o Distribución
+        worst_asset = stats_df.index[-1]
+        if stats_df.iloc[-1]["RVOL (Intensidad)"] > 1.2:
+            verdict_worst = f"ALERTA: <span class='highlight-red'>{worst_asset}</span> está bajo <b>Distribución Institucional</b>. El volumen alto en la caída confirma salida masiva de capital."
+        else:
+            verdict_worst = f"<span class='highlight-red'>{worst_asset}</span> está cayendo con volumen bajo. Podría ser un retroceso técnico saludable o falta de interés temporal."
+
+        st.markdown(f"""<div class="report-card">
+            <div class="verdict-title">⚠️ FUGA DE CAPITAL</div>
+            <div class="verdict-text">{verdict_worst}</div>
+        </div>""", unsafe_allow_html=True)
+
+    # Análisis de Rotación Especial
+    st.info(f"**ANÁLISIS DE ROTACIÓN:** El sector **{stats_df.index[0]}** presenta la mayor eficiencia de capital, mientras que el mercado está castigando severamente a **{stats_df.index[-1]}**.")
+
+    # ─────────────────────────────────────────────
+    # VISUALIZACIÓN MEJORADA
+    # ─────────────────────────────────────────────
+    c1, c2 = st.columns([2, 1])
+    
+    with c1:
+        st.subheader("📍 Matriz Precio vs. Esfuerzo")
+        fig = px.scatter(stats_df, x="Retorno %", y="RVOL (Intensidad)",
+                         size=np.abs(stats_df["Money Flow Score"]).clip(lower=5),
+                         color="Money Flow Score",
+                         text=stats_df.index,
+                         color_continuous_scale="RdYlGn",
+                         template="plotly_dark")
+        
+        # Ajustes de legibilidad en el gráfico
+        fig.update_traces(textposition='top center', textfont_size=12)
+        fig.update_layout(
+            xaxis_title="Retorno Nominal (%)",
+            yaxis_title="Intensidad de Volumen (RVOL)",
+            plot_bgcolor='rgba(0,0,0,0)',
+            paper_bgcolor='rgba(0,0,0,0)'
+        )
+        fig.add_hline(y=1.0, line_dash="dash", line_color="#888")
+        fig.add_vline(x=0, line_dash="dash", line_color="#888")
+        st.plotly_chart(fig, use_container_width=True)
+
+    with c2:
+        st.subheader("📊 Ranking de Inyección")
+        st.dataframe(stats_df.style.background_gradient(cmap='RdYlGn', subset=['Money Flow Score'])
+                     .format(precision=2), use_container_width=True, height=450)
+
+    # Gráfico de Líneas con mejor contraste
+    st.subheader("📈 Trayectoria de Capital")
+    norm_line = (close / close.iloc[0] - 1) * 100
+    fig_line = px.line(norm_line, template="plotly_dark")
+    fig_line.update_layout(
+        yaxis_title="Rendimiento Relativo %",
+        legend_title="Activos",
+        hovermode="x unified"
+    )
+    st.plotly_chart(fig_line, use_container_width=True)
 
 else:
-    st.error("Error de Configuración: Seleccione al menos una categoría para ejecutar el SLY Engine.")
+    st.warning("Seleccione activos para iniciar el motor.")
