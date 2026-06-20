@@ -55,25 +55,35 @@ def run_sly_engine(df):
             if (state == 1 and h < h_prev) or (state == -1 and h > h_prev): state = 0
     return state, entry_px, entry_tm
 
-# NUEVA FUNCIÓN: VOLUME FLOW DYNAMICS (VFD)
 def run_vfd_engine(df):
     if df.empty or len(df) < 21: return "Normal"
-    # Z-Score de Volumen
     v_avg = df['Volume'].rolling(21).mean()
     v_std = df['Volume'].rolling(21).std()
     z_score = (df['Volume'] - v_avg) / v_std
     last_z = z_score.iloc[-1]
-    
-    # Pressure (MFP)
     c, h, l = df['Close'].iloc[-1], df['High'].iloc[-1], df['Low'].iloc[-1]
     rng = h - l
     mfp = ((c - l) - (h - c)) / rng if rng != 0 else 0
-    
-    if last_z > 2.0:
-        return "ALPHA IN 💎" if mfp > 0 else "ALPHA OUT 🔥"
-    elif last_z > 1.5:
-        return "HIGH FLOW ⚠️"
+    if last_z > 2.0: return "ALPHA IN 💎" if mfp > 0 else "ALPHA OUT 🔥"
+    elif last_z > 1.5: return "HIGH FLOW ⚠️"
     return "Normal"
+
+# NUEVA FUNCIÓN: INERTIA FILTER (EMAs)
+def run_inertia_engine(df):
+    if df.empty or len(df) < 260: return "No Data"
+    ema52 = ta.ema(df['Close'], length=52)
+    ema260 = ta.ema(df['Close'], length=260)
+    
+    last_p = df['Close'].iloc[-1]
+    last_e52 = ema52.iloc[-1]
+    last_e260 = ema260.iloc[-1]
+    
+    if last_p > last_e52 and last_e52 > last_e260:
+        return "BULLISH 📈"
+    elif last_p < last_e52 and last_e52 < last_e260:
+        return "BEARISH 📉"
+    else:
+        return "NEUTRAL ↔️"
 
 def analyze_triple_cycle(symbol):
     row = {"Activo": symbol, "Precio": 0.0}
@@ -85,11 +95,13 @@ def analyze_triple_cycle(symbol):
             
             if tf == "1D": row["Precio"] = float(df['Close'].iloc[-1])
             
-            # --- CÁLCULO DE VFD (SEMANAL Y MENSUAL) ---
+            # --- FILTRO DE INERCIA (NUEVO) ---
+            if tf in ["1S", "1M"]:
+                row[f"{tf} Inercia"] = run_inertia_engine(df)
+            
             if tf in ["1S", "1M"]:
                 row[f"{tf} VFD"] = run_vfd_engine(df)
 
-            # --- CÁLCULO DE RSI (1S y 1M) ---
             if tf in ["1S", "1M"]:
                 rsi = ta.rsi(df['Close'], length=14)
                 if rsi is not None and len(rsi) >= 2:
@@ -98,7 +110,6 @@ def analyze_triple_cycle(symbol):
                     trend = "Subiendo" if curr_rsi > prev_rsi else "Bajando"
                     row[f"{tf} RSI"] = f"{curr_rsi:.1f} {trend}"
 
-            # --- CÁLCULO DE VOLUMEN ACUMULADO (SÓLO SEMANAL 1S) ---
             if tf == "1S":
                 for l in [2, 3, 4, 6, 21, 42]:
                     if len(df) >= (l * 2):
@@ -117,90 +128,49 @@ def analyze_triple_cycle(symbol):
     return row
 
 # ─────────────────────────────────────────────
-# INTERFAZ Y FILTROS
+# RENDERIZADO (Solo cambios en Estilo y Columnas)
 # ─────────────────────────────────────────────
-st.title("🛡️ SLY OMNI-FILTER MATRIX V48.2")
-st.markdown('<div class="vol-info">📊 ANALÍTICA: Volumen Semanal (1S) | RSI Semántico | VFD Flow (1S/1M).</div>', unsafe_allow_html=True)
+st.title("🛡️ SLY OMNI-FILTER MATRIX V48.3")
 
 with st.sidebar:
     st.header("⚙️ Configuración")
     b_size = st.selectbox("Tamaño Lote:", [10, 25, 50, 100], index=1)
     batches = [MASTER_TICKERS[i:i+b_size] for i in range(0, len(MASTER_TICKERS), b_size)]
     sel_batch = st.selectbox("Seleccionar Lote:", range(len(batches)), format_func=lambda x: f"Lote {x+1}")
-    
-    if st.button("🚀 INICIAR ESCANEO", type="primary", use_container_width=True):
+    if st.button("🚀 INICIAR ESCANEO", type="primary"):
         results = []
         prog = st.progress(0)
         targets = batches[sel_batch]
         for idx, sym in enumerate(targets):
             prog.progress((idx+1)/len(targets), text=f"Analizando: {sym}")
             results.append(analyze_triple_cycle(sym))
-        
         current = {x["Activo"]: x for x in st.session_state["sniper_results"]}
         for r in results: current[r["Activo"]] = r
         st.session_state["sniper_results"] = list(current.values())
         st.rerun()
+    if st.button("Limpiar Memoria"): st.session_state["sniper_results"] = []; st.rerun()
 
-    if st.session_state["sniper_results"]:
-        st.divider()
-        f_vol = st.radio("Filtro Volumen (2v S):", ["Todos", "Positivo (>0)", "Negativo (<0)"])
-        f_sig = st.multiselect("Filtro Señal 1D:", ["LONG 🟢", "SHORT 🔴", "FUERA ⚪"], default=["LONG 🟢", "SHORT 🔴", "FUERA ⚪"])
-        
-    if st.button("Limpiar Memoria"):
-        st.session_state["sniper_results"] = []; st.rerun()
-
-# ─────────────────────────────────────────────
-# RENDERIZADO
-# ─────────────────────────────────────────────
 if st.session_state["sniper_results"]:
     df = pd.DataFrame(st.session_state["sniper_results"])
-    
-    # Filtros
-    if f_vol == "Positivo (>0)": df = df[df["Vol 2v(S)%"] > 0]
-    elif f_vol == "Negativo (<0)": df = df[df["Vol 2v(S)%"] < 0]
-    df = df[df["1D Signal"].isin(f_sig)]
 
     def style_matrix(v):
         v_str = str(v)
-        if "LONG" in v_str or "ALPHA IN" in v_str: return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
-        if "SHORT" in v_str or "ALPHA OUT" in v_str: return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
-        if "HIGH FLOW" in v_str: return 'background-color: #FFF9C4; color: #F57F17; font-weight: bold;'
+        if "BULLISH" in v_str or "LONG" in v_str or "ALPHA IN" in v_str: return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
+        if "BEARISH" in v_str or "SHORT" in v_str or "ALPHA OUT" in v_str: return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
+        if "NEUTRAL" in v_str or "HIGH FLOW" in v_str: return 'background-color: #FFF9C4; color: #F57F17; font-weight: bold;'
         if "Subiendo" in v_str: return 'color: #2E7D32; font-weight: bold;'
         if "Bajando" in v_str: return 'color: #C62828; font-weight: bold;'
-        if isinstance(v, (int, float)):
-            if v > 0: return 'color: #2E7D32; font-weight: bold;'
-            if v < 0: return 'color: #C62828; font-weight: bold;'
         return ''
 
-    # Orden jerárquico de columnas (Agregadas las columnas VFD)
     cols_order = [
         "Activo", "Precio", 
         "1D Signal", "1D Fecha", "1D PnL%",
-        "1S Signal", "1S VFD", "1S Fecha", "1S PnL%", "1S RSI",
-        "1M Signal", "1M VFD", "1M Fecha", "1M PnL%", "1M RSI",
-        "Vol 2v(S)%", "Vol 3v(S)%", "Vol 4v(S)%", "Vol 6v(S)%", "Vol 21v(S)%", "Vol 42v(S)%"
+        "1S Signal", "1S Inercia", "1S VFD", "1S Fecha", "1S PnL%", "1S RSI",
+        "1M Signal", "1M Inercia", "1M VFD", "1M Fecha", "1M PnL%", "1M RSI",
+        "Vol 2v(S)%", "Vol 21v(S)%", "Vol 42v(S)%"
     ]
     
     final_cols = [c for c in cols_order if c in df.columns]
-
-    st.dataframe(
-        df[final_cols].style.map(style_matrix),
-        use_container_width=True,
-        height=800,
-        column_config={
-            "Precio": st.column_config.NumberColumn(format="$%.2f"),
-            "1D PnL%": st.column_config.NumberColumn(format="%.2f%%"),
-            "1S PnL%": st.column_config.NumberColumn(format="%.2f%%"),
-            "1M PnL%": st.column_config.NumberColumn(format="%.2f%%"),
-            "1S VFD": st.column_config.TextColumn("VFD (1S)"),
-            "1M VFD": st.column_config.TextColumn("VFD (1M)"),
-            "Vol 2v(S)%": st.column_config.NumberColumn(format="%.2f%%"),
-            "Vol 3v(S)%": st.column_config.NumberColumn(format="%.2f%%"),
-            "Vol 4v(S)%": st.column_config.NumberColumn(format="%.2f%%"),
-            "Vol 6v(S)%": st.column_config.NumberColumn(format="%.2f%%"),
-            "Vol 21v(S)%": st.column_config.NumberColumn(format="%.2f%%"),
-            "Vol 42v(S)%": st.column_config.NumberColumn(format="%.2f%%"),
-        }
-    )
+    st.dataframe(df[final_cols].style.map(style_matrix), use_container_width=True, height=800)
 else:
     st.info("👈 Inicie el escaneo.")
