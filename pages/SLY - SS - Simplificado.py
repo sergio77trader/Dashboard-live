@@ -71,7 +71,7 @@ def run_inertia_engine(df):
     return "NEUTRAL ↔️"
 
 def analyze_triple_cycle(symbol):
-    row = {"Activo": symbol, "Precio": 0.0, "1S Veredicto": "-"}
+    row = {"Activo": symbol, "Precio": 0.0, "Veredicto": "-"}
     for tf, config in MACRO_CONFIG.items():
         try:
             df = yf.download(symbol, interval=config['int'], period=config['per'], progress=False, auto_adjust=True)
@@ -91,19 +91,19 @@ def analyze_triple_cycle(symbol):
 
             macd = ta.macd(df['Close'], fast=12, slow=26, signal=9)
             hist = macd['MACDh_12_26_9']
-            curr_hist = hist.iloc[-1]
-            prev_hist = hist.iloc[-2]
+            curr_h = hist.iloc[-1]
+            prev_h = hist.iloc[-2]
             
-            row[f"{tf} MACD Hist"] = "Subiendo 📈" if curr_hist > prev_hist else "Bajando 📉"
+            row[f"{tf} MACD Hist"] = "Subiendo 📈" if curr_h > prev_h else "Bajando 📉"
 
-            # --- LÓGICA DE VEREDICTO (SOLO PARA 1S LONG) ---
+            # --- LÓGICA DE VEREDICTO (BASADO EN 1S LONG) ---
             if tf == "1S" and row["1S Signal"] == "LONG 🟢":
-                if curr_hist <= 0:
-                    row["1S Veredicto"] = "Cerrar operacion ❌"
-                elif curr_hist > prev_hist:
-                    row["1S Veredicto"] = "Mantener ✅"
+                if curr_h <= 0:
+                    row["Veredicto"] = "Cerrar operacion ❌"
+                elif curr_h > prev_h:
+                    row["Veredicto"] = "Mantener ✅"
                 else:
-                    row["1S Veredicto"] = "Perdiendo fuerza ⚠️"
+                    row["Veredicto"] = "Perdiendo fuerza ⚠️"
 
             rsi = ta.rsi(df['Close'], length=14)
             if rsi is not None and len(rsi) >= 2:
@@ -115,7 +115,7 @@ def analyze_triple_cycle(symbol):
 # ─────────────────────────────────────────────
 # UI Y RENDERIZADO
 # ─────────────────────────────────────────────
-st.title("🛡️ SLY MACRO MATRIX V49.2")
+st.title("🛡️ SLY MACRO MATRIX V49.5")
 
 with st.sidebar:
     st.header("⚙️ Configuración")
@@ -143,12 +143,14 @@ if st.session_state["sniper_results"]:
         if "NEUTRAL" in v_s or "HIGH FLOW" in v_s or "Perdiendo" in v_s: return 'background-color: #FFF9C4; color: #F57F17; font-weight: bold;'
         return ''
 
+    # Orden Jerárquico de Columnas
     cols_order = [
-        "Activo", "Precio", 
-        "1S Signal", "1S Veredicto", "1S PnL%", "1S Inercia", "1S VFD", "1S MACD Hist", "1S RSI", "1S Fecha",
+        "Activo", "Precio", "Veredicto",
+        "1S Signal", "1S PnL%", "1S Inercia", "1S VFD", "1S MACD Hist", "1S RSI", "1S Fecha",
         "1M Signal", "1M PnL%", "1M Inercia", "1M VFD", "1M MACD Hist", "1M RSI", "1M Fecha"
     ]
     
-    st.dataframe(df[[c for c in cols_order if c in df.columns]].style.map(style_matrix), use_container_width=True, height=800)
+    final_cols = [c for c in cols_order if c in df.columns]
+    st.dataframe(df[final_cols].style.map(style_matrix), use_container_width=True, height=800)
 else:
     st.info("👈 Inicie el escaneo.")
