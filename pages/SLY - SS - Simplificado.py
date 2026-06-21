@@ -71,7 +71,7 @@ def run_inertia_engine(df):
     return "NEUTRAL ↔️"
 
 def analyze_triple_cycle(symbol):
-    row = {"Activo": symbol, "Precio": 0.0}
+    row = {"Activo": symbol, "Precio": 0.0, "1S Veredicto": "-"}
     for tf, config in MACRO_CONFIG.items():
         try:
             df = yf.download(symbol, interval=config['int'], period=config['per'], progress=False, auto_adjust=True)
@@ -89,18 +89,25 @@ def analyze_triple_cycle(symbol):
             row[f"{tf} Inercia"] = run_inertia_engine(df)
             row[f"{tf} VFD"] = run_vfd_engine(df)
 
-            # --- MACD HISTOGRAM TREND ---
             macd = ta.macd(df['Close'], fast=12, slow=26, signal=9)
             hist = macd['MACDh_12_26_9']
-            row[f"{tf} MACD Hist"] = "Subiendo 📈" if hist.iloc[-1] > hist.iloc[-2] else "Bajando 📉"
+            curr_hist = hist.iloc[-1]
+            prev_hist = hist.iloc[-2]
+            
+            row[f"{tf} MACD Hist"] = "Subiendo 📈" if curr_hist > prev_hist else "Bajando 📉"
 
-            # --- RSI SEMÁNTICO (NUEVO) ---
+            # --- LÓGICA DE VEREDICTO (SOLO PARA 1S LONG) ---
+            if tf == "1S" and row["1S Signal"] == "LONG 🟢":
+                if curr_hist <= 0:
+                    row["1S Veredicto"] = "Cerrar operacion ❌"
+                elif curr_hist > prev_hist:
+                    row["1S Veredicto"] = "Mantener ✅"
+                else:
+                    row["1S Veredicto"] = "Perdiendo fuerza ⚠️"
+
             rsi = ta.rsi(df['Close'], length=14)
             if rsi is not None and len(rsi) >= 2:
-                curr_rsi = rsi.iloc[-1]
-                prev_rsi = rsi.iloc[-2]
-                rsi_trend = "Subiendo" if curr_rsi > prev_rsi else "Bajando"
-                row[f"{tf} RSI"] = f"{curr_rsi:.1f} {rsi_trend}"
+                row[f"{tf} RSI"] = f"{rsi.iloc[-1]:.1f} {'Subiendo' if rsi.iloc[-1] > rsi.iloc[-2] else 'Bajando'}"
 
         except: pass
     return row
@@ -108,7 +115,7 @@ def analyze_triple_cycle(symbol):
 # ─────────────────────────────────────────────
 # UI Y RENDERIZADO
 # ─────────────────────────────────────────────
-st.title("🛡️ SLY MACRO MATRIX V49.1")
+st.title("🛡️ SLY MACRO MATRIX V49.2")
 
 with st.sidebar:
     st.header("⚙️ Configuración")
@@ -131,14 +138,14 @@ if st.session_state["sniper_results"]:
 
     def style_matrix(v):
         v_s = str(v)
-        if "BULLISH" in v_s or "LONG" in v_s or "ALPHA IN" in v_s or "Subiendo" in v_s: return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
-        if "BEARISH" in v_s or "SHORT" in v_s or "ALPHA OUT" in v_s or "Bajando" in v_s: return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
-        if "NEUTRAL" in v_s or "HIGH FLOW" in v_s: return 'background-color: #FFF9C4; color: #F57F17; font-weight: bold;'
+        if "BULLISH" in v_s or "LONG" in v_s or "ALPHA IN" in v_s or "Mantener" in v_s: return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
+        if "BEARISH" in v_s or "SHORT" in v_s or "ALPHA OUT" in v_s or "Cerrar" in v_s: return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
+        if "NEUTRAL" in v_s or "HIGH FLOW" in v_s or "Perdiendo" in v_s: return 'background-color: #FFF9C4; color: #F57F17; font-weight: bold;'
         return ''
 
     cols_order = [
         "Activo", "Precio", 
-        "1S Signal", "1S PnL%", "1S Inercia", "1S VFD", "1S MACD Hist", "1S RSI", "1S Fecha",
+        "1S Signal", "1S Veredicto", "1S PnL%", "1S Inercia", "1S VFD", "1S MACD Hist", "1S RSI", "1S Fecha",
         "1M Signal", "1M PnL%", "1M Inercia", "1M VFD", "1M MACD Hist", "1M RSI", "1M Fecha"
     ]
     
