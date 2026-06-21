@@ -46,7 +46,8 @@ def run_sly_engine(df):
     ha_dir = np.where(ha_close > ha_open, 1, -1)
     state, entry_px, entry_tm = 0, 0.0, None
     for i in range(1, len(df)):
-        h, h_prev, hd, hd_prev = hist.iloc[i], hist.iloc[i-1], ha_dir[i], ha_dir[i-1]
+        h, h_prev = hist.iloc[i], hist.iloc[i-1]
+        hd, hd_prev = ha_dir[i], ha_dir[i-1]
         if hd == 1 and hd_prev == -1 and h < 0 and h > h_prev: state, entry_px, entry_tm = 1, df['Close'].iloc[i], df.index[i]
         elif hd == -1 and hd_prev == 1 and h > 0 and h < h_prev: state, entry_px, entry_tm = -1, df['Close'].iloc[i], df.index[i]
         elif state != 0:
@@ -96,14 +97,17 @@ def analyze_triple_cycle(symbol):
             
             row[f"{tf} MACD Hist"] = "Subiendo 📈" if curr_h > prev_h else "Bajando 📉"
 
-            # --- LÓGICA DE VEREDICTO (BASADO EN 1S LONG) ---
+            # --- LÓGICA DE VEREDICTO (PEDIDO ESPECÍFICO) ---
             if tf == "1S" and row["1S Signal"] == "LONG 🟢":
-                if curr_h <= 0:
-                    row["Veredicto"] = "Cerrar operacion ❌"
+                # 1. CERRAR OPERACIÓN: Cruce de positivo a negativo
+                if prev_h > 0 and curr_h <= 0:
+                    row["Veredicto"] = "Cerrar operacion 🔴"
+                # 2. MANTENER: Acercándose a 0 desde abajo O Alejándose de 0 hacia arriba
                 elif curr_h > prev_h:
-                    row["Veredicto"] = "Mantener ✅"
-                else:
-                    row["Veredicto"] = "Perdiendo fuerza ⚠️"
+                    row["Veredicto"] = "MANTENER 🟢"
+                # 3. PIERDE FUERZA: Alejándose de 0 hacia abajo O Acercándose a 0 desde arriba
+                elif curr_h < prev_h:
+                    row["Veredicto"] = "PIERDE FUERZA 🟡"
 
             rsi = ta.rsi(df['Close'], length=14)
             if rsi is not None and len(rsi) >= 2:
@@ -115,7 +119,7 @@ def analyze_triple_cycle(symbol):
 # ─────────────────────────────────────────────
 # UI Y RENDERIZADO
 # ─────────────────────────────────────────────
-st.title("🛡️ SLY MACRO MATRIX V49.5")
+st.title("🛡️ SLY MACRO MATRIX V50.0")
 
 with st.sidebar:
     st.header("⚙️ Configuración")
@@ -138,19 +142,17 @@ if st.session_state["sniper_results"]:
 
     def style_matrix(v):
         v_s = str(v)
-        if "BULLISH" in v_s or "LONG" in v_s or "ALPHA IN" in v_s or "Mantener" in v_s: return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
+        if "BULLISH" in v_s or "LONG" in v_s or "ALPHA IN" in v_s or "MANTENER" in v_s: return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
         if "BEARISH" in v_s or "SHORT" in v_s or "ALPHA OUT" in v_s or "Cerrar" in v_s: return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
-        if "NEUTRAL" in v_s or "HIGH FLOW" in v_s or "Perdiendo" in v_s: return 'background-color: #FFF9C4; color: #F57F17; font-weight: bold;'
+        if "NEUTRAL" in v_s or "HIGH FLOW" in v_s or "PIERDE FUERZA" in v_s: return 'background-color: #FFF9C4; color: #F57F17; font-weight: bold;'
         return ''
 
-    # Orden Jerárquico de Columnas
     cols_order = [
         "Activo", "Precio", "Veredicto",
         "1S Signal", "1S PnL%", "1S Inercia", "1S VFD", "1S MACD Hist", "1S RSI", "1S Fecha",
         "1M Signal", "1M PnL%", "1M Inercia", "1M VFD", "1M MACD Hist", "1M RSI", "1M Fecha"
     ]
     
-    final_cols = [c for c in cols_order if c in df.columns]
-    st.dataframe(df[final_cols].style.map(style_matrix), use_container_width=True, height=800)
+    st.dataframe(df[[c for c in cols_order if c in df.columns]].style.map(style_matrix), use_container_width=True, height=800)
 else:
     st.info("👈 Inicie el escaneo.")
