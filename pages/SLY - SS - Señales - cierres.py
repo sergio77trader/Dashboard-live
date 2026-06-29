@@ -6,42 +6,37 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # ─────────────────────────────────────────────
-# CONFIGURACIÓN INSTITUCIONAL - LIGHT THEME
+# CONFIGURACIÓN INSTITUCIONAL
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY | STRATEGIC SIGNAL MONITOR")
+st.set_page_config(layout="wide", page_title="SLY | SIGNAL TRACKER CLOUD")
 
-# CSS para forzar Tema Claro y legibilidad
 st.markdown("""
 <style>
-    .stApp { background-color: #FFFFFF; color: #1C1E21; }
+    .stApp { background-color: #0E1117; color: #EAECEF; }
     .stDataFrame { font-size: 11px; font-family: 'Roboto Mono', monospace; }
-    h1 { color: #004D40; font-weight: 800; border-bottom: 3px solid #004D40; }
-    .stProgress > div > div > div > div { background-color: #004D40; }
-    section[data-testid="stSidebar"] { background-color: #F8F9FA; border-right: 1px solid #E0E0E0; }
+    h1 { color: #2962FF; font-weight: 800; border-bottom: 2px solid #2962FF; }
 </style>
 """, unsafe_allow_html=True)
 
-# Inicializar Memoria Acumulativa en la sesión
-if "master_results" not in st.session_state:
-    st.session_state["master_results"] = {}
-
 # ─────────────────────────────────────────────
-# MOTOR DE CÁLCULO ZERO-LAG (DEMA)
+# MOTOR DE CÁLCULO REFORZADO
 # ─────────────────────────────────────────────
 def get_sly_indicators(df):
     try:
-        # Aplanar columnas MultiIndex de yfinance
+        # Limpieza de columnas MultiIndex (yfinance)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         
+        # Eliminar filas con nulos críticos
         df = df.dropna(subset=['Close', 'Open', 'High', 'Low'])
 
+        # DEMA Function (Zero-Lag Core)
         def dema(s, length):
             ema1 = s.ewm(span=length, adjust=False).mean()
             ema2 = ema1.ewm(span=length, adjust=False).mean()
             return 2 * ema1 - ema2
 
-        # MACD Zero-Lag
+        # Zero-Lag MACD
         fast_ma = dema(df['Close'], 12)
         slow_ma = dema(df['Close'], 26)
         df['macd_line'] = fast_ma - slow_ma
@@ -52,7 +47,7 @@ def get_sly_indicators(df):
         df['rsi_raw'] = ta.rsi(df['Close'], length=14)
         df['rsi_smooth'] = dema(df['rsi_raw'].fillna(50), 5)
 
-        # Heikin Ashi Recursivo (Manual para evitar Repainting)
+        # Heikin Ashi Recursivo Optimizado
         ha_close = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
         ha_open = np.zeros(len(df))
         ha_open[0] = (df['Open'].iloc[0] + df['Close'].iloc[0]) / 2
@@ -67,17 +62,17 @@ def get_sly_indicators(df):
         df['ema260'] = ta.ema(df['Close'], length=260)
         
         return df
-    except:
+    except Exception as e:
+        st.error(f"Error en indicadores: {e}")
         return pd.DataFrame()
 
 # ─────────────────────────────────────────────
-# MÁQUINA DE ESTADOS (Persistencia de Señal & PnL)
+# MÁQUINA DE ESTADOS (Persistencia de Señal)
 # ─────────────────────────────────────────────
 def find_last_signal(df, bear_longs):
-    if df.empty or len(df) < 2: return None, None, False, "-"
+    if df.empty or len(df) < 2: return None, False, "-"
     
     last_entry_date = None
-    last_entry_px = None
     is_active = False
     verdict = "-"
     
@@ -85,7 +80,6 @@ def find_last_signal(df, bear_longs):
         trend_bull = df['ema52'].iloc[i] > df['ema260'].iloc[i]
         authorized = trend_bull or bear_longs
         
-        # Disparador de Entrada: authorized + HA Green + MACD Rising + RSI Rising + RSI < 50
         ha_flip = df['ha_color'].iloc[i] == "Verde" and df['ha_color'].iloc[i-1] == "Rojo"
         macd_accel = df['hist'].iloc[i] > df['hist'].iloc[i-1]
         rsi_rising = df['rsi_smooth'].iloc[i] > df['rsi_smooth'].iloc[i-1]
@@ -93,7 +87,6 @@ def find_last_signal(df, bear_longs):
         
         entry_trigger = authorized and ha_flip and macd_accel and rsi_rising and rsi_discount
         
-        # Disparador de Salida: HA Red + MACD Falling + RSI Falling
         exit_trigger = (df['ha_color'].iloc[i] == "Rojo" and 
                         df['hist'].iloc[i] < df['hist'].iloc[i-1] and 
                         df['rsi_smooth'].iloc[i] < df['rsi_smooth'].iloc[i-1])
@@ -101,113 +94,73 @@ def find_last_signal(df, bear_longs):
         if not is_active and entry_trigger:
             is_active = True
             last_entry_date = df.index[i]
-            last_entry_px = df['Close'].iloc[i]
         elif is_active and exit_trigger:
             is_active = False
 
-    # Análisis de la vela actual para el veredicto
     if is_active:
         curr_h = df['hist'].iloc[-1]
         prev_h = df['hist'].iloc[-2]
-        # Cruce de 0 de arriba hacia abajo
         if prev_h > 0 and curr_h <= 0: verdict = "CERRAR OPERACIÓN 🔴"
-        # Mantener: Histogram subiendo (acercándose a 0 o alejándose hacia arriba)
         elif curr_h > prev_h: verdict = "MANTENER 🟢"
-        # Pierde fuerza: Histogram bajando (acercándose a 0 o alejándose hacia abajo)
         else: verdict = "PIERDE FUERZA 🟡"
 
-    return last_entry_date, last_entry_px, is_active, verdict
+    return last_entry_date, is_active, verdict
 
 # ─────────────────────────────────────────────
-# INTERFAZ DE USUARIO Y BÓVEDA
+# INTERFAZ
 # ─────────────────────────────────────────────
-RAW_TICKERS = "BIL, SPY, QQQ, ARKK, BOTZ, DBC, GLD, BND, VWO, VNQ, HYG, VEA, EMB, AAPL, AMZN, TSLA, MSFT, META, NVDA, GOOGL, ARGT, MELI, GLOB, TTWO, RKLB, HOOD, HOG, MSTR, COIN, SWK, INTC, AMD, DIS, GME, ABNB, AMC, KO, DIA, F, ADBE, MO, C, COST, DE, DOCU, GE, ETSY, HAL, CRM, HSBC, IBM, JD, JNJ, LMT, MA, MCD, NFLX, NKE, PYPL, PEP, PBR, SHOP, SNAP, SONY, SPOT, SBUX, TGT, UL, WMT, SMCI, JPM, WFC, AVGO, MU, LLY, UNH, V, QCOM, HD, BAC, GGAL, BABA, YPF, PAM, XOM, AMAT, GS, ACN, MARA, SNOW, ORCL, UBER, DELL, LRCX, CVX, CSCO, CRWD, CVNA, BA, VRT, HUBS, MRK, PLTR, NEE, CAT, PFE, LIN, CMG, GM, BKNG, PG, MRVL, LOW, TXN, ADI, MS, DAL, AMGN, T, LCID, ABBV, NOW, UPS, LEN, BMY, ENPH, SOUN, INTU, SPGI, CMCSA, DHR, AXP, DHI, RTX, BK, CME, PANW, KLAC, BLK, ICE, MDLZ, MRNA, VOO, VTI, VUG, VTV, IWF, IJH, IJR, VIG, VGT, XLK, VO, IWM, TLT, VB, SCHX, XLF, XLV, SCHF, MUB, XLE, XLI, XLY, VHT, SOXX, PHO, XLRE, SCHH, IYR, ICF, DUOL, LUV, AFRM, ITA, SH, IEF, VGIT, GOVT, SGOV, IBIT, EETH, SATL, RMAX, COMP, AGNT, OPAD, OPEN, SSO, SCHD, EWJ, EWZ, EWW, ECH, INDA, EWT, EWS, ENZL, EWA, DGRO, PINS, ZM, ULTA, PM, SCHW, MMM, FDX, CVS, PSX, DASH, KMB, MSI, MNST, TMO, EA, TMUS, ABT, BX, VZ, ISRG, DDOG, MCHI, BSV, IFS, BAP, BVN, TQQQ, SOXL, TMF, SPXL, UPRO, TECL, YINN, SQQQ, FAS, TNA, LABU, SPXS, SOXS, MCO, CL, MAR, KDP, UNP, TEAM, GEHC, SOFI, CCL, NET, WST, MKC, GDDY, HPE, MDB, WBD, KHC, EBAY, HLT, FISV, EEM, AAL, JMIA, BP, BB, BBD, SVXY, REK, VIST, ADM, TSM, RIOT, TLRY, NOC, CGC, GD, IIPR, SYM, NU, ANET, OXY, O, ASML, VEGI, OKLO, PFF, RDDT, SPYD, HSY, PTON, DJT, BITX, KODK, VIXY, RACE, LULU, HMC, FWONK, TS, TX, HIMS, ITUB, ABEV, BIDU, GRWG, HYFM, MANU, FAZ, FNGU, MSFU, AAPU, FBL, LOMA, DLTR, DUK, GPRK, NEM, SO, QBTS, RGTI, BITI, PCAR, NVO, UMAC, AXON, XYZ, PDD, NTES, SOS, RCAT, BN, VALE, ARM, QSI, TM, WM, URTH, BBAR, IRS, BIOX, EDN, SUPV, XP, BBAI, DAPP, TEM, KULR, INBS, TBX, EAT, LMND, UUUU, GDX, ASTS, RCL, APP, PAGS, TTT, UNCY PL, NIO, CONY, CLOV, JOBY, UGL, TBF, BYND, TWLO, MMSI, LODE, TBT, CEG, UUP, OTLY, SHY, IEI, TLH, IREN, NWTG, FLIN, OSCR, ALAB, AMZY, APLY, AVY, BG, BIIB, BMA, CELH, CEPU, CRESY, DOW, DPZ, EWY, FXI, FXY, HON, HUT, IGPT, LAES, ONON, PYPY, SEDG, SLB, SNA, STLA, STZ, TTEK, URBN, VSCO, AAP, YBIT, ADP, HERO, ABSI, PDBA, MAGS, B, SMMT, SETH, SLV, PATH, AIQ, SHEL, TGS, PSQ, MKL, XLP, XPEV, DXYZ, MSTY, CRCL, PLBY, FIG, AOM, OWNB, BKR, SPYG, USO, APLD, ASPN, AUR, BITO, BKCH, BLDR, BLOK, CDNS, COO, DAVA, EIX, EL, ELF, EVTL, FEZ, FSLR, GAUZ, GPN, HDV, HELO, BMRN, VXUS, URA, ACWI, NVDL, GRAB, GTLB, VT, SPMO, QQQM, IONQ, TSLL, AMZU, SBET, JEPQ, JEPI, QYLD, TXRH, ABCL, AOK, VBR, IAU, IEO, ZETA, KBH, OMC, RYDE, SVCO, POOL, VYM, ANF, TMDX, MTUM, BMNR, TMQ, BNKK, VEEE, QNRX, HRZN"
+RAW_TICKERS = "BIL, SPY, QQQ, ARKK, BOTZ, DBC, GLD, BND, VWO, VNQ, HYG, VEA, EMB, AAPL, AMZN, TSLA, MSFT, META, NVDA, GOOGL, ARGT, MELI, GLOB, TTWO, RKLB, HOOD, HOG, MSTR, COIN, SWK, INTC, AMD, DIS, GME, ABNB, AMC, KO, DIA, F, ADBE, MO, C, COST, DE, DOCU, GE, ETSY, HAL, CRM, HSBC, IBM, JD, JNJ, LMT, MA, MCD, NFLX, NKE, PYPL, PEP, PBR, SHOP, SNAP, SONY, SPOT, SBUX, TGT, UL, WMT, SMCI, JPM, WFC, AVGO, MU, LLY, UNH, V, QCOM, HD, BAC, GGAL, BABA, YPF, PAM, XOM, AMAT, GS, ACN, MARA, SNOW, ORCL, UBER, DELL, LRCX, CVX, CSCO, CRWD, CVNA, BA, VRT, HUBS, MRK, PLTR, NEE, CAT, PFE, LIN, CMG, GM, BKNG, PG, MRVL, LOW, TXN, ADI, MS, DAL, AMGN, T, LCID, ABBV, NOW, UPS, LEN, BMY, ENPH, SOUN, INTU, SPGI, CMCSA, DHR, AXP, DHI, RTX, BK, CME, PANW, KLAC, BLK, ICE, MDLZ, MRNA, VOO, VTI, VUG, VTV, IWF, IJH, IJR, VIG, VGT, XLK, VO, IWM, TLT, VB, SCHX, XLF, XLV, SCHF, MUB, XLE, XLI, XLY, VHT, SOXX, PHO, XLRE, SCHH, IYR, ICF, DUOL, LUV, AFRM, ITA, SH, IEF, VGIT, GOVT, SGOV, IBIT, EETH, SATL, RMAX, COMP, AGNT, OPAD, OPEN, SSO, SCHD, EWJ, EWZ, EWW, ECH, INDA, EWT, EWS, ENZL, EWA, DGRO, PINS, ZM, ULTA, PM, SCHW, MMM, FDX, CVS, PSX, DASH, KMB, MSI, MNST, TMO, EA, TMUS, ABT, BX, VZ, ISRG, DDOG, MCHI, BSV, IFS, BAP, BVN, TQQQ, SOXL, TMF, SPXL, UPRO, TECL, YINN, SQQQ, FAS, TNA, LABU, SPXS, SOXS, MCO, CL, MAR, KDP, UNP, TEAM, GEHC, SOFI, CCL, NET, WST, MKC, GDDY, HPE, MDB, WBD, KHC, EBAY, HLT, FISV, EEM, AAL, JMIA, BP, BB, BBD, SVXY, REK, VIST, ADM, TSM, RIOT, TLRY, NOC, CGC, GD, IIPR, SYM, NU, ANET, OXY, O, ASML, VEGI, OKLO, PFF, RDDT, SPYD, HSY, PTON, DJT, BITX, KODK, VIXY, RACE, LULU, HMC, FWONK, TS, TX, HIMS, ITUB, ABEV, BIDU, GRWG, HYFM, MANU, FAZ, FNGU, MSFU, AAPU, FBL, LOMA, DLTR, DUK, GPRK, NEM, SO, QBTS, RGTI, BITI, PCAR, NVO, UMAC, AXON, XYZ, PDD, NTES, SOS, RCAT, BN, VALE, ARM, QSI, TM, WM, URTH, BBAR, IRS, BIOX, EDN, SUPV, XP, BBAI, DAPP, TEM, KULR, INBS, TBX, EAT, LMND, UUUU, GDX, ASTS, RCL, APP, PAGS, TTT, UNCY, PL, NIO, CONY, CLOV, JOBY, UGL, TBF, BYND, TWLO, MMSI, LODE, TBT, CEG, UUP, OTLY, SHY, IEI, TLH, IREN, NWTG, FLIN, OSCR, ALAB, AMZY, APLY, AVY, BG, BIIB, BMA, CELH, CEPU, CRESY, DOW, DPZ, EWY, FXI, FXY, HON, HUT, IGPT, LAES, ONON, PYPY, SEDG, SLB, SNA, STLA, STZ, TTEK, URBN, VSCO, AAP, YBIT, ADP, HERO, ABSI, PDBA, MAGS, B, SMMT, SETH, SLV, PATH, AIQ, SHEL, TGS, PSQ, MKL, XLP, XPEV, DXYZ, MSTY, CRCL, PLBY, FIG, AOM, OWNB, BKR, SPYG, USO, APLD, ASPN, AUR, BITO, BKCH, BLDR, BLOK, CDNS, COO, DAVA, EIX, EL, ELF, EVTL, FEZ, FSLR, GAUZ, GPN, HDV, HELO, BMRN, VXUS, URA, ACWI, NVDL, GRAB, GTLB, VT, SPMO, QQQM, IONQ, TSLL, AMZU, SBET, JEPQ, JEPI, QYLD, TXRH, ABCL, AOK, VBR, IAU, IEO, ZETA, KBH, OMC, RYDE, SVCO, POOL, VYM, ANF, TMDX, MTUM, BMNR, TMQ, BNKK, VEEE, QNRX, HRZN"
 
-# Procesamiento de lista para evitar errores de coma
-TICKERS = sorted(list(set([t.strip() for t in RAW_TICKERS.replace("\n", "").split(",") if t.strip()])))
+TICKERS = sorted([t.strip() for t in RAW_TICKERS.split(",") if t.strip()])
 
-st.title("🛡️ SLY | STRATEGIC SIGNAL MONITOR")
+st.title("🛡️ SLY | SIGNAL STATE TRACKER")
 
 with st.sidebar:
     st.header("⚙️ Radar Ops")
     batch_size = 30
-    total_lotes = (len(TICKERS) // batch_size) + 1
-    batch_idx = st.selectbox(f"Seleccionar Lote (30 activos c/u):", range(total_lotes), format_func=lambda x: f"Lote {x+1}")
-    bear_longs = st.checkbox("Habilitar Bear-Longs (EMA 52 < 260)", value=True)
+    batch_idx = st.number_input("Lote (30 activos):", 0, len(TICKERS)//batch_size, 0)
+    bear_longs = st.checkbox("Habilitar Bear-Longs", value=True)
     
-    if st.button("🚀 ACTUALIZAR Y ACUMULAR", type="primary"):
+    if st.button("🚀 ACTUALIZAR", type="primary"):
+        results = []
         subset = TICKERS[batch_idx*batch_size : (batch_idx+1)*batch_size]
         prog = st.progress(0)
         
         for i, sym in enumerate(subset):
             try:
                 prog.progress((i+1)/len(subset), text=f"Auditando: {sym}")
-                # Bajamos 5 años semanales para buscar la señal de entrada histórica
                 data = yf.download(sym, interval="1wk", period="5y", progress=False)
                 if data.empty: continue
                 
                 data = get_sly_indicators(data)
                 if data.empty: continue
                 
-                sig_date, sig_px, vigente, verd = find_last_signal(data, bear_longs)
+                sig_date, vigente, verd = find_last_signal(data, bear_longs)
                 
-                current_close = data['Close'].iloc[-1]
-                pnl = 0.0
-                if sig_px:
-                    pnl = ((current_close - sig_px) / sig_px) * 100
-                
-                # Guardar en diccionario persistente indexado por Ticker
-                st.session_state["master_results"][sym] = {
+                results.append({
                     "Activo": sym,
                     "Última Señal": sig_date.strftime('%Y-%m-%d') if sig_date else "-",
                     "Estado": "VIGENTE 🟢" if vigente else "CERRADA 🔴",
-                    "PnL %": round(pnl, 2),
                     "Veredicto": verd,
-                    "Precio": round(current_close, 2),
+                    "Precio": round(data['Close'].iloc[-1], 2),
                     "RSI": round(data['rsi_smooth'].iloc[-1], 1),
                     "Régimen": "ALCISTA" if data['ema52'].iloc[-1] > data['ema260'].iloc[-1] else "BAJISTA"
-                }
-            except:
+                })
+            except Exception as e:
                 continue
-        st.success("Lote integrado a la matriz.")
+        
+        st.session_state["matrix"] = results
 
-    st.divider()
-    if st.button("🗑️ Limpiar Memoria"):
-        st.session_state["master_results"] = {}
-        st.rerun()
-
-# ─────────────────────────────────────────────
-# RENDERIZADO ACUMULATIVO
-# ─────────────────────────────────────────────
-if st.session_state["master_results"]:
-    # Convertimos los resultados acumulados a DataFrame
-    df_res = pd.DataFrame(st.session_state["master_results"].values())
-    
-    # Ordenamos por Estado (Vigentes arriba) y Ticker
-    df_res = df_res.sort_values(by=["Estado", "Activo"], ascending=[False, True])
+if "matrix" in st.session_state:
+    df_res = pd.DataFrame(st.session_state["matrix"])
     
     def color_cells(val):
         str_val = str(val)
-        # Verdes
-        if "VIGENTE" in str_val or "MANTENER" in str_val or "ALCISTA" in str_val: 
-            return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
-        # Rojos
-        if "CERRADA" in str_val or "CERRAR" in str_val or "BAJISTA" in str_val: 
-            return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
-        # Amarillos
-        if "PIERDE" in str_val: 
-            return 'background-color: #FFF9C4; color: #827717; font-weight: bold;'
+        if "VIGENTE" in str_val or "MANTENER" in str_val or "ALCISTA" in str_val: return 'background-color: #1B5E20; color: white;'
+        if "CERRADA" in str_val or "CERRAR" in str_val or "BAJISTA" in str_val: return 'background-color: #B71C1C; color: white;'
+        if "PIERDE" in str_val: return 'background-color: #FFCC00; color: black;'
         return ''
 
-    st.dataframe(
-        df_res.style.map(color_cells), 
-        use_container_width=True, 
-        height=800,
-        column_config={
-            "PnL %": st.column_config.NumberColumn(format="%.2f%%"),
-            "Precio": st.column_config.NumberColumn(format="$%.2f")
-        }
-    )
-    st.info(f"Total activos acumulados en matriz: {len(df_res)}")
+    st.dataframe(df_res.style.map(color_cells), use_container_width=True, height=800)
 else:
-    st.info("👈 Seleccione un lote y presione ACTUALIZAR para comenzar a construir su matriz.")
+    st.info("👈 Seleccione un lote y presione ACTUALIZAR.")
