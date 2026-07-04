@@ -27,14 +27,14 @@ if "master_results_crypto" not in st.session_state:
     st.session_state["master_results_crypto"] = {}
 
 # ─────────────────────────────────────────────
-# MAPEO SECTORIAL
+# MAPEO SECTORIAL (Actualizado)
 # ─────────────────────────────────────────────
 CRYPTO_SECTORS = {
     "LEADER": ["BTC", "ETH"],
-    "LAYER 1": ["SOL", "ADA", "DOT", "AVAX", "MATIC", "NEAR", "FTM", "ALGO", "ATOM", "LINK"],
-    "AI & DATA": ["RNDR", "FET", "FIL", "THETA", "NEAR", "AGIX", "OCEAN"],
-    "DEFI/L2": ["ARB", "OP", "UNI", "AAVE", "LDO", "MKR", "SNX"],
-    "MEMES": ["DOGE", "SHIB", "PEPE", "BONK", "FLOKI", "WIF"],
+    "LAYER 1": ["SOL", "ADA", "DOT", "AVAX", "MATIC", "NEAR", "FTM", "ALGO", "ATOM", "LINK", "SUI", "APT", "SEI"],
+    "AI & DATA": ["RNDR", "FET", "FIL", "THETA", "NEAR", "AGIX", "OCEAN", "WLD", "ARKM"],
+    "DEFI/L2": ["ARB", "OP", "UNI", "AAVE", "LDO", "MKR", "SNX", "DYDX", "PENDLE"],
+    "MEMES": ["DOGE", "SHIB", "PEPE", "BONK", "FLOKI", "WIF", "BOME"]
 }
 
 def get_crypto_sector(ticker):
@@ -78,16 +78,16 @@ def find_last_signal_dual(df, bear_longs):
         
         ha_flip_g = df['ha_color'].iloc[i] == "Verde" and df['ha_color'].iloc[i-1] == "Rojo"
         ha_flip_r = df['ha_color'].iloc[i] == "Rojo" and df['ha_color'].iloc[i-1] == "Verde"
-        m_acc_up, m_acc_dw = df['hist'].iloc[i] > df['hist'].iloc[i-1], df['hist'].iloc[i] < df['hist'].iloc[i-1]
+        m_accel_up, m_accel_dw = df['hist'].iloc[i] > df['hist'].iloc[i-1], df['hist'].iloc[i] < df['hist'].iloc[i-1]
         rsi_up, rsi_dw = df['rsi_smooth'].iloc[i] > df['rsi_smooth'].iloc[i-1], df['rsi_smooth'].iloc[i] < df['rsi_smooth'].iloc[i-1]
 
         if state == "CERRADA ⚪":
-            if bull_reg and ha_flip_g and m_acc_up and rsi_up and df['rsi_smooth'].iloc[i] < 50:
+            if bull_reg and ha_flip_g and m_accel_up and rsi_up and df['rsi_smooth'].iloc[i] < 50:
                 state, last_date, last_px = "LONG 🟢", df.index[i], df['Close'].iloc[i]
-            elif bear_reg and ha_flip_r and m_acc_dw and rsi_dw and df['rsi_smooth'].iloc[i] > 50:
+            elif bear_reg and ha_flip_r and m_accel_dw and rsi_dw and df['rsi_smooth'].iloc[i] > 50:
                 state, last_date, last_px = "SHORT 🔴", df.index[i], df['Close'].iloc[i]
-        elif state == "LONG 🟢" and (df['ha_color'].iloc[i] == "Rojo" and m_acc_dw and rsi_dw): state = "CERRADA ⚪"
-        elif state == "SHORT 🔴" and (df['ha_color'].iloc[i] == "Verde" and m_acc_up and rsi_up): state = "CERRADA ⚪"
+        elif state == "LONG 🟢" and (df['ha_color'].iloc[i] == "Rojo" and m_accel_dw and rsi_dw): state = "CERRADA ⚪"
+        elif state == "SHORT 🔴" and (df['ha_color'].iloc[i] == "Verde" and m_accel_up and rsi_up): state = "CERRADA ⚪"
 
     if state != "CERRADA ⚪":
         c_h, p_h = df['hist'].iloc[-1], df['hist'].iloc[-2]
@@ -102,30 +102,30 @@ def find_last_signal_dual(df, bear_longs):
     return last_date, last_px, state, verdict
 
 # ─────────────────────────────────────────────
-# FILTRO DE EXCHANGES (MASTER SYNC)
+# FILTRO DE EXCHANGES (CRUCE PROFUNDO)
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchanges():
-    # Usamos KuCoin para data y Binance para validación de existencia
     return ccxt.kucoin(), ccxt.binance()
 
 def fetch_synced_symbols():
     try:
         ku, bi = get_exchanges()
-        k_markets = ku.load_markets()
-        b_markets = bi.load_markets()
+        # Forzar carga de mercados completos
+        k_m = ku.fetch_markets()
+        b_m = bi.fetch_markets()
         
-        # 1. Obtener bases de Binance (lo que puedes operar)
-        b_bases = {b_markets[s]['base'] for s in b_markets if '/USDT' in s and b_markets[s]['active']}
+        # 1. Bases operables en Binance (Pares USDT)
+        b_bases = {m['base'] for m in b_m if m['quote'] == 'USDT' and m['active']}
         
-        # 2. Buscar esas mismas bases en KuCoin bajo par USDT
+        # 2. Intersección con Kucoin (Pares USDT)
         synced = []
-        for s in k_markets:
-            m = k_markets[s]
+        for m in k_m:
             if m['active'] and m['quote'] == 'USDT' and m['base'] in b_bases:
-                # Evitar basura y tokens apalancados
-                if not any(x in s for x in ['UP/', 'DOWN/', '3L', '3S', 'BULL/', 'BEAR/']):
-                    synced.append(s)
+                # Filtrar tokens basura/apalancados
+                if not any(x in m['symbol'] for x in ['UP/', 'DOWN/', '3L', '3S', 'BULL', 'BEAR']):
+                    synced.append(m['symbol'])
+        
         return sorted(list(set(synced)))
     except: return []
 
@@ -136,23 +136,26 @@ st.title("🛡️ SLY | MASTER DUAL MONITOR 4H")
 
 with st.sidebar:
     st.header("⚙️ Radar Ops")
-    if st.button("📡 Sincronizar Binance + KuCoin", use_container_width=True):
+    if st.button("📡 Sincronizar Binance + KuCoin"):
         st.session_state["crypto_list"] = fetch_synced_symbols()
         st.rerun()
 
     if "crypto_list" in st.session_state:
-        lote_size = st.number_input("Acciones por Lote:", 10, 200, 100)
-        total_lotes = (len(st.session_state["crypto_list"]) // lote_size) + 1
-        batch_idx = st.selectbox(f"Seleccionar Lote (Total: {len(st.session_state['crypto_list'])}):", range(total_lotes), format_func=lambda x: f"Lote {x+1}")
-        bear_longs = st.checkbox("Habilitar Bear-Longs (EMA < 260)", value=True)
+        total_activos = len(st.session_state["crypto_list"])
+        st.success(f"Activos Duales: {total_activos}")
         
-        if st.button("🚀 ACTUALIZAR Y ACUMULAR", type="primary", use_container_width=True):
+        lote_size = st.number_input("Acciones por Lote:", 10, 200, 100)
+        total_lotes = (total_activos // lote_size) + (1 if total_activos % lote_size > 0 else 0)
+        batch_idx = st.selectbox(f"Seleccionar Lote:", range(total_lotes), format_func=lambda x: f"Lote {x+1}")
+        bear_longs = st.checkbox("Habilitar Bear-Longs", value=True)
+        
+        if st.button("🚀 ACTUALIZAR Y ACUMULAR", type="primary"):
             ku, _ = get_exchanges()
             subset = st.session_state["crypto_list"][batch_idx*lote_size : (batch_idx+1)*lote_size]
             prog = st.progress(0)
             for i, sym in enumerate(subset):
                 try:
-                    prog.progress((i+1)/len(subset), text=f"Auditando: {sym}")
+                    prog.progress((i+1)/len(subset), text=f"Auditando 4H: {sym}")
                     raw = ku.fetch_ohlcv(sym, timeframe='4h', limit=1000)
                     df = pd.DataFrame(raw, columns=['time','open','high','low','close','vol'])
                     df['time'] = pd.to_datetime(df['time'], unit='ms')
@@ -166,20 +169,15 @@ with st.sidebar:
                     elif "SHORT 🔴" in estado: pnl = f"{((sig_px - data['Close'].iloc[-1]) / sig_px * 100):.2f}%"
                     
                     st.session_state["master_results_crypto"][sym] = {
-                        "Activo": sym.replace("/USDT", "").replace(":USDT",""), 
-                        "Sector": get_crypto_sector(sym),
+                        "Activo": sym.replace("/USDT", ""), "Sector": get_crypto_sector(sym),
                         "Última Señal": sig_date.strftime('%d/%m %H:%M') if sig_date else "-",
                         "Estado": estado, "PnL Real": pnl, "Veredicto": verd,
-                        "Precio": f"{data['Close'].iloc[-1]:.4f}", 
-                        "RSI": round(data['rsi_smooth'].iloc[-1], 1),
+                        "Precio": f"{data['Close'].iloc[-1]:.4f}", "RSI": round(data['rsi_smooth'].iloc[-1], 1),
                         "Régimen": "ALCISTA" if data['ema52'].iloc[-1] > data['ema260'].iloc[-1] else "BAJISTA"
                     }
                     time.sleep(0.05)
                 except: continue
             st.rerun()
-
-    if st.button("🗑️ Limpiar Memoria"):
-        st.session_state["master_results_crypto"] = {}; st.rerun()
 
 # ─────────────────────────────────────────────
 # RESUMEN Y RENDERIZADO
@@ -195,7 +193,7 @@ if st.session_state["master_results_crypto"]:
         for idx, row in summary.iterrows():
             with cols[idx % 3]:
                 box_class = "sector-box" if "LONG" in row['Estado'] else "sector-box short-box"
-                st.markdown(f"<div class='{box_class}'><div class='sector-title'>{row['Sector']} | {row['Estado']} ({len(row['Activo'])})</div><div>{', '.join(row['Activo'])}</div></div>", unsafe_allow_html=True)
+                st.markdown(f"<div class='{box_class}'><div class='sector-title'>{row['Sector']} | {row['Estado']}</div><div>{', '.join(row['Activo'])}</div></div>", unsafe_allow_html=True)
     
     st.subheader("📋 Matriz Cripto 4H (Dual)")
     df_res = df_full.sort_values(by=["Estado", "Activo"], ascending=[True, True])
@@ -206,4 +204,3 @@ if st.session_state["master_results_crypto"]:
         if "PIERDE" in str_v: return 'background-color: #FFF9C4; color: #827717; font-weight: bold;'
         return ''
     st.dataframe(df_res.style.map(color_cells), use_container_width=True, height=600)
-else: st.info("Sincronice e inicie el radar.")
