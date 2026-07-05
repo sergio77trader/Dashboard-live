@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN INSTITUCIONAL - LIGHT THEME
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY | CRIPTO MONITOR 4H")
+st.set_page_config(layout="wide", page_title="SLY | CRIPTO PERPETUALS")
 
 st.markdown("""
 <style>
@@ -29,24 +29,25 @@ if "master_results_crypto" not in st.session_state:
 # MAPEO SECTORIAL CRIPTO
 # ─────────────────────────────────────────────
 CRYPTO_SECTORS = {
-    "LEADER": ["BTC/USDT", "ETH/USDT"],
-    "LAYER 1": ["SOL/USDT", "ADA/USDT", "DOT/USDT", "AVAX/USDT", "MATIC/USDT", "NEAR/USDT", "FTM/USDT", "ALGO/USDT"],
-    "DEFI/L2": ["ARB/USDT", "OP/USDT", "LINK/USDT", "UNI/USDT", "AAVE/USDT", "LDO/USDT"],
-    "AI/DEPIN": ["RNDR/USDT", "FET/USDT", "FIL/USDT", "THETA/USDT"],
-    "MEMES": ["DOGE/USDT", "SHIB/USDT", "PEPE/USDT", "BONK/USDT", "FLOKI/USDT"],
-    "EXCHANGE": ["BNB/USDT", "KCS/USDT", "OKB/USDT"]
+    "LEADER": ["BTC", "ETH"],
+    "LAYER 1": ["SOL", "ADA", "DOT", "AVAX", "MATIC", "NEAR", "FTM", "ALGO", "SUI", "APT"],
+    "DEFI/L2": ["ARB", "OP", "LINK", "UNI", "AAVE", "LDO", "MKR"],
+    "AI/DEPIN": ["RNDR", "FET", "FIL", "THETA", "TAO"],
+    "MEMES": ["DOGE", "SHIB", "PEPE", "BONK", "FLOKI", "WIF"]
 }
 
 def get_crypto_sector(ticker):
+    base = ticker.split("/")[0].upper()
     for sector, members in CRYPTO_SECTORS.items():
-        if ticker.upper() in members: return sector
-    return "ALTCOINS / OTROS"
+        if base in members: return sector
+    return "ALTCOINS / PERPETUALS"
 
 # ─────────────────────────────────────────────
 # MOTORES TÉCNICOS SLY (4H)
 # ─────────────────────────────────────────────
 def get_sly_indicators(df):
     try:
+        # OHLCV de KuCoin Futures viene con nombres específicos
         df.columns = [c.capitalize() for c in df.columns]
         df = df.dropna(subset=['Close'])
 
@@ -68,14 +69,12 @@ def get_sly_indicators(df):
         
         df['ema52'] = ta.ema(df['Close'], length=52)
         df['ema260'] = ta.ema(df['Close'], length=260)
-        
         return df.dropna(subset=['ema260'])
     except: return pd.DataFrame()
 
 def find_last_signal(df, bear_longs):
     if df.empty or len(df) < 2: return None, None, False, "-"
     last_entry_date, last_entry_px, is_active, verdict = None, None, False, "-"
-    
     for i in range(1, len(df)):
         authorized = (df['ema52'].iloc[i] > df['ema260'].iloc[i]) or bear_longs
         ha_flip = df['ha_color'].iloc[i] == "Verde" and df['ha_color'].iloc[i-1] == "Rojo"
@@ -95,61 +94,58 @@ def find_last_signal(df, bear_longs):
     return last_entry_date, last_entry_px, is_active, verdict
 
 # ─────────────────────────────────────────────
-# FILTRO BINANCE SYNC
+# FILTRO DE EXCHANGES (PERPETUALS SYNC)
 # ─────────────────────────────────────────────
 @st.cache_data(ttl=3600)
-def get_binance_usdt_symbols():
-    """Obtiene la lista de símbolos USDT activos en Binance para cruzar datos."""
+def fetch_synced_perpetuals():
+    """Solo obtiene símbolos que son PERPETUOS en KuCoin y están en BINANCE."""
     try:
-        bi = ccxt.binance()
-        markets = bi.load_markets()
-        # Normalizamos a 'BASE/USDT' para comparar con KuCoin
-        return {s for s in markets if '/USDT' in s and markets[s]['active']}
-    except:
-        return set()
+        # Binance Futures para la lista de operabilidad
+        bi = ccxt.binance({'options': {'defaultType': 'future'}})
+        b_markets = bi.load_markets()
+        binance_perps = {b_markets[s]['base'] for s in b_markets if b_markets[s]['active']}
 
-# ─────────────────────────────────────────────
-# INTERFAZ Y CONECTIVIDAD KUCOIN
-# ─────────────────────────────────────────────
-@st.cache_resource
-def get_exchange():
-    return ccxt.kucoin({'enableRateLimit': True})
-
-def fetch_symbols():
-    try:
-        ex = get_exchange()
-        markets = ex.load_markets()
-        symbols = [s for s in markets if '/USDT' in s and markets[s]['active']]
-        filtered = [s for s in symbols if not any(x in s for x in ['3L', '3S', 'USDC', 'DAI', 'PAX', 'TUSD'])]
-        return sorted(filtered)
+        # KuCoin Futures para la data
+        ku = ccxt.kucoinfutures()
+        k_markets = ku.load_markets()
+        
+        synced = []
+        for s in k_markets:
+            m = k_markets[s]
+            # Filtrar: Solo USDT lineales, activos, y que existan en Binance
+            if m['active'] and m['quote'] == 'USDT' and m['linear'] and m['base'] in binance_perps:
+                # Evitar tokens de predicción o expiración fija
+                if 'USDT' in s and ':' in s:
+                    synced.append(s)
+        return sorted(synced)
     except: return []
 
-st.title("🛡️ SLY | CRIPTO SIGNAL TRACKER 4H")
-
-# Precargar Binance Symbols
-binance_active_set = get_binance_usdt_symbols()
+st.title("🛡️ SLY | PERPETUAL SIGNAL MONITOR 4H")
 
 with st.sidebar:
     st.header("⚙️ Radar Ops")
     
-    if st.button("📡 Sincronizar Mercado KuCoin"):
-        st.session_state["crypto_list"] = fetch_symbols()
+    if st.button("📡 Sincronizar Perpetuos Binance + KuCoin"):
+        st.session_state["crypto_list"] = fetch_synced_perpetuals()
         st.rerun()
 
     if "crypto_list" in st.session_state:
-        lote_size = st.number_input("Tamaño de Lote:", 10, 100, 50)
-        total_lotes = (len(st.session_state["crypto_list"]) // lote_size) + 1
+        total_found = len(st.session_state["crypto_list"])
+        st.success(f"Perpetuos Sincronizados: {total_found}")
+        
+        lote_size = st.number_input("Acciones por Lote:", 10, 100, 50)
+        total_lotes = (total_found // lote_size) + 1
         batch_idx = st.selectbox(f"Seleccionar Lote:", range(total_lotes), format_func=lambda x: f"Lote {x+1}")
         bear_longs = st.checkbox("Habilitar Bear-Longs", value=True)
         
         if st.button("🚀 ACTUALIZAR Y ACUMULAR", type="primary"):
-            ex = get_exchange()
+            ex = ccxt.kucoinfutures({'enableRateLimit': True})
             subset = st.session_state["crypto_list"][batch_idx*lote_size : (batch_idx+1)*lote_size]
             prog = st.progress(0)
             
             for i, sym in enumerate(subset):
                 try:
-                    prog.progress((i+1)/len(subset), text=f"Auditando 4H: {sym}")
+                    prog.progress((i+1)/len(subset), text=f"Analizando Perpetuo 4H: {sym}")
                     raw_data = ex.fetch_ohlcv(sym, timeframe='4h', limit=1000)
                     df = pd.DataFrame(raw_data, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
                     df['time'] = pd.to_datetime(df['time'], unit='ms')
@@ -161,14 +157,9 @@ with st.sidebar:
                     sig_date, sig_px, vigente, verd = find_last_signal(data, bear_longs)
                     pnl_val = f"{((data['Close'].iloc[-1] - sig_px) / sig_px * 100):.2f}%" if (vigente and sig_px) else "-"
                     
-                    # Validar si existe en Binance (Normalizando el símbolo de KuCoin)
-                    clean_sym = sym.split(":")[0] # BTC/USDT:USDT -> BTC/USDT
-                    on_binance = "✅ SÍ" if clean_sym in binance_active_set else "❌ NO"
-                    
                     st.session_state["master_results_crypto"][sym] = {
-                        "Activo": clean_sym.replace("/USDT", ""), 
-                        "En Binance": on_binance,
-                        "Sector": get_crypto_sector(clean_sym),
+                        "Activo": sym.split(":")[0].replace("/USDT", ""), 
+                        "Sector": get_crypto_sector(sym),
                         "Última Señal": sig_date.strftime('%d/%m %H:%M') if sig_date else "-",
                         "Estado": "VIGENTE 🟢" if vigente else "CERRADA 🔴",
                         "PnL Real": pnl_val,
@@ -186,13 +177,13 @@ with st.sidebar:
         st.rerun()
 
 # ─────────────────────────────────────────────
-# RESUMEN Y MATRIZ
+# RESUMEN SECTORIAL
 # ─────────────────────────────────────────────
 if st.session_state["master_results_crypto"]:
     df_full = pd.DataFrame(st.session_state["master_results_crypto"].values())
     df_vigentes = df_full[df_full["Estado"] == "VIGENTE 🟢"]
 
-    st.subheader("📊 RESUMEN DE EXPOSICIÓN (VIGENTES)")
+    st.subheader("📊 RESUMEN DE EXPOSICIÓN EN PERPETUOS")
     if not df_vigentes.empty:
         summary = df_vigentes.groupby("Sector")["Activo"].apply(list).reset_index()
         cols = st.columns(3)
@@ -205,20 +196,16 @@ if st.session_state["master_results_crypto"]:
                 </div>
                 """, unsafe_allow_html=True)
     
-    st.subheader("📋 Matriz Cripto 4H Sync")
+    st.subheader("📋 Matriz de Señales Cripto (Perpetual 4H)")
     df_res = df_full.sort_values(by=["Estado", "Activo"], ascending=[False, True])
     
     def color_cells(val):
         str_v = str(val)
-        if "VIGENTE" in str_v or "MANTENER" in str_v or "ALCISTA" in str_v or "✅ SÍ" in str_v: 
-            return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
-        if "CERRADA" in str_v or "CERRAR" in str_v or "BAJISTA" in str_v or "❌ NO" in str_v: 
-            return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
+        if "VIGENTE" in str_v or "MANTENER" in str_v or "ALCISTA" in str_v: return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
+        if "CERRADA" in str_v or "CERRAR" in str_v or "BAJISTA" in str_v: return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
         if "PIERDE" in str_v: return 'background-color: #FFF9C4; color: #827717; font-weight: bold;'
         return ''
 
-    # Reordenar para que "En Binance" esté visible al principio
-    cols_order = ["Activo", "En Binance", "Sector", "Última Señal", "Estado", "PnL Real", "Veredicto", "Precio", "RSI", "Régimen"]
-    st.dataframe(df_res[cols_order].style.map(color_cells), use_container_width=True, height=600)
+    st.dataframe(df_res.style.map(color_cells), use_container_width=True, height=600)
 else:
-    st.info("👈 Sincronice con KuCoin y nalice lotes para construir la matriz.")
+    st.info("👈 Sincronice perpetuos y analice lotes para operar.")
