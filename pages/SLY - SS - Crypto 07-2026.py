@@ -1,6 +1,3 @@
-
-User 9:12 p.m.
-TE PASARE EL SCRIPT QUE ESTA PERFECTO
 import streamlit as st
 import ccxt
 import pandas as pd
