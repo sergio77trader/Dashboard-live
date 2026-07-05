@@ -221,4 +221,4 @@ if st.session_state["master_results_crypto"]:
     cols_order = ["Activo", "En Binance", "Sector", "Última Señal", "Estado", "PnL Real", "Veredicto", "Precio", "RSI", "Régimen"]
     st.dataframe(df_res[cols_order].style.map(color_cells), use_container_width=True, height=600)
 else:
-    st.info("👈 Sincronice con KuCoin y analic
+    st.info("👈 Sincronice con KuCoin y nalice lotes para construir la matriz.")
