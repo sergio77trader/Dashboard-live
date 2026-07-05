@@ -28,20 +28,20 @@ if "crypto_list" not in st.session_state:
     st.session_state["crypto_list"] = []
 
 # ─────────────────────────────────────────────
-# MAPEO SECTORIAL CRIPTO
+# MAPEO SECTORIAL
 # ─────────────────────────────────────────────
 CRYPTO_SECTORS = {
-    "LEADER": ["BTC/USDT", "ETH/USDT"],
-    "LAYER 1": ["SOL/USDT", "ADA/USDT", "DOT/USDT", "AVAX/USDT", "MATIC/USDT", "NEAR/USDT", "FTM/USDT", "ALGO/USDT"],
-    "DEFI/L2": ["ARB/USDT", "OP/USDT", "LINK/USDT", "UNI/USDT", "AAVE/USDT", "LDO/USDT"],
-    "AI/DEPIN": ["RNDR/USDT", "FET/USDT", "FIL/USDT", "THETA/USDT"],
-    "MEMES": ["DOGE/USDT", "SHIB/USDT", "PEPE/USDT", "BONK/USDT", "FLOKI/USDT"],
-    "EXCHANGE": ["BNB/USDT", "KCS/USDT", "OKB/USDT"]
+    "LEADER": ["BTC", "ETH"],
+    "LAYER 1": ["SOL", "ADA", "DOT", "AVAX", "MATIC", "NEAR", "FTM", "ALGO", "ATOM", "LINK", "SUI", "APT"],
+    "DEFI/L2": ["ARB", "OP", "UNI", "AAVE", "LDO", "MKR", "SNX", "DYDX", "PENDLE"],
+    "AI/DATA": ["RNDR", "FET", "FIL", "THETA", "GRT", "WLD", "ARKM"],
+    "MEMES": ["DOGE", "SHIB", "PEPE", "BONK", "FLOKI", "WIF", "BOME"]
 }
 
-def get_crypto_sector(ticker):
+def get_crypto_sector(symbol):
+    base = symbol.split("/")[0].upper()
     for sector, members in CRYPTO_SECTORS.items():
-        if ticker.upper() in members: return sector
+        if base in members: return sector
     return "ALTCOINS / OTROS"
 
 # ─────────────────────────────────────────────
@@ -50,7 +50,6 @@ def get_crypto_sector(ticker):
 def get_sly_indicators(df):
     try:
         df.columns = [c.capitalize() for c in df.columns]
-        df = df.dropna(subset=['Close'])
         def dema(s, length):
             ema1 = s.ewm(span=length, adjust=False).mean()
             ema2 = ema1.ewm(span=length, adjust=False).mean()
@@ -70,15 +69,15 @@ def get_sly_indicators(df):
     except: return pd.DataFrame()
 
 def find_last_signal(df, bear_longs):
-    if df.empty or len(df) < 2: return None, None, False, "-"
-    last_entry_date, last_entry_px, is_active, verdict = None, None, False, "-"
+    if df.empty or len(df) < 5: return None, None, False, "-"
+    last_signal_date, last_signal_px, is_active, verdict = None, None, False, "-"
     for i in range(1, len(df)):
         authorized = (df['ema52'].iloc[i] > df['ema260'].iloc[i]) or bear_longs
         ha_flip = df['ha_color'].iloc[i] == "Verde" and df['ha_color'].iloc[i-1] == "Rojo"
-        macd_accel = df['hist'].iloc[i] > df['hist'].iloc[i-1]
+        m_accel = df['hist'].iloc[i] > df['hist'].iloc[i-1]
         rsi_ok = df['rsi_smooth'].iloc[i] > df['rsi_smooth'].iloc[i-1] and df['rsi_smooth'].iloc[i] < 50
-        if not is_active and (authorized and ha_flip and macd_accel and rsi_ok):
-            is_active, last_entry_date, last_entry_px = True, df.index[i], df['Close'].iloc[i]
+        if not is_active and (authorized and ha_flip and m_accel and rsi_ok):
+            is_active, last_signal_date, last_signal_px = True, df.index[i], df['Close'].iloc[i]
         elif is_active and (df['ha_color'].iloc[i] == "Rojo" and df['hist'].iloc[i] < df['hist'].iloc[i-1] and df['rsi_smooth'].iloc[i] < df['rsi_smooth'].iloc[i-1]):
             is_active = False
     if is_active:
@@ -86,62 +85,69 @@ def find_last_signal(df, bear_longs):
         if p_h > 0 and c_h <= 0: verdict = "CERRAR OPERACIÓN 🔴"
         elif c_h > p_h: verdict = "MANTENER 🟢"
         else: verdict = "PIERDE FUERZA 🟡"
-    return last_entry_date, last_entry_px, is_active, verdict
+    return last_signal_date, last_signal_px, is_active, verdict
 
 # ─────────────────────────────────────────────
-# FILTRO DE EXCHANGES (KUCOIN FUTURES + BINANCE)
+# FILTRO DE EXCHANGES (FIXED VOLUME LOGIC)
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchanges():
-    # KuCoin Futures para la data de perpetuos, Binance para el filtro de operabilidad
     return ccxt.kucoinfutures({'enableRateLimit': True}), ccxt.binance()
 
 def fetch_filtered_symbols(min_vol):
     try:
         ku, bi = get_exchanges()
-        # 1. Obtener símbolos activos en Binance (Spot/USDT para referencia)
+        # 1. Obtener bases disponibles en Binance (Pares USDT activos)
         b_markets = bi.load_markets()
-        binance_bases = {b_markets[s]['base'] for s in b_markets if '/USDT' in s and b_markets[s]['active']}
+        binance_bases = {m['base'].upper() for s, m in b_markets.items() if m['quote'] == 'USDT' and m['active']}
         
-        # 2. Obtener Perpetuos de KuCoin
+        # 2. Obtener mercados de KuCoin Futures
         k_markets = ku.load_markets()
-        k_tickers = ku.fetch_tickers()
+        # Forzar descarga de tickers para volumen real
+        tickers = ku.fetch_tickers()
         
         valid_symbols = []
         for s, m in k_markets.items():
             # Filtro: Solo perpetuos lineales en USDT
             if m['active'] and m['linear'] and m['quote'] == 'USDT':
-                base = m['base']
+                base = m['base'].upper()
                 # Filtro: Que exista en Binance
                 if base in binance_bases:
-                    # Filtro: Volumen 24h
-                    vol = k_tickers.get(s, {}).get('quoteVolume', 0)
-                    if vol >= min_vol:
+                    # Filtro de Volumen Robusto (KuCoin Futures usa quoteVolume o volValue)
+                    t_data = tickers.get(s, {})
+                    vol = t_data.get('quoteVolume')
+                    if vol is None: vol = t_data.get('info', {}).get('volValue', 0)
+                    
+                    try: vol = float(vol)
+                    except: vol = 0
+                    
+                    if vol >= min_vol and not any(x in s for x in ['UP/', 'DOWN/', '3L', '3S']):
                         valid_symbols.append(s)
         
-        return sorted(valid_symbols)
+        return sorted(list(set(valid_symbols)))
     except Exception as e:
-        st.error(f"Error sincronizando mercados: {e}")
+        st.error(f"Error en sincronización: {e}")
         return []
 
 # ─────────────────────────────────────────────
 # INTERFAZ
 # ─────────────────────────────────────────────
-st.title("🛡️ SLY | CRIPTO DUAL RADAR (4H PERPETUALS)")
+st.title("🛡️ SLY | MASTER DUAL MONITOR 4H")
 
 with st.sidebar:
     st.header("⚙️ Radar Ops")
     vol_filter = st.number_input("Volumen Mín 24h (USDT):", value=5000000, step=1000000)
     
     if st.button("📡 Sincronizar Binance + KuCoin"):
-        st.session_state["crypto_list"] = fetch_filtered_symbols(vol_filter)
+        with st.spinner("Filtrando activos por liquidez y volumen..."):
+            st.session_state["crypto_list"] = fetch_filtered_symbols(vol_filter)
         st.rerun()
 
     if st.session_state["crypto_list"]:
         total = len(st.session_state["crypto_list"])
         st.success(f"Activos operables: {total}")
         lote_size = st.number_input("Tamaño de Lote:", 10, 100, 50)
-        total_lotes = (total // lote_size) + 1
+        total_lotes = (total // lote_size) + (1 if total % lote_size > 0 else 0)
         batch_idx = st.selectbox(f"Lote:", range(total_lotes), format_func=lambda x: f"Lote {x+1}")
         bear_longs = st.checkbox("Habilitar Bear-Longs", value=True)
         
@@ -149,7 +155,6 @@ with st.sidebar:
             ex, _ = get_exchanges()
             subset = st.session_state["crypto_list"][batch_idx*lote_size : (batch_idx+1)*lote_size]
             prog = st.progress(0)
-            
             for i, sym in enumerate(subset):
                 try:
                     prog.progress((i+1)/len(subset), text=f"Analizando: {sym}")
@@ -157,25 +162,27 @@ with st.sidebar:
                     df = pd.DataFrame(raw_data, columns=['time','open','high','low','close','vol'])
                     df['time'] = pd.to_datetime(df['time'], unit='ms')
                     df.set_index('time', inplace=True)
-                    
                     data = get_sly_indicators(df)
                     if data.empty: continue
-                    sig_date, sig_px, vigente, verd = find_last_signal(data, bear_longs)
+                    sig_date, sig_px, active, verd = find_last_signal(data, bear_longs)
                     
-                    pnl_val = f"{((data['Close'].iloc[-1] - sig_px) / sig_px * 100):.2f}%" if (vigente and sig_px) else "-"
+                    pnl_val = f"{((data['Close'].iloc[-1] - sig_px) / sig_px * 100):.2f}%" if (active and sig_px) else "-"
                     
                     st.session_state["master_results_crypto"][sym] = {
                         "Activo": sym.split(":")[0], 
-                        "Sector": get_crypto_sector(sym.split(":")[0]),
-                        "Última Señal": sig_date.strftime('%d/%m %H:%M') if sig_date else "-",
-                        "Estado": "VIGENTE 🟢" if vigente else "CERRADA 🔴",
+                        "Sector": get_crypto_sector(sym),
+                        "Última Señal": sig_date.strftime('%d/%m %H:%M') if sig_date else "No encontrada",
+                        "Estado": "VIGENTE 🟢" if active else "CERRADA 🔴",
                         "PnL Real": pnl_val, "Veredicto": verd,
                         "Precio": f"{data['Close'].iloc[-1]:.4f}", "RSI": round(data['rsi_smooth'].iloc[-1], 1),
                         "Régimen": "ALCISTA" if data['ema52'].iloc[-1] > data['ema260'].iloc[-1] else "BAJISTA"
                     }
-                    time.sleep(0.1)
+                    time.sleep(0.05)
                 except: continue
             st.rerun()
+
+    if st.button("🗑️ Limpiar Memoria"):
+        st.session_state["master_results_crypto"] = {}; st.session_state["crypto_list"] = []; st.rerun()
 
 # ─────────────────────────────────────────────
 # RENDERIZADO
@@ -192,7 +199,7 @@ if st.session_state["master_results_crypto"]:
             with cols[idx % 3]:
                 st.markdown(f"<div class='sector-box'><div class='sector-title'>{row['Sector']}: {len(row['Activo'])}</div><div>{', '.join(row['Activo'])}</div></div>", unsafe_allow_html=True)
     
-    st.subheader("📋 Matriz Cripto 4H Sync")
+    st.subheader("📋 Matriz Cripto 4H Sync (Binance List)")
     df_res = df_full.sort_values(by=["Estado", "Activo"], ascending=[False, True])
     def color_cells(val):
         str_v = str(val)
