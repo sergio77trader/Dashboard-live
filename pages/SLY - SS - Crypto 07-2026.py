@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN INSTITUCIONAL - LIGHT THEME
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY | CRIPTO PERPETUALS")
+st.set_page_config(layout="wide", page_title="SLY | CRIPTO MONITOR 4H")
 
 st.markdown("""
 <style>
@@ -29,26 +29,26 @@ if "master_results_crypto" not in st.session_state:
 # MAPEO SECTORIAL CRIPTO
 # ─────────────────────────────────────────────
 CRYPTO_SECTORS = {
-    "LEADERS": ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"],
-    "LAYER 1": ["BNB/USDT:USDT", "ADA/USDT:USDT", "DOT/USDT:USDT", "AVAX/USDT:USDT", "NEAR/USDT:USDT", "FTM/USDT:USDT"],
-    "DEFI/L2": ["ARB/USDT:USDT", "OP/USDT:USDT", "LINK/USDT:USDT", "UNI/USDT:USDT", "AAVE/USDT:USDT"],
-    "AI & DATA": ["RNDR/USDT:USDT", "FET/USDT:USDT", "FIL/USDT:USDT", "THETA/USDT:USDT"],
-    "MEMES": ["DOGE/USDT:USDT", "SHIB/USDT:USDT", "PEPE/USDT:USDT", "BONK/USDT:USDT", "FLOKI/USDT:USDT"]
+    "LEADER": ["BTC/USDT", "ETH/USDT"],
+    "LAYER 1": ["SOL/USDT", "ADA/USDT", "DOT/USDT", "AVAX/USDT", "MATIC/USDT", "NEAR/USDT", "FTM/USDT", "ALGO/USDT"],
+    "DEFI/L2": ["ARB/USDT", "OP/USDT", "LINK/USDT", "UNI/USDT", "AAVE/USDT", "LDO/USDT"],
+    "AI/DEPIN": ["RNDR/USDT", "FET/USDT", "FIL/USDT", "THETA/USDT"],
+    "MEMES": ["DOGE/USDT", "SHIB/USDT", "PEPE/USDT", "BONK/USDT", "FLOKI/USDT"],
+    "EXCHANGE": ["BNB/USDT", "KCS/USDT", "OKB/USDT"]
 }
 
 def get_crypto_sector(ticker):
     for sector, members in CRYPTO_SECTORS.items():
         if ticker.upper() in members: return sector
-    return "ALTCOINS / PERPS"
+    return "ALTCOINS / OTROS"
 
 # ─────────────────────────────────────────────
-# MOTORES TÉCNICOS SLY (DEMA ZERO-LAG)
+# MOTORES TÉCNICOS SLY (4H)
 # ─────────────────────────────────────────────
 def get_sly_indicators(df):
     try:
-        # OHLCV de KuCoin Futures viene en minúsculas
+        # OHLCV de CCXT viene en minúsculas usualmente
         df.columns = [c.capitalize() for c in df.columns]
-        if 'Vol' in df.columns: df = df.rename(columns={'Vol': 'Volume'})
         df = df.dropna(subset=['Close'])
 
         def dema(s, length):
@@ -79,7 +79,7 @@ def get_sly_indicators(df):
     except: return pd.DataFrame()
 
 def find_last_signal(df, bear_longs):
-    if df.empty or len(df) < 5: return None, None, False, "-"
+    if df.empty or len(df) < 2: return None, None, False, "-"
     last_entry_date, last_entry_px, is_active, verdict = None, None, False, "-"
     
     for i in range(1, len(df)):
@@ -101,48 +101,47 @@ def find_last_signal(df, bear_longs):
     return last_entry_date, last_entry_px, is_active, verdict
 
 # ─────────────────────────────────────────────
-# CONECTIVIDAD KUCOIN FUTURES
+# INTERFAZ Y CONECTIVIDAD KUCOIN
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchange():
-    return ccxt.kucoinfutures({'enableRateLimit': True, 'timeout': 30000})
+    return ccxt.kucoin({'enableRateLimit': True})
 
-def fetch_perpetual_symbols():
+def fetch_symbols():
     try:
         ex = get_exchange()
         markets = ex.load_markets()
-        # Solo USDT Perpetuales Lineales
-        symbols = [s for s in markets if '/USDT:USDT' in s and markets[s]['active']]
-        return sorted(symbols)
+        # Solo pares USDT, activos y no apalancados (evitar BULL/BEAR tokens)
+        symbols = [s for s in markets if '/USDT' in s and markets[s]['active']]
+        # Filtrar stablecoins y tokens apalancados
+        filtered = [s for s in symbols if not any(x in s for x in ['3L', '3S', 'USDC', 'DAI', 'PAX', 'TUSD'])]
+        return sorted(filtered)
     except: return []
 
-# ─────────────────────────────────────────────
-# INTERFAZ
-# ─────────────────────────────────────────────
-st.title("🛡️ SLY | CRIPTO PERPETUAL RADAR 4H")
+st.title("🛡️ SLY | CRIPTO SIGNAL TRACKER 4H")
 
 with st.sidebar:
-    st.header("⚙️ Radar Ops")
+    st.header("⚙️ Configuración")
     
-    if st.button("📡 Sincronizar Perpetuos KuCoin"):
-        st.session_state["perps_list"] = fetch_perpetual_symbols()
+    if st.button("📡 Sincronizar Mercado KuCoin"):
+        st.session_state["crypto_list"] = fetch_symbols()
         st.rerun()
 
-    if "perps_list" in st.session_state:
+    if "crypto_list" in st.session_state:
         lote_size = st.number_input("Tamaño de Lote:", 10, 100, 50)
-        total_lotes = (len(st.session_state["perps_list"]) // lote_size) + 1
+        total_lotes = (len(st.session_state["crypto_list"]) // lote_size) + 1
         batch_idx = st.selectbox(f"Seleccionar Lote:", range(total_lotes), format_func=lambda x: f"Lote {x+1}")
-        bear_longs = st.checkbox("Habilitar Bear-Longs (4H)", value=True)
+        bear_longs = st.checkbox("Habilitar Bear-Longs", value=True)
         
         if st.button("🚀 ACTUALIZAR Y ACUMULAR", type="primary"):
             ex = get_exchange()
-            subset = st.session_state["perps_list"][batch_idx*lote_size : (batch_idx+1)*lote_size]
+            subset = st.session_state["crypto_list"][batch_idx*lote_size : (batch_idx+1)*lote_size]
             prog = st.progress(0)
             
             for i, sym in enumerate(subset):
                 try:
-                    prog.progress((i+1)/len(subset), text=f"Analizando Perpetuo 4H: {sym}")
-                    # Descargamos 1000 velas de 4H para asegurar que la EMA 260 sea sólida
+                    prog.progress((i+1)/len(subset), text=f"Auditando 4H: {sym}")
+                    # Descargamos 1000 velas de 4H para estabilidad total
                     raw_data = ex.fetch_ohlcv(sym, timeframe='4h', limit=1000)
                     df = pd.DataFrame(raw_data, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
                     df['time'] = pd.to_datetime(df['time'], unit='ms')
@@ -152,10 +151,11 @@ with st.sidebar:
                     if data.empty: continue
                     
                     sig_date, sig_px, vigente, verd = find_last_signal(data, bear_longs)
+                    
                     pnl_val = f"{((data['Close'].iloc[-1] - sig_px) / sig_px * 100):.2f}%" if (vigente and sig_px) else "-"
                     
                     st.session_state["master_results_crypto"][sym] = {
-                        "Activo": sym.split(":")[0].replace("/USDT", ""), 
+                        "Activo": sym.replace("/USDT", ""), 
                         "Sector": get_crypto_sector(sym),
                         "Última Señal": sig_date.strftime('%d/%m %H:%M') if sig_date else "-",
                         "Estado": "VIGENTE 🟢" if vigente else "CERRADA 🔴",
@@ -165,7 +165,7 @@ with st.sidebar:
                         "RSI": round(data['rsi_smooth'].iloc[-1], 1),
                         "Régimen": "ALCISTA" if data['ema52'].iloc[-1] > data['ema260'].iloc[-1] else "BAJISTA"
                     }
-                    time.sleep(0.1) # Respetar rate limit
+                    time.sleep(0.1) # Rate limit protection
                 except: continue
             st.rerun()
 
@@ -174,13 +174,13 @@ with st.sidebar:
         st.rerun()
 
 # ─────────────────────────────────────────────
-# RESUMEN SECTORIAL Y RENDERIZADO
+# RESUMEN SECTORIAL
 # ─────────────────────────────────────────────
 if st.session_state["master_results_crypto"]:
     df_full = pd.DataFrame(st.session_state["master_results_crypto"].values())
     df_vigentes = df_full[df_full["Estado"] == "VIGENTE 🟢"]
 
-    st.subheader("📊 RESUMEN DE EXPOSICIÓN (VIGENTES)")
+    st.subheader("📊 RESUMEN DE EXPOSICIÓN CRIPTO (VIGENTES)")
     if not df_vigentes.empty:
         summary = df_vigentes.groupby("Sector")["Activo"].apply(list).reset_index()
         cols = st.columns(3)
@@ -192,8 +192,9 @@ if st.session_state["master_results_crypto"]:
                     <div style='font-size: 0.85em;'>{', '.join(row['Activo'])}</div>
                 </div>
                 """, unsafe_allow_html=True)
-    
-    st.subheader("📋 Matriz Cripto Perpetuos 4H (Acumulada)")
+    else: st.warning("Sin posiciones abiertas en 4H.")
+
+    st.subheader("📋 Matriz de Señales Cripto 4H")
     df_res = df_full.sort_values(by=["Estado", "Activo"], ascending=[False, True])
     
     def color_cells(val):
@@ -205,4 +206,4 @@ if st.session_state["master_results_crypto"]:
 
     st.dataframe(df_res.style.map(color_cells), use_container_width=True, height=600)
 else:
-    st.info("👈 Sincronice perpetuos de KuCoin y analice lotes para visualizar la matriz.")
+    st.info("👈 Sincronice con KuCoin y analice lotes para construir la matriz.")
