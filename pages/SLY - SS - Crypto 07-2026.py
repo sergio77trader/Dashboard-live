@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN INSTITUCIONAL - LIGHT THEME
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY | CRIPTO MONITOR V56")
+st.set_page_config(layout="wide", page_title="SLY | CRIPTO MONITOR 4H")
 
 st.markdown("""
 <style>
@@ -24,33 +24,34 @@ st.markdown("""
 
 if "master_results_crypto" not in st.session_state:
     st.session_state["master_results_crypto"] = {}
+if "crypto_list" not in st.session_state:
+    st.session_state["crypto_list"] = []
 
 # ─────────────────────────────────────────────
-# MAPEO SECTORIAL CRIPTO (BÓVEDA)
+# MAPEO SECTORIAL CRIPTO (NARRATIVAS)
 # ─────────────────────────────────────────────
 CRYPTO_SECTORS = {
     "LEADERS": ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"],
     "LAYER 1": ["BNB/USDT:USDT", "ADA/USDT:USDT", "DOT/USDT:USDT", "AVAX/USDT:USDT", "NEAR/USDT:USDT", "FTM/USDT:USDT", "MATIC/USDT:USDT"],
-    "AI & DATA": ["RNDR/USDT:USDT", "FET/USDT:USDT", "NEAR/USDT:USDT", "GRT/USDT:USDT", "FIL/USDT:USDT"],
+    "AI & DATA": ["RNDR/USDT:USDT", "FET/USDT:USDT", "GRT/USDT:USDT", "FIL/USDT:USDT", "THETA/USDT:USDT"],
     "DEFI/L2": ["ARB/USDT:USDT", "OP/USDT:USDT", "LINK/USDT:USDT", "UNI/USDT:USDT", "AAVE/USDT:USDT", "LDO/USDT:USDT"],
-    "MEME COINS": ["DOGE/USDT:USDT", "SHIB/USDT:USDT", "PEPE/USDT:USDT", "BONK/USDT:USDT", "WIF/USDT:USDT", "FLOKI/USDT:USDT"],
-    "OTHERS": ["XRP/USDT:USDT", "LTC/USDT:USDT", "BCH/USDT:USDT", "TRX/USDT:USDT"]
+    "MEME COINS": ["DOGE/USDT:USDT", "SHIB/USDT:USDT", "PEPE/USDT:USDT", "BONK/USDT:USDT", "WIF/USDT:USDT", "FLOKI/USDT:USDT"]
 }
 
 def get_crypto_sector(ticker):
     for sector, members in CRYPTO_SECTORS.items():
         if ticker.upper() in members: return sector
-    return "ALTCOINS / NEW LISTINGS"
+    return "ALTCOINS / OTROS"
 
 # ─────────────────────────────────────────────
 # MOTORES TÉCNICOS SLY (DEMA ZERO-LAG)
 # ─────────────────────────────────────────────
 def get_sly_indicators(df):
     try:
-        # Normalizar columnas (KuCoin entrega en minúsculas)
+        # Normalizar para CCXT (vienen en minúsculas)
         df.columns = [c.capitalize() for c in df.columns]
-        df = df.dropna(subset=['Close'])
-
+        df = df.rename(columns={'Vol': 'Volume'})
+        
         def dema(s, length):
             ema1 = s.ewm(span=length, adjust=False).mean()
             ema2 = ema1.ewm(span=length, adjust=False).mean()
@@ -79,6 +80,9 @@ def get_sly_indicators(df):
         return df.dropna(subset=['ema260'])
     except: return pd.DataFrame()
 
+# ─────────────────────────────────────────────
+# MÁQUINA DE ESTADOS (RASTREO HISTÓRICO 4H)
+# ─────────────────────────────────────────────
 def find_last_signal(df, bear_longs):
     if df.empty or len(df) < 5: return None, None, False, "-"
     last_entry_date, last_entry_px, is_active, verdict = None, None, False, "-"
@@ -99,6 +103,7 @@ def find_last_signal(df, bear_longs):
         if p_h > 0 and c_h <= 0: verdict = "CERRAR OPERACIÓN 🔴"
         elif c_h > p_h: verdict = "MANTENER 🟢"
         else: verdict = "PIERDE FUERZA 🟡"
+        
     return last_entry_date, last_entry_px, is_active, verdict
 
 # ─────────────────────────────────────────────
@@ -108,34 +113,39 @@ def find_last_signal(df, bear_longs):
 def get_exchange():
     return ccxt.kucoinfutures({'enableRateLimit': True, 'timeout': 30000})
 
-def fetch_perpetual_symbols():
+@st.cache_data(ttl=300)
+def fetch_perpetual_symbols(min_vol):
     try:
         ex = get_exchange()
-        markets = ex.load_markets()
-        # Solo USDT Perpetuales Lineales
-        symbols = [s for s in markets if '/USDT:USDT' in s and markets[s]['active']]
-        return sorted(symbols)
+        tickers = ex.fetch_tickers()
+        # Solo USDT Perpetuales con volumen mínimo
+        valid = [s for s, t in tickers.items() if "/USDT:USDT" in s and t.get("quoteVolume", 0) >= min_vol]
+        return sorted(valid)
     except: return []
 
 # ─────────────────────────────────────────────
-# INTERFAZ
+# INTERFAZ Y CONTROL
 # ─────────────────────────────────────────────
-st.title("🛡️ SLY | CRIPTO PERPETUAL MONITOR")
+st.title("🛡️ SLY | CRIPTO PERPETUAL MONITOR 4H")
 
 with st.sidebar:
     st.header("⚙️ Radar Ops")
+    min_vol = st.number_input("Volumen Mín 24h (USDT):", value=5000000)
     
-    if st.button("📡 Sincronizar Mercado KuCoin"):
-        st.session_state["crypto_list"] = fetch_perpetual_symbols()
+    if st.button("📡 1. SINCRONIZAR MERCADO"):
+        st.session_state["crypto_list"] = fetch_perpetual_symbols(min_vol)
         st.rerun()
 
-    if "crypto_list" in st.session_state:
-        batch_size = st.number_input("Activos por Lote:", 10, 100, 30)
-        total_lotes = (len(st.session_state["crypto_list"]) // batch_size) + 1
-        batch_idx = st.selectbox(f"Lote:", range(total_lotes), format_func=lambda x: f"Lote {x+1}")
-        bear_longs = st.checkbox("Habilitar Bear-Longs (4H)", value=True)
+    if st.session_state["crypto_list"]:
+        total = len(st.session_state["crypto_list"])
+        st.success(f"Activos Líquidos: {total}")
         
-        if st.button("🚀 ACTUALIZAR Y ACUMULAR", type="primary"):
+        batch_size = st.number_input("Acciones por Lote:", 10, 200, 50)
+        total_lotes = (total // batch_size) + 1
+        batch_idx = st.selectbox(f"Lote:", range(total_lotes), format_func=lambda x: f"Lote {x+1}")
+        bear_longs = st.checkbox("Habilitar Bear-Longs", value=True)
+        
+        if st.button("🚀 2. ACTUALIZAR Y ACUMULAR", type="primary"):
             ex = get_exchange()
             subset = st.session_state["crypto_list"][batch_idx*batch_size : (batch_idx+1)*batch_size]
             prog = st.progress(0)
@@ -143,9 +153,9 @@ with st.sidebar:
             for i, sym in enumerate(subset):
                 try:
                     prog.progress((i+1)/len(subset), text=f"Auditando 4H: {sym}")
-                    # Descargamos 1000 velas de 4H para asegurar que la EMA 260 sea sólida
-                    raw_data = ex.fetch_ohlcv(sym, timeframe='4h', limit=1000)
-                    df = pd.DataFrame(raw_data, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
+                    # Descargamos 1000 velas de 4H (~166 días) para estabilidad de EMA260
+                    ohlcv = ex.fetch_ohlcv(sym, timeframe='4h', limit=1000)
+                    df = pd.DataFrame(ohlcv, columns=['time','open','high','low','close','vol'])
                     df['time'] = pd.to_datetime(df['time'], unit='ms')
                     df.set_index('time', inplace=True)
                     
@@ -153,16 +163,14 @@ with st.sidebar:
                     if data.empty: continue
                     
                     sig_date, sig_px, vigente, verd = find_last_signal(data, bear_longs)
-                    pnl_val = f"{((data['Close'].iloc[-1] - sig_px) / sig_px * 100):.2f}%" if (vigente and sig_px) else "-"
+                    pnl_display = f"{((data['Close'].iloc[-1] - sig_px) / sig_px * 100):.2f}%" if (vigente and sig_px) else "-"
                     
                     st.session_state["master_results_crypto"][sym] = {
                         "Activo": sym.split(":")[0].replace("/USDT", ""), 
                         "Sector": get_crypto_sector(sym),
                         "Última Señal": sig_date.strftime('%d/%m %H:%M') if sig_date else "-",
                         "Estado": "VIGENTE 🟢" if vigente else "CERRADA 🔴",
-                        "PnL Real": pnl_val,
-                        "Veredicto": verd,
-                        "Precio": f"{data['Close'].iloc[-1]:.4f}",
+                        "PnL Real": pnl_display, "Veredicto": verd, "Precio": round(data['Close'].iloc[-1], 4),
                         "RSI": round(data['rsi_smooth'].iloc[-1], 1),
                         "Régimen": "ALCISTA" if data['ema52'].iloc[-1] > data['ema260'].iloc[-1] else "BAJISTA"
                     }
@@ -171,11 +179,10 @@ with st.sidebar:
             st.rerun()
 
     if st.button("🗑️ Limpiar Memoria"):
-        st.session_state["master_results_crypto"] = {}
-        st.rerun()
+        st.session_state["master_results_crypto"] = {}; st.session_state["crypto_list"] = []; st.rerun()
 
 # ─────────────────────────────────────────────
-# RENDERIZADO ACUMULATIVO
+# RESUMEN SECTORIAL Y RENDERIZADO
 # ─────────────────────────────────────────────
 if st.session_state["master_results_crypto"]:
     df_full = pd.DataFrame(st.session_state["master_results_crypto"].values())
@@ -187,12 +194,7 @@ if st.session_state["master_results_crypto"]:
         cols = st.columns(3)
         for idx, row in summary.iterrows():
             with cols[idx % 3]:
-                st.markdown(f"""
-                <div class="sector-box">
-                    <div class="sector-title">{row['Sector']}: {len(row['Activo'])} Activos</div>
-                    <div style='font-size: 0.85em;'>{', '.join(row['Activo'])}</div>
-                </div>
-                """, unsafe_allow_html=True)
+                st.markdown(f"<div class='sector-box'><div class='sector-title'>{row['Sector']}: {len(row['Activo'])}</div><div style='font-size: 0.85em;'>{', '.join(row['Activo'])}</div></div>", unsafe_allow_html=True)
     else: st.warning("Sin posiciones abiertas en 4H.")
 
     st.subheader("📋 Matriz Cripto Perpetuos")
@@ -207,4 +209,4 @@ if st.session_state["master_results_crypto"]:
 
     st.dataframe(df_res.style.map(color_cells), use_container_width=True, height=600)
 else:
-    st.info("👈 Sincronice con KuCoin y analice lotes para construir la matriz.")
+    st.info("Sincronice el mercado y actualice lotes para iniciar.")
