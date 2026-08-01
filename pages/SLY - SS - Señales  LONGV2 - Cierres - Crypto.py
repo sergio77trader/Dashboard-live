@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 # ─────────────────────────────────────────────
 # CONFIGURACIÓN INSTITUCIONAL - LIGHT THEME
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY | CRIPTO MONITOR 4H")
+st.set_page_config(layout="wide", page_title="SLY | CRIPTO MULTI-TF MONITOR")
 
 st.markdown("""
 <style>
@@ -24,6 +24,16 @@ st.markdown("""
 
 if "master_results_crypto" not in st.session_state:
     st.session_state["master_results_crypto"] = {}
+
+# Mapeo de temporalidades para CCXT
+TF_OPTIONS = {
+    "30 MIN": "30m",
+    "1 HS": "1h",
+    "4 HS": "4h",
+    "1 DIA": "1d",
+    "1 SEMANA": "1w",
+    "1 MES": "1M"
+}
 
 # ─────────────────────────────────────────────
 # MAPEO SECTORIAL CRIPTO
@@ -43,47 +53,35 @@ def get_crypto_sector(ticker):
     return "ALTCOINS / OTROS"
 
 # ─────────────────────────────────────────────
-# MOTORES TÉCNICOS SLY (4H)
+# MOTORES TÉCNICOS SLY
 # ─────────────────────────────────────────────
 def get_sly_indicators(df):
     try:
-        # OHLCV de CCXT viene en minúsculas
         df.columns = [c.capitalize() for c in df.columns]
         df = df.dropna(subset=['Close'])
 
-        # Función DEMA (Double Exponential Moving Average) para Zero-Lag
         def dema(s, length):
             ema1 = s.ewm(span=length, adjust=False).mean()
             ema2 = ema1.ewm(span=length, adjust=False).mean()
             return 2 * ema1 - ema2
 
-        # MACD Zero-Lag
         df['macd_line'] = dema(df['Close'], 12) - dema(df['Close'], 26)
         df['signal_line'] = df['macd_line'].ewm(span=9, adjust=False).mean()
         df['hist'] = df['macd_line'] - df['signal_line']
-        
-        # RSI PRO DEMA (Lógica del Segundo Script)
-        df['rsi_raw'] = ta.rsi(df['Close'], length=14)
-        df['rsi_smooth'] = dema(df['rsi_raw'].fillna(50), 5)
-
-        # Heikin Ashi Recursivo
+        df['rsi_smooth'] = dema(ta.rsi(df['Close'], length=14).fillna(50), 5)
         ha_c = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
         ha_o = np.zeros(len(df))
         ha_o[0] = (df['Open'].iloc[0] + df['Close'].iloc[0]) / 2
         for i in range(1, len(df)): ha_o[i] = (ha_o[i-1] + ha_c.iloc[i-1]) / 2
         df['ha_color'] = np.where(ha_c > ha_o, "Verde", "Rojo")
-        
-        # EMAs de Régimen
         df['ema52'] = ta.ema(df['Close'], length=52)
         df['ema260'] = ta.ema(df['Close'], length=260)
-        
         return df.dropna(subset=['ema260'])
     except: return pd.DataFrame()
 
 def find_last_signal(df, bear_longs):
     if df.empty or len(df) < 2: return None, None, False, "-"
     last_entry_date, last_entry_px, is_active, verdict = None, None, False, "-"
-    
     for i in range(1, len(df)):
         authorized = (df['ema52'].iloc[i] > df['ema260'].iloc[i]) or bear_longs
         ha_flip = df['ha_color'].iloc[i] == "Verde" and df['ha_color'].iloc[i-1] == "Rojo"
@@ -118,15 +116,22 @@ def fetch_symbols():
         return sorted(filtered)
     except: return []
 
-st.title("🛡️ SLY | CRIPTO SIGNAL TRACKER 4H")
+st.title(f"🛡️ SLY | CRIPTO SIGNAL TRACKER")
 
 with st.sidebar:
-    st.header("⚙️ Radar Ops")
+    st.header("⚙️ Configuración")
+    
+    # NUEVO: Selector de Temporalidad
+    st.subheader("1. Parámetros de Tiempo")
+    selected_tf_label = st.selectbox("Seleccionar Temporalidad:", list(TF_OPTIONS.keys()), index=2) # Default 4H
+    selected_tf_code = TF_OPTIONS[selected_tf_label]
+    
     if st.button("📡 Sincronizar Mercado KuCoin"):
         st.session_state["crypto_list"] = fetch_symbols()
         st.rerun()
 
     if "crypto_list" in st.session_state:
+        st.subheader("2. Ejecución")
         lote_size = st.number_input("Tamaño de Lote:", 10, 100, 50)
         total_lotes = (len(st.session_state["crypto_list"]) // lote_size) + 1
         batch_idx = st.selectbox(f"Seleccionar Lote:", range(total_lotes), format_func=lambda x: f"Lote {x+1}")
@@ -139,8 +144,9 @@ with st.sidebar:
             
             for i, sym in enumerate(subset):
                 try:
-                    prog.progress((i+1)/len(subset), text=f"Auditando: {sym}")
-                    raw_data = ex.fetch_ohlcv(sym, timeframe='4h', limit=1000)
+                    prog.progress((i+1)/len(subset), text=f"Auditando {selected_tf_label}: {sym}")
+                    # Descargamos 1000 velas para estabilidad de indicadores
+                    raw_data = ex.fetch_ohlcv(sym, timeframe=selected_tf_code, limit=1000)
                     df = pd.DataFrame(raw_data, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
                     df['time'] = pd.to_datetime(df['time'], unit='ms')
                     df.set_index('time', inplace=True)
@@ -149,26 +155,25 @@ with st.sidebar:
                     if data.empty: continue
                     
                     sig_date, sig_px, vigente, verd = find_last_signal(data, bear_longs)
-                    
                     pnl_val = f"{((data['Close'].iloc[-1] - sig_px) / sig_px * 100):.2f}%" if (vigente and sig_px) else "-"
-                    
-                    # LÓGICA RSI PRO ZONE
                     last_rsi = data['rsi_smooth'].iloc[-1]
                     rsi_zone = "SOBRE 50 🟢" if last_rsi > 50 else "BAJO 50 🔴"
                     
+                    # Almacenar con el timeframe en la clave para permitir acumular distintos TFs si se desea
                     st.session_state["master_results_crypto"][sym] = {
                         "Activo": sym.replace("/USDT", ""), 
+                        "Temporalidad": selected_tf_label,
                         "Sector": get_crypto_sector(sym),
                         "Última Señal": sig_date.strftime('%d/%m %H:%M') if sig_date else "-",
                         "Estado": "VIGENTE 🟢" if vigente else "CERRADA 🔴",
                         "PnL Real": pnl_val,
-                        "Zona RSI": rsi_zone, # NUEVA COLUMNA
+                        "Zona RSI": rsi_zone,
                         "Veredicto": verd,
                         "Precio": f"{data['Close'].iloc[-1]:.4f}",
                         "RSI": round(last_rsi, 1),
                         "Régimen": "ALCISTA" if data['ema52'].iloc[-1] > data['ema260'].iloc[-1] else "BAJISTA"
                     }
-                    time.sleep(0.1)
+                    time.sleep(0.05)
                 except: continue
             st.rerun()
 
@@ -183,15 +188,21 @@ if st.session_state["master_results_crypto"]:
     df_full = pd.DataFrame(st.session_state["master_results_crypto"].values())
     df_vigentes = df_full[df_full["Estado"] == "VIGENTE 🟢"]
 
-    st.subheader("📊 RESUMEN DE EXPOSICIÓN CRIPTO (VIGENTES)")
+    st.subheader(f"📊 RESUMEN DE EXPOSICIÓN (VIGENTES)")
     if not df_vigentes.empty:
         summary = df_vigentes.groupby("Sector")["Activo"].apply(list).reset_index()
         cols = st.columns(3)
         for idx, row in summary.iterrows():
             with cols[idx % 3]:
-                st.markdown(f"<div class='sector-box'><div class='sector-title'>{row['Sector']}: {len(row['Activo'])}</div><div>{', '.join(row['Activo'])}</div></div>", unsafe_allow_html=True)
-    
-    st.subheader("📋 Matriz de Señales Cripto 4H")
+                st.markdown(f"""
+                <div class="sector-box">
+                    <div class="sector-title">{row['Sector']}: {len(row['Activo'])}</div>
+                    <div style='font-size: 0.85em;'>{', '.join(row['Activo'])}</div>
+                </div>
+                """, unsafe_allow_html=True)
+    else: st.warning("Sin posiciones abiertas en la temporalidad analizada.")
+
+    st.subheader(f"📋 Matriz de Señales (Filtro Actual: {selected_tf_label})")
     df_res = df_full.sort_values(by=["Estado", "Activo"], ascending=[False, True])
     
     def color_cells(val):
@@ -203,4 +214,4 @@ if st.session_state["master_results_crypto"]:
 
     st.dataframe(df_res.style.map(color_cells), use_container_width=True, height=600)
 else:
-    st.info("👈 Sincronice con KuCoin y analice lotes para construir la matriz.")
+    st.info("👈 Seleccione temporalidad, sincronice mercado y analice lotes.")
