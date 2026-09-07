@@ -47,20 +47,55 @@ if check_password():
             font-size: 1.2em;
             margin-top: 10px;
         }
+        .math-box {
+            background-color: #FFFDE7;
+            padding: 10px;
+            border-radius: 5px;
+            border: 1px solid #FBC02D;
+            font-family: 'Courier New', monospace;
+        }
     </style>
     """, unsafe_allow_html=True)
 
     # ─────────────────────────────────────────────
-    # MOTOR DE DATOS ACTUALIZADO (07/09/2026)
+    # MOTOR DE CAPTURA DE DATOS (EL DETECTOR DE LA VERDAD)
     # ─────────────────────────────────────────────
+    @st.cache_data(ttl=60)
+    def fetch_market_prices():
+        try:
+            # Descargamos GGAL local y ADR
+            data = yf.download(["GGAL.BA", "GGAL"], period="1d", progress=False)['Close']
+            local = data["GGAL.BA"].iloc[-1]
+            adr = data["GGAL"].iloc[-1]
+            return local, adr
+        except:
+            return 6930.0, 44.36 # Valores que me pasaste como respaldo
+
+    st.title("🏛️ SLY | MONETARY PHYSICS ENGINE")
+    st.write(f"**AUDITORÍA TÉCNICA AL:** 07/09/2026")
+
+    l_px, a_px = fetch_market_prices()
+
     with st.sidebar:
-        st.header("⚙️ Radar Ops Sep-2026")
-        # Valores actualizados a la realidad de SEP-2026
-        ccl_mkt = st.number_input("Dólar CCL Mercado ($):", value=1487.50)
-        riesgo_pais = st.number_input("Riesgo País (bps):", value=490)
+        st.header("⚙️ Entradas de Mercado")
+        st.subheader("Cálculo de Dólar Implícito")
+        # El usuario puede corregir los valores si el API tiene delay
+        local_in = st.number_input("GGAL Local (ARS):", value=float(l_px), step=1.0)
+        adr_in = st.number_input("GGAL ADR (USD):", value=float(a_px), step=0.01)
         
+        # El ratio es 10 a 1 para GGAL
+        ccl_calculado = (local_in * 10) / adr_in
+        
+        st.markdown(f"""
+        <div class='math-box'>
+        <b>Cálculo CCL:</b><br>
+        ({local_in} * 10) / {adr_in} = <br>
+        <b>${ccl_calculado:.2f}</b>
+        </div>
+        """, unsafe_allow_html=True)
+
         st.divider()
-        st.subheader("Tasas de Interés 2026")
+        riesgo_pais = st.number_input("Riesgo País (bps):", value=490)
         tasa_caucion = st.number_input("Tasa Caución (TNA %):", value=19.10)
         tasa_lecap = st.number_input("Tasa Letra (TEM %):", value=1.95)
         
@@ -68,30 +103,33 @@ if check_password():
             st.session_state["authenticated"] = False
             st.rerun()
 
-    # LÓGICA MATEMÁTICA SEP-2026
-    ccl_teorico = ccl_mkt * (1 + riesgo_pais / 10000)
-    press_ratio = (ccl_mkt / ccl_teorico - 1) * 100
+    # ─────────────────────────────────────────────
+    # LÓGICA DE FÍSICA MONETARIA
+    # ─────────────────────────────────────────────
+    
+    # 1. Dólar de Equilibrio (Ajustado por Riesgo)
+    ccl_teorico = ccl_calculado * (1 + riesgo_pais / 10000)
+    press_ratio = (ccl_calculado / ccl_teorico - 1) * 100
+
+    # 2. Arbitraje de Tasas
     tem_caucion = (tasa_caucion / 365) * 30
     diff_tasa = tasa_lecap - tem_caucion
 
     # ─────────────────────────────────────────────
-    # VISUALIZACIÓN DE DIMENSIONES
+    # VISUALIZACIÓN
     # ─────────────────────────────────────────────
-    now = datetime.datetime.now()
-    st.title("🏛️ SLY | MONETARY PHYSICS ENGINE")
-    st.write(f"**ESTADO DE LIQUIDEZ AL:** 07/09/2026")
-
     col1, col2 = st.columns(2)
 
     with col1:
         st.markdown('<div class="metric-card">', unsafe_allow_html=True)
         st.write("🟢 **DIMENSIÓN 1: PRECIO DEL DÓLAR**")
+        st.metric("CCL de Mercado", f"${ccl_calculado:.2f}")
         st.metric("Brecha vs Dólar de Equilibrio", f"{press_ratio:.2f}%")
         
         if press_ratio < -4:
-            st.success("VERDICTO: DÓLAR EN DESCUENTO (COMPRA)")
+            st.success("VERDICTO: DÓLAR SUBVALUADO (BARATO)")
         elif press_ratio > 1:
-            st.error("VERDICTO: DÓLAR SOBREVALUADO")
+            st.error("VERDICTO: DÓLAR SOBREVALUADO (CARO)")
         else:
             st.warning("VERDICTO: DÓLAR EN EQUILIBRIO")
         st.markdown('</div>', unsafe_allow_html=True)
@@ -99,42 +137,42 @@ if check_password():
     with col2:
         st.markdown('<div class="metric-card">', unsafe_allow_html=True)
         st.write("💰 **DIMENSIÓN 2: COSTO DE OPORTUNIDAD**")
-        st.metric("Diferencial TEM (Letra vs Caución)", f"{diff_tasa:.2f}%")
+        st.metric("Tasa Caución (TEM)", f"{tem_caucion:.2f}%")
+        st.metric("Diferencial Letra vs Caución", f"{diff_tasa:.2f}%")
         
         if diff_tasa > 0.35:
-            st.success("VERDICTO: EFICIENCIA EN LETRAS (CARRY)")
+            st.success("VERDICTO: EFICIENCIA EN LETRAS")
         else:
-            st.info("VERDICTO: EFICIENCIA EN CAUCIÓN (LIQUIDEZ)")
+            st.info("VERDICTO: EFICIENCIA EN CAUCIÓN")
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ─────────────────────────────────────────────
-    # AUDITORÍA DE LÓGICA (PARA TU VERIFICACIÓN)
+    # AUDITORÍA DE LÓGICA (DESGLOSE PASO A PASO)
     # ─────────────────────────────────────────────
     st.divider()
     st.subheader("🕵️ Auditoría de Lógica (Verificación Manual)")
 
     with st.expander("Ver fórmulas y desgloses de este análisis"):
         st.markdown(f"""
-        ### 1. El Dólar de Equilibrio
-        En el escenario de 2026, con Riesgo País de **{riesgo_pais}**, el dólar tiene menos "premio por miedo" que en 2024.
-        *   **Fórmula:** `{ccl_mkt} * (1 + {riesgo_pais}/10.000)`
-        *   **Cálculo actual:** **${ccl_teorico:,.2f}**
-        *   **Estado:** El precio actual (${ccl_mkt}) está un **{abs(press_ratio):.2f}%** por debajo de su valor teórico. Hay un colchón de seguridad.
+        ### 1. El Dólar de Equilibrio (Ajuste por Riesgo)
+        El sistema calcula cuánto "debería" valer el dólar según el miedo del mercado.
+        *   **Fórmula:** `Dólar Mercado * (1 + (Riesgo País / 10.000))`
+        *   **Tu Cálculo:** `{ccl_calculado:.2f} * (1 + {riesgo_pais/10000})` = **${ccl_teorico:.2f}**
+        *   **Análisis:** El precio real (${ccl_calculado:.2f}) está un **{abs(press_ratio):.2f}%** por debajo del equilibrio.
 
-        ### 2. El Arbitraje de Tasa
+        ### 2. El Arbitraje de Tasa (Normalización)
         *   **TEM Caución:** `({tasa_caucion}% / 365 * 30)` = **{tem_caucion:.2f}%**.
         *   **TEM Letra:** **{tasa_lecap:.2f}%**.
         *   **Spread:** **{diff_tasa:.2f}%**. 
-        *   **Interpretación:** La diferencia es menor a 0.40%, lo que indica que no hay un incentivo masivo para inmovilizar capital en letras; la caución es eficiente por su liquidez.
         """)
 
     # ─────────────────────────────────────────────
-    # CONCLUSIÓN EJECUTIVA
+    # ORDEN EJECUTIVA
     # ─────────────────────────────────────────────
     st.divider()
     if press_ratio < -4:
-        msg = "ORDEN: 75% RENTA VARIABLE (CEDEAR/BTC) / 25% CAUCIÓN. El dólar está barato para el nivel de riesgo país."
+        msg = f"ORDEN: 80% RENTA VARIABLE (CEDEAR/BTC). El dólar de ${ccl_calculado:.2f} es barato para un riesgo de {riesgo_pais} bps."
         st.markdown(f'<div class="verdict-box" style="background-color:#C8E6C9; color:#1B5E20;">{msg}</div>', unsafe_allow_html=True)
     else:
-        msg = "ORDEN: POSICIÓN NEUTRAL (50/50). Estabilidad de flujos. Operar según señales técnicas de la Matrix."
+        msg = "ORDEN: POSICIÓN NEUTRAL (50/50). Esperar confirmación en la Matrix de Señales."
         st.markdown(f'<div class="verdict-box" style="background-color:#E3F2FD; color:#0D47A1;">{msg}</div>', unsafe_allow_html=True)
