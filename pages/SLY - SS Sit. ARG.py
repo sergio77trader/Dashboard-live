@@ -25,7 +25,7 @@ def check_password():
     return True
 
 if check_password():
-    st.set_page_config(layout="wide", page_title="SLY | MONETARY ENGINE 2026")
+    st.set_page_config(layout="wide", page_title="SLY | MONETARY ENGINE")
 
     st.markdown("""
     <style>
@@ -47,55 +47,55 @@ if check_password():
             font-size: 1.2em;
             margin-top: 10px;
         }
-        .math-box {
-            background-color: #FFFDE7;
-            padding: 10px;
-            border-radius: 5px;
-            border: 1px solid #FBC02D;
-            font-family: 'Courier New', monospace;
-        }
+        .status-tag { padding: 5px 10px; border-radius: 4px; font-size: 0.8em; font-weight: bold; }
     </style>
     """, unsafe_allow_html=True)
 
     # ─────────────────────────────────────────────
-    # MOTOR DE CAPTURA DE DATOS (EL DETECTOR DE LA VERDAD)
+    # MOTOR DE CAPTURA DE DATOS (ESTRICTO)
     # ─────────────────────────────────────────────
-    @st.cache_data(ttl=60)
-    def fetch_market_prices():
+    def safe_get_price(ticker):
+        """Intenta obtener el precio, si falla devuelve 0.0 para validación posterior"""
         try:
-            # Descargamos GGAL local y ADR
-            data = yf.download(["GGAL.BA", "GGAL"], period="1d", progress=False)['Close']
-            local = data["GGAL.BA"].iloc[-1]
-            adr = data["GGAL"].iloc[-1]
-            return local, adr
+            df = yf.download(ticker, period="5d", progress=False)
+            if not df.empty:
+                val = df['Close'].iloc[-1]
+                if isinstance(val, pd.Series): val = val.iloc[0]
+                return float(val)
         except:
-            return 6930.0, 44.36 # Valores que me pasaste como respaldo
+            pass
+        return 0.0
 
+    # ─────────────────────────────────────────────
+    # INTERFAZ Y ENTRADA DE DATOS
+    # ─────────────────────────────────────────────
     st.title("🏛️ SLY | MONETARY PHYSICS ENGINE")
-    st.write(f"**AUDITORÍA TÉCNICA AL:** 07/09/2026")
-
-    l_px, a_px = fetch_market_prices()
-
+    
     with st.sidebar:
         st.header("⚙️ Entradas de Mercado")
-        st.subheader("Cálculo de Dólar Implícito")
-        # El usuario puede corregir los valores si el API tiene delay
-        local_in = st.number_input("GGAL Local (ARS):", value=float(l_px), step=1.0)
-        adr_in = st.number_input("GGAL ADR (USD):", value=float(a_px), step=0.01)
         
-        # El ratio es 10 a 1 para GGAL
-        ccl_calculado = (local_in * 10) / adr_in
+        # Intentamos obtener data en vivo
+        with st.spinner("Sincronizando con Wall Street..."):
+            live_local = safe_get_price("GGAL.BA")
+            live_adr = safe_get_price("GGAL")
         
-        st.markdown(f"""
-        <div class='math-box'>
-        <b>Cálculo CCL:</b><br>
-        ({local_in} * 10) / {adr_in} = <br>
-        <b>${ccl_calculado:.2f}</b>
-        </div>
-        """, unsafe_allow_html=True)
+        # VALIDACIÓN: Si la data es 0.0 o NaN, usamos tus últimos datos conocidos como default
+        default_local = live_local if (live_local > 0 and not np.isnan(live_local)) else 6930.0
+        default_adr = live_adr if (live_adr > 0 and not np.isnan(live_adr)) else 44.36
+        
+        # Etiquetas de estado
+        if live_local > 0 and live_adr > 0:
+            st.markdown('<span class="status-tag" style="background-color:#C8E6C9; color:#1B5E20;">🟢 CONEXIÓN EN VIVO</span>', unsafe_allow_html=True)
+        else:
+            st.markdown('<span class="status-tag" style="background-color:#FFCDD2; color:#B71C1C;">🔴 MODO MANUAL (API BLOCKED)</span>', unsafe_allow_html=True)
 
-        st.divider()
+        # INPUTS (Si la API falla, el usuario tiene el control total)
+        local_in = st.number_input("Precio GGAL Local ($):", value=default_local, step=1.0)
+        adr_in = st.number_input("Precio GGAL ADR (USD):", value=default_adr, step=0.01)
         riesgo_pais = st.number_input("Riesgo País (bps):", value=490)
+        
+        st.divider()
+        st.subheader("Tasas de Interés")
         tasa_caucion = st.number_input("Tasa Caución (TNA %):", value=19.10)
         tasa_lecap = st.number_input("Tasa Letra (TEM %):", value=1.95)
         
@@ -104,32 +104,38 @@ if check_password():
             st.rerun()
 
     # ─────────────────────────────────────────────
-    # LÓGICA DE FÍSICA MONETARIA
+    # LÓGICA DE FÍSICA MONETARIA (PROHIBIDO EL NAN)
     # ─────────────────────────────────────────────
+    # Forzamos que los valores sean floats válidos
+    local_val = float(local_in) if local_in > 0 else 6930.0
+    adr_val = float(adr_in) if adr_in > 0 else 44.36
     
-    # 1. Dólar de Equilibrio (Ajustado por Riesgo)
-    ccl_teorico = ccl_calculado * (1 + riesgo_pais / 10000)
+    # 1. Cálculo de Dólar Implícito
+    ccl_calculado = (local_val * 10) / adr_val
+    
+    # 2. Dólar de Equilibrio (Ajustado por Riesgo)
+    ccl_teorico = ccl_calculado * (1 + (riesgo_pais / 10000))
     press_ratio = (ccl_calculado / ccl_teorico - 1) * 100
 
-    # 2. Arbitraje de Tasas
+    # 3. Arbitraje de Tasas
     tem_caucion = (tasa_caucion / 365) * 30
     diff_tasa = tasa_lecap - tem_caucion
 
     # ─────────────────────────────────────────────
-    # VISUALIZACIÓN
+    # VISUALIZACIÓN DE DIMENSIONES
     # ─────────────────────────────────────────────
     col1, col2 = st.columns(2)
 
     with col1:
         st.markdown('<div class="metric-card">', unsafe_allow_html=True)
         st.write("🟢 **DIMENSIÓN 1: PRECIO DEL DÓLAR**")
-        st.metric("CCL de Mercado", f"${ccl_calculado:.2f}")
-        st.metric("Brecha vs Dólar de Equilibrio", f"{press_ratio:.2f}%")
+        st.metric("Dólar CCL Calculado", f"${ccl_calculado:,.2f}")
+        st.metric("Brecha vs Equilibrio", f"{press_ratio:.2f}%")
         
         if press_ratio < -4:
-            st.success("VERDICTO: DÓLAR SUBVALUADO (BARATO)")
+            st.success("VERDICTO: DÓLAR EN DESCUENTO (BARATO)")
         elif press_ratio > 1:
-            st.error("VERDICTO: DÓLAR SOBREVALUADO (CARO)")
+            st.error("VERDICTO: DÓLAR SOBREVALUADO")
         else:
             st.warning("VERDICTO: DÓLAR EN EQUILIBRIO")
         st.markdown('</div>', unsafe_allow_html=True)
@@ -147,23 +153,15 @@ if check_password():
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ─────────────────────────────────────────────
-    # AUDITORÍA DE LÓGICA (DESGLOSE PASO A PASO)
+    # AUDITORÍA DE LÓGICA (DESGLOSE)
     # ─────────────────────────────────────────────
     st.divider()
     st.subheader("🕵️ Auditoría de Lógica (Verificación Manual)")
-
-    with st.expander("Ver fórmulas y desgloses de este análisis"):
+    with st.expander("Ver fórmulas del sistema"):
         st.markdown(f"""
-        ### 1. El Dólar de Equilibrio (Ajuste por Riesgo)
-        El sistema calcula cuánto "debería" valer el dólar según el miedo del mercado.
-        *   **Fórmula:** `Dólar Mercado * (1 + (Riesgo País / 10.000))`
-        *   **Tu Cálculo:** `{ccl_calculado:.2f} * (1 + {riesgo_pais/10000})` = **${ccl_teorico:.2f}**
-        *   **Análisis:** El precio real (${ccl_calculado:.2f}) está un **{abs(press_ratio):.2f}%** por debajo del equilibrio.
-
-        ### 2. El Arbitraje de Tasa (Normalización)
-        *   **TEM Caución:** `({tasa_caucion}% / 365 * 30)` = **{tem_caucion:.2f}%**.
-        *   **TEM Letra:** **{tasa_lecap:.2f}%**.
-        *   **Spread:** **{diff_tasa:.2f}%**. 
+        1. **Dólar Implícito:** `({local_val} * 10) / {adr_val}` = **${ccl_calculado:,.2f}**
+        2. **Dólar de Equilibrio:** `${ccl_calculado:,.2f} * (1 + {riesgo_pais}/10.000)` = **${ccl_teorico:,.2f}**
+        3. **Rendimiento Mensual:** `{tasa_caucion}% / 365 * 30` = **{tem_caucion:.2f}%**
         """)
 
     # ─────────────────────────────────────────────
@@ -171,8 +169,11 @@ if check_password():
     # ─────────────────────────────────────────────
     st.divider()
     if press_ratio < -4:
-        msg = f"ORDEN: 80% RENTA VARIABLE (CEDEAR/BTC). El dólar de ${ccl_calculado:.2f} es barato para un riesgo de {riesgo_pais} bps."
+        msg = f"ORDEN: 80% RENTA VARIABLE (CEDEAR/BTC). El dólar está barato para un riesgo de {riesgo_pais} bps."
         st.markdown(f'<div class="verdict-box" style="background-color:#C8E6C9; color:#1B5E20;">{msg}</div>', unsafe_allow_html=True)
+    elif press_ratio > 0 and diff_tasa > 0.4:
+        msg = "ORDEN: 20% RENTA VARIABLE / 80% LETRAS (LECAP). Capturar tasa real y proteger capital."
+        st.markdown(f'<div class="verdict-box" style="background-color:#FFF9C4; color:#827717;">{msg}</div>', unsafe_allow_html=True)
     else:
-        msg = "ORDEN: POSICIÓN NEUTRAL (50/50). Esperar confirmación en la Matrix de Señales."
+        msg = "ORDEN: POSICIÓN NEUTRAL (50/50). Esperar señales claras en la Matrix Técnica."
         st.markdown(f'<div class="verdict-box" style="background-color:#E3F2FD; color:#0D47A1;">{msg}</div>', unsafe_allow_html=True)
