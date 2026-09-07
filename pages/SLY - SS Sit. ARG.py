@@ -89,3 +89,24 @@ elif press_ratio > 0 and diff_tasa > 0.5:
     st.warning("ORDEN: 20% CEDEARS / 80% LECAPS. El dólar está caro. Capturar la tasa real de las letras mientras el CCL lateraliza.")
 else:
     st.info("ORDEN: 50% CEDEARS / 50% FONDOS T+1. Incertidumbre en el flujo. Mantener posición neutral equilibrada.")
+    # (Añadir este bloque al final del script anterior)
+
+st.divider()
+st.subheader("🕵️ Auditoría de Lógica (Verificación Manual)")
+
+with st.expander("Ver fórmulas y cálculos del sistema"):
+    st.write(f"""
+    1. **Cálculo de Dólar Teórico:** 
+       - El sistema toma el CCL de ${ccl_mkt} y le suma la prima por Riesgo País ({riesgo_pais} bps).
+       - Resultado: **${ccl_ajustado:,.2f}**. 
+       - *Si el mercado está debajo de este valor, el dólar tiene presión alcista oculta.*
+
+    2. **Cálculo de Tasa Mensual (TEM):**
+       - TNA Caución {tasa_caucion}% / 365 * 30 = **{tem_caucion:.2f}%**.
+       - Comparación vs Lecap ({tasa_lecap}%): Diferencia de **{diff_tasa:.2f}%**.
+       - *Si la diferencia es > 0.5%, la Caución es ineficiente.*
+
+    3. **Confluencia Final:**
+       - Situación Dólar: {'BARATO' if press_ratio < -5 else 'CARO/TENSO'}
+       - Situación Tasa: {'LECAP GANA' if diff_tasa > 0.5 else 'CAUCIÓN/FONDOS OK'}
+    """)
