@@ -1,14 +1,15 @@
+
+```python
 import streamlit as st
 import ccxt
 import pandas as pd
 import pandas_ta as ta
 import numpy as np
 import time
-from datetime import datetime
 
-# ─────────────────────────────────────────────
+# ============================================================
 # CONFIGURACIÓN
-# ─────────────────────────────────────────────
+# ============================================================
 
 st.set_page_config(
     layout="wide",
@@ -17,85 +18,82 @@ st.set_page_config(
 
 st.markdown("""
 <style>
-    .stApp {
-        background-color: #FFFFFF;
-        color: #1C1E21;
-    }
+.stApp {
+    background-color: #FFFFFF;
+    color: #1C1E21;
+}
 
-    .stDataFrame {
-        font-size: 11px;
-        font-family: 'Roboto Mono', monospace;
-    }
+.stDataFrame {
+    font-size: 11px;
+    font-family: 'Roboto Mono', monospace;
+}
 
-    h1 {
-        color: #E65100;
-        font-weight: 800;
-        border-bottom: 3px solid #E65100;
-    }
+h1 {
+    color: #E65100;
+    font-weight: 800;
+    border-bottom: 3px solid #E65100;
+}
 
-    .stProgress > div > div > div > div {
-        background-color: #E65100;
-    }
+.stProgress > div > div > div > div {
+    background-color: #E65100;
+}
 
-    .sector-box {
-        background-color: #FFF3E0;
-        padding: 15px;
-        border-radius: 8px;
-        border-left: 5px solid #E64A19;
-        margin-bottom: 10px;
-        box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
-    }
+.sector-box {
+    background-color: #FFF3E0;
+    padding: 15px;
+    border-radius: 8px;
+    border-left: 5px solid #E64A19;
+    margin-bottom: 10px;
+    box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
+}
 
-    .sector-title {
-        font-weight: bold;
-        color: #BF360C;
-        font-size: 1.1em;
-    }
+.sector-title {
+    font-weight: bold;
+    color: #BF360C;
+    font-size: 1.1em;
+}
 
-    .rsi-green-box {
-        background-color: #C8E6C9;
-        color: #1B5E20;
-        padding: 14px;
-        border-radius: 8px;
-        border-left: 6px solid #2E7D32;
-        margin-bottom: 10px;
-        font-weight: bold;
-    }
+.alert-green {
+    background-color: #C8E6C9;
+    color: #1B5E20;
+    padding: 12px;
+    border-radius: 8px;
+    border-left: 6px solid #2E7D32;
+    font-weight: bold;
+}
 
-    .alpha-box {
-        background-color: #FFF3CD;
-        color: #7A4F00;
-        padding: 14px;
-        border-radius: 8px;
-        border-left: 6px solid #FF9800;
-        margin-bottom: 10px;
-        font-weight: bold;
-    }
+.alert-alpha {
+    background-color: #FFF3CD;
+    color: #7A4F00;
+    padding: 12px;
+    border-radius: 8px;
+    border-left: 6px solid #FF9800;
+    font-weight: bold;
+}
 
-    .exhaustion-box {
-        background-color: #FFCDD2;
-        color: #B71C1C;
-        padding: 14px;
-        border-radius: 8px;
-        border-left: 6px solid #C62828;
-        margin-bottom: 10px;
-        font-weight: bold;
-    }
+.alert-exhaustion {
+    background-color: #FFCDD2;
+    color: #B71C1C;
+    padding: 12px;
+    border-radius: 8px;
+    border-left: 6px solid #C62828;
+    font-weight: bold;
+}
 </style>
 """, unsafe_allow_html=True)
 
 
-# ─────────────────────────────────────────────
+# ============================================================
 # MEMORIA
-# ─────────────────────────────────────────────
+# ============================================================
 
 if "master_results_crypto" not in st.session_state:
     st.session_state["master_results_crypto"] = {}
 
 
-# ─────────────────────────────────────────────
+# ============================================================
 # TEMPORALIDADES
-# ─────────────────────────────────────────────
+# ============================================================
 
 TF_OPTIONS = {
     "30 MIN": "30m",
@@ -103,18 +101,18 @@ TF_OPTIONS = {
     "4 HS": "4h",
     "1 DIA": "1d",
     "1 SEMANA": "1w",
-    "1 MES": "1M"
+    "1 MES": "1M",
 }
 
 
-# ─────────────────────────────────────────────
-# SECTORES CRIPTO
-# ─────────────────────────────────────────────
+# ============================================================
+# SECTORES
+# ============================================================
 
 CRYPTO_SECTORS = {
     "LEADER": [
         "BTC/USDT",
-        "ETH/USDT"
+        "ETH/USDT",
     ],
 
     "LAYER 1": [
@@ -125,7 +123,7 @@ CRYPTO_SECTORS = {
         "MATIC/USDT",
         "NEAR/USDT",
         "FTM/USDT",
-        "ALGO/USDT"
+        "ALGO/USDT",
     ],
 
     "DEFI/L2": [
@@ -134,14 +132,14 @@ CRYPTO_SECTORS = {
         "LINK/USDT",
         "UNI/USDT",
         "AAVE/USDT",
-        "LDO/USDT"
+        "LDO/USDT",
     ],
 
     "AI/DEPIN": [
         "RNDR/USDT",
         "FET/USDT",
         "FIL/USDT",
-        "THETA/USDT"
+        "THETA/USDT",
     ],
 
     "MEMES": [
@@ -149,71 +147,66 @@ CRYPTO_SECTORS = {
         "SHIB/USDT",
         "PEPE/USDT",
         "BONK/USDT",
-        "FLOKI/USDT"
+        "FLOKI/USDT",
     ],
 
     "EXCHANGE": [
         "BNB/USDT",
         "KCS/USDT",
-        "OKB/USDT"
-    ]
+        "OKB/USDT",
+    ],
 }
 
 
 def get_crypto_sector(ticker):
+    ticker = ticker.upper()
+
     for sector, members in CRYPTO_SECTORS.items():
-        if ticker.upper() in members:
+        if ticker in members:
             return sector
 
     return "ALTCOINS / OTROS"
 
 
-# ─────────────────────────────────────────────
-# MOTOR DEMA
-# ─────────────────────────────────────────────
+# ============================================================
+# DEMA
+# ============================================================
 
-def dema(s, length):
-    ema1 = s.ewm(
+def dema(series, length):
+    ema1 = series.ewm(
         span=length,
-        adjust=False,
-        min_periods=length
+        adjust=False
     ).mean()
 
     ema2 = ema1.ewm(
         span=length,
-        adjust=False,
-        min_periods=length
+        adjust=False
     ).mean()
 
     return 2 * ema1 - ema2
 
 
-# ─────────────────────────────────────────────
-# MOTOR PRINCIPAL
-#
-# INTEGRA:
-# 1) SLY ORIGINAL
-# 2) RSI PRO INSTITUTIONAL MOMENTUM
-# ─────────────────────────────────────────────
+# ============================================================
+# MOTOR SLY + RSI PRO
+# ============================================================
 
 def get_sly_indicators(df):
 
     try:
 
-        # -------------------------------------------------
-        # NORMALIZACIÓN DE COLUMNAS
-        # -------------------------------------------------
-
         df = df.copy()
 
-        df.columns = [str(c).capitalize() for c in df.columns]
+        df.columns = [
+            str(c).capitalize()
+            for c in df.columns
+        ]
 
         required = [
             "Open",
             "High",
             "Low",
             "Close",
-            "Vol"
+            "Vol",
         ]
 
         for col in required:
@@ -221,16 +214,17 @@ def get_sly_indicators(df):
                 return pd.DataFrame()
 
         df = df.dropna(
-            subset=["Open", "High", "Low", "Close", "Vol"]
+            subset=required
         )
 
         if len(df) < 300:
             return pd.DataFrame()
 
 
-        # =================================================
-        # SLY ORIGINAL — MACD DEMA
-        # =================================================
+        # ====================================================
+        # SLY ORIGINAL
+        # MACD DEMA 12 / 26
+        # ====================================================
 
         df["macd_line"] = (
             dema(df["Close"], 12)
@@ -254,25 +248,25 @@ def get_sly_indicators(df):
         )
 
 
-        # =================================================
-        # RSI PRO — RSI 14
-        # =================================================
+        # ====================================================
+        # RSI PRO
+        # RSI 14
+        # ====================================================
 
         raw_rsi = ta.rsi(
             df["Close"],
             length=14
         )
 
-        # Igual que el segundo script:
-        # RSI nulo inicial -> 50
         raw_rsi = raw_rsi.fillna(50)
 
         df["rsi_raw"] = raw_rsi
 
 
-        # =================================================
-        # RSI PRO — DEMA 5
-        # =================================================
+        # ====================================================
+        # RSI PRO
+        # DEMA 5
+        # ====================================================
 
         df["rsi_smooth"] = dema(
             df["rsi_raw"],
@@ -280,9 +274,10 @@ def get_sly_indicators(df):
         )
 
 
-        # =================================================
-        # RSI PRO — SMA 20
-        # =================================================
+        # ====================================================
+        # RSI PRO
+        # SMA 20
+        # ====================================================
 
         df["rsi_basis"] = (
             df["rsi_smooth"]
@@ -294,9 +289,10 @@ def get_sly_indicators(df):
         )
 
 
-        # =================================================
-        # RSI PRO — DESVIACIÓN ESTÁNDAR 20
-        # =================================================
+        # ====================================================
+        # RSI PRO
+        # DESVIACIÓN ESTÁNDAR 20
+        # ====================================================
 
         df["rsi_std"] = (
             df["rsi_smooth"]
@@ -308,12 +304,10 @@ def get_sly_indicators(df):
         )
 
 
-        # =================================================
-        # RSI PRO — BANDAS DINÁMICAS
-        #
-        # upper = basis + 2 std
-        # lower = basis - 2 std
-        # =================================================
+        # ====================================================
+        # RSI PRO
+        # BANDAS DINÁMICAS
+        # ====================================================
 
         df["upper_band"] = (
             df["rsi_basis"]
@@ -328,9 +322,10 @@ def get_sly_indicators(df):
         )
 
 
-        # =================================================
-        # RSI PRO — VOLUMEN
-        # =================================================
+        # ====================================================
+        # RSI PRO
+        # VOLUMEN
+        # ====================================================
 
         df["vol_avg"] = (
             df["Vol"]
@@ -351,35 +346,43 @@ def get_sly_indicators(df):
         )
 
 
-        # Evita división por cero
-        df["vol_z"] = np.where(
-            df["vol_std"] != 0,
+        # ====================================================
+        # VOLUME Z-SCORE
+        # ====================================================
+
+        df["vol_z"] = (
             (
                 df["Vol"]
                 -
                 df["vol_avg"]
             )
             /
-            df["vol_std"],
-            0
+            df["vol_std"]
+        )
+
+        df["vol_z"] = (
+            df["vol_z"]
+            .replace(
+                [np.inf, -np.inf],
+                np.nan
+            )
+            .fillna(0.0)
         )
 
 
-        # =================================================
-        # RSI PRO — VOLUMEN INSTITUCIONAL
-        #
-        # Pine:
-        # vol_z > 1.5
-        # =================================================
+        # ====================================================
+        # VOLUME ALPHA
+        # Z > 1.5
+        # ====================================================
 
         df["vol_alpha"] = (
             df["vol_z"] > 1.5
         )
 
 
-        # =================================================
-        # RSI PRO — DIRECCIÓN DEL RSI
-        # =================================================
+        # ====================================================
+        # DIRECCIÓN RSI
+        # ====================================================
 
         df["rsi_rising"] = (
             df["rsi_smooth"]
@@ -394,10 +397,10 @@ def get_sly_indicators(df):
         )
 
 
-        # =================================================
-        # RSI PRO — COLORES EXACTOS DEL SEGUNDO SCRIPT
+        # ====================================================
+        # COLORES EXACTOS DEL RSI PRO
         #
-        # VERDE FUERTE:
+        # VERDE:
         # RSI > 50 Y subiendo
         #
         # VERDE OSCURO:
@@ -408,100 +411,55 @@ def get_sly_indicators(df):
         #
         # ROJO OSCURO:
         # RSI < 50 Y subiendo
-        # =================================================
-
-        conditions = [
-            (
-                (df["rsi_smooth"] > 50)
-                &
-                df["rsi_rising"]
-            ),
-
-            (
-                (df["rsi_smooth"] > 50)
-                &
-                df["rsi_falling"]
-            ),
-
-            (
-                (df["rsi_smooth"] < 50)
-                &
-                df["rsi_falling"]
-            ),
-
-            (
-                (df["rsi_smooth"] < 50)
-                &
-                df["rsi_rising"]
-            )
-        ]
-
-        choices = [
-            "VERDE 🟢",
-            "VERDE OSCURO 🟩",
-            "ROJO 🔴",
-            "ROJO OSCURO 🟥"
-        ]
+        # ====================================================
 
         df["rsi_pro_color"] = np.select(
-            conditions,
-            choices,
-            default="NEUTRO ⚪"
+
+            [
+                (
+                    (df["rsi_smooth"] > 50)
+                    &
+                    df["rsi_rising"]
+                ),
+
+                (
+                    (df["rsi_smooth"] > 50)
+                    &
+                    df["rsi_falling"]
+                ),
+
+                (
+                    (df["rsi_smooth"] < 50)
+                    &
+                    df["rsi_falling"]
+                ),
+
+                (
+                    (df["rsi_smooth"] < 50)
+                    &
+                    df["rsi_rising"]
+                ),
+            ],
+
+            [
+                "VERDE",
+                "VERDE OSCURO",
+                "ROJO",
+                "ROJO OSCURO",
+            ],
+
+            default="NEUTRO",
         )
 
 
-        # =================================================
-        # RSI PRO — ALPHA STRIKE
+        # ====================================================
+        # RSI PRO VERDE
         #
-        # Pine:
-        # crossover(rsi_smooth, 50)
-        # AND vol_z > 1.5
-        # =================================================
-
-        rsi_cross_up = (
-            (df["rsi_smooth"] > 50)
-            &
-            (df["rsi_smooth"].shift(1) <= 50)
-        )
-
-        df["alpha_strike"] = (
-            rsi_cross_up
-            &
-            df["vol_alpha"]
-        )
-
-
-        # =================================================
-        # RSI PRO — EXHAUSTION
+        # ESTA ES LA ALERTA QUE PEDISTE
         #
-        # Pine:
-        # crossunder(rsi_smooth, upper_band)
-        # =================================================
-
-        rsi_cross_under_upper = (
-            (df["rsi_smooth"] < df["upper_band"])
-            &
-            (
-                df["rsi_smooth"].shift(1)
-                >=
-                df["upper_band"].shift(1)
-            )
-        )
-
-        df["exhaustion"] = (
-            rsi_cross_under_upper
-        )
-
-
-        # =================================================
-        # RSI PRO — ALERTA VERDE
-        #
-        # IMPORTANTE:
-        # Esto NO exige cruce de 50.
-        #
-        # Si RSI > 50 y sigue subiendo:
-        # VERDE
-        # =================================================
+        # RSI DEMA(5) > 50
+        # Y RSI DEMA(5) SUBIENDO
+        # ====================================================
 
         df["rsi_pro_green"] = (
             (df["rsi_smooth"] > 50)
@@ -510,9 +468,60 @@ def get_sly_indicators(df):
         )
 
 
-        # =================================================
-        # HEIKIN ASHI ORIGINAL
-        # =================================================
+        # ====================================================
+        # CROSSOVER RSI 50
+        # ====================================================
+
+        df["rsi_cross_up"] = (
+            (df["rsi_smooth"] > 50)
+            &
+            (
+                df["rsi_smooth"].shift(1)
+                <= 50
+            )
+        )
+
+
+        # ====================================================
+        # ALPHA STRIKE
+        #
+        # RSI cruza 50 al alza
+        # +
+        # Volume Z > 1.5
+        # ====================================================
+
+        df["alpha_strike"] = (
+            df["rsi_cross_up"]
+            &
+            df["vol_alpha"]
+        )
+
+
+        # ====================================================
+        # EXHAUSTION
+        #
+        # RSI cruza hacia abajo
+        # la banda superior
+        # ====================================================
+
+        df["exhaustion"] = (
+            (
+                df["rsi_smooth"]
+                <
+                df["upper_band"]
+            )
+            &
+            (
+                df["rsi_smooth"].shift(1)
+                >=
+                df["upper_band"].shift(1)
+            )
+        )
+
+
+        # ====================================================
+        # HEIKIN ASHI
+        # ====================================================
 
         ha_c = (
             df["Open"]
@@ -522,15 +531,18 @@ def get_sly_indicators(df):
             df["Low"]
             +
             df["Close"]
-        ) / 4
+        ) / 4.0
 
-        ha_o = np.zeros(len(df))
+        ha_o = np.zeros(
+            len(df),
+            dtype=float
+        )
 
         ha_o[0] = (
             df["Open"].iloc[0]
             +
             df["Close"].iloc[0]
-        ) / 2
+        ) / 2.0
 
         for i in range(1, len(df)):
 
@@ -538,7 +550,7 @@ def get_sly_indicators(df):
                 ha_o[i - 1]
                 +
                 ha_c.iloc[i - 1]
-            ) / 2
+            ) / 2.0
 
         df["ha_color"] = np.where(
             ha_c > ha_o,
@@ -547,9 +559,9 @@ def get_sly_indicators(df):
         )
 
 
-        # =================================================
+        # ====================================================
         # EMA 52 / EMA 260
-        # =================================================
+        # ====================================================
 
         df["ema52"] = ta.ema(
             df["Close"],
@@ -562,9 +574,9 @@ def get_sly_indicators(df):
         )
 
 
-        # =================================================
-        # LIMPIEZA FINAL
-        # =================================================
+        # ====================================================
+        # LIMPIEZA
+        # ====================================================
 
         df = df.dropna(
             subset=[
@@ -573,7 +585,7 @@ def get_sly_indicators(df):
                 "rsi_basis",
                 "rsi_std",
                 "upper_band",
-                "lower_band"
+                "lower_band",
             ]
         )
 
@@ -583,9 +595,9 @@ def get_sly_indicators(df):
         return pd.DataFrame()
 
 
-# ─────────────────────────────────────────────
+# ============================================================
 # MACD MENSUAL
-# ─────────────────────────────────────────────
+# ============================================================
 
 def get_monthly_macd_force(ex, symbol):
 
@@ -597,6 +609,9 @@ def get_monthly_macd_force(ex, symbol):
             limit=50
         )
 
+        if not raw or len(raw) < 30:
+            return "N/A"
+
         df = pd.DataFrame(
             raw,
             columns=[
@@ -605,12 +620,9 @@ def get_monthly_macd_force(ex, symbol):
                 "high",
                 "low",
                 "close",
-                "vol"
+                "vol",
             ]
         )
-
-        if len(df) < 30:
-            return "N/A"
 
         m_macd = (
             dema(df["close"], 12)
@@ -633,10 +645,11 @@ def get_monthly_macd_force(ex, symbol):
             m_signal
         )
 
-        current_h = m_hist.iloc[-1]
-        previous_h = m_hist.iloc[-2]
-
-        if current_h > previous_h:
+        if (
+            m_hist.iloc[-1]
+            >
+            m_hist.iloc[-2]
+        ):
             return "GANANDO FUERZA 📈"
 
         return "PERDIENDO FUERZA 📉"
@@ -645,11 +658,14 @@ def get_monthly_macd_force(ex, symbol):
         return "N/A"
 
 
-# ─────────────────────────────────────────────
-# SEÑAL ORIGINAL SLY
-# ─────────────────────────────────────────────
+# ============================================================
+# SEÑAL SLY ORIGINAL
+# ============================================================
 
-def find_last_signal(df, bear_longs):
+def find_last_signal(
+    df,
+    bear_longs
+):
 
     if df.empty or len(df) < 2:
         return None, None, False, "-"
@@ -662,15 +678,23 @@ def find_last_signal(df, bear_longs):
     for i in range(1, len(df)):
 
         authorized = (
-            df["ema52"].iloc[i]
-            >
-            df["ema260"].iloc[i]
-        ) or bear_longs
+            (
+                df["ema52"].iloc[i]
+                >
+                df["ema260"].iloc[i]
+            )
+            or
+            bear_longs
+        )
 
         ha_flip = (
-            df["ha_color"].iloc[i] == "Verde"
+            df["ha_color"].iloc[i]
+            ==
+            "Verde"
             and
-            df["ha_color"].iloc[i - 1] == "Rojo"
+            df["ha_color"].iloc[i - 1]
+            ==
+            "Rojo"
         )
 
         macd_accel = (
@@ -684,8 +708,11 @@ def find_last_signal(df, bear_longs):
             >
             df["rsi_smooth"].iloc[i - 1]
             and
-            df["rsi_smooth"].iloc[i] < 50
+            df["rsi_smooth"].iloc[i]
+            <
+            50
         )
+
 
         # ENTRADA ORIGINAL
         if (
@@ -701,42 +728,62 @@ def find_last_signal(df, bear_longs):
         ):
 
             is_active = True
-            last_entry_date = df.index[i]
-            last_entry_px = df["Close"].iloc[i]
+
+            last_entry_date = (
+                df.index[i]
+            )
+
+            last_entry_px = (
+                df["Close"].iloc[i]
+            )
+
 
         # SALIDA ORIGINAL
-        elif (
-            is_active
-            and
-            df["ha_color"].iloc[i] == "Rojo"
-            and
-            df["hist"].iloc[i]
-            <
-            df["hist"].iloc[i - 1]
-            and
-            df["rsi_smooth"].iloc[i]
-            <
-            df["rsi_smooth"].iloc[i - 1]
-        ):
+        elif is_active:
 
-            is_active = False
+            exit_signal = (
+                df["ha_color"].iloc[i]
+                ==
+                "Rojo"
+                and
+                df["hist"].iloc[i]
+                <
+                df["hist"].iloc[i - 1]
+                and
+                df["rsi_smooth"].iloc[i]
+                <
+                df["rsi_smooth"].iloc[i - 1]
+            )
+
+            if exit_signal:
+                is_active = False
+
 
     if is_active:
 
-        c_h = df["hist"].iloc[-1]
-        p_h = df["hist"].iloc[-2]
+        current_h = df["hist"].iloc[-1]
+        previous_h = df["hist"].iloc[-2]
 
-        if p_h > 0 and c_h <= 0:
+        if (
+            previous_h > 0
+            and
+            current_h <= 0
+        ):
 
-            verdict = "CERRAR OPERACIÓN 🔴"
+            verdict = (
+                "CERRAR OPERACIÓN 🔴"
+            )
 
-        elif c_h > p_h:
+        elif current_h > previous_h:
 
             verdict = "MANTENER 🟢"
 
         else:
 
-            verdict = "PIERDE FUERZA 🟡"
+            verdict = (
+                "PIERDE FUERZA 🟡"
+            )
+
 
     return (
         last_entry_date,
@@ -746,9 +793,9 @@ def find_last_signal(df, bear_longs):
     )
 
 
-# ─────────────────────────────────────────────
+# ============================================================
 # KUCOIN
-# ─────────────────────────────────────────────
+# ============================================================
 
 @st.cache_resource
 def get_exchange():
@@ -770,7 +817,19 @@ def fetch_symbols():
             s
             for s in markets
             if "/USDT" in s
-            and markets[s]["active"]
+            and markets[s].get(
+                "active",
+                False
+            )
+        ]
+
+        excluded = [
+            "3L",
+            "3S",
+            "USDC",
+            "DAI",
+            "PAX",
+            "TUSD",
         ]
 
         filtered = [
@@ -778,40 +837,32 @@ def fetch_symbols():
             for s in symbols
             if not any(
                 x in s
-                for x in [
-                    "3L",
-                    "3S",
-                    "USDC",
-                    "DAI",
-                    "PAX",
-                    "TUSD"
-                ]
+                for x in excluded
             )
         ]
 
         return sorted(filtered)
 
     except Exception:
-
         return []
 
 
-# ─────────────────────────────────────────────
-# INTERFAZ
-# ─────────────────────────────────────────────
+# ============================================================
+# TÍTULO
+# ============================================================
 
 st.title(
     "🛡️ SLY | CRIPTO SIGNAL TRACKER + RSI PRO"
 )
 
 st.caption(
-    "SLY original + RSI PRO Institutional Momentum integrado"
+    "SLY original + RSI PRO Institutional Momentum"
 )
 
 
-# ─────────────────────────────────────────────
+# ============================================================
 # SIDEBAR
-# ─────────────────────────────────────────────
+# ============================================================
 
 with st.sidebar:
 
@@ -824,7 +875,7 @@ with st.sidebar:
     selected_tf_label = st.selectbox(
         "Seleccionar Temporalidad:",
         list(TF_OPTIONS.keys()),
-        index=2
+        index=2,
     )
 
     selected_tf_code = TF_OPTIONS[
@@ -853,22 +904,26 @@ with st.sidebar:
             "2. Ejecución"
         )
 
-        lote_size = st.number_input(
-            "Tamaño de Lote:",
-            min_value=10,
-            max_value=100,
-            value=50,
-            step=10
+        lote_size = int(
+            st.number_input(
+                "Tamaño de Lote:",
+                min_value=10,
+                max_value=100,
+                value=50,
+                step=10,
+            )
+        )
+
+        crypto_count = len(
+            st.session_state[
+                "crypto_list"
+            ]
         )
 
         total_lotes = max(
             1,
             (
-                len(
-                    st.session_state[
-                        "crypto_list"
-                    ]
-                )
+                crypto_count
                 +
                 lote_size
                 -
@@ -882,7 +937,7 @@ with st.sidebar:
             "Seleccionar Lote:",
             range(total_lotes),
             format_func=lambda x:
-                f"Lote {x + 1}"
+                f"Lote {x + 1}",
         )
 
         bear_longs = st.checkbox(
@@ -898,25 +953,24 @@ with st.sidebar:
 
             ex = get_exchange()
 
-            crypto_list = st.session_state[
-                "crypto_list"
-            ]
-
-            start_idx = (
+            start = (
                 batch_idx
                 *
                 lote_size
             )
 
-            end_idx = (
-                start_idx
+            end = (
+                start
                 +
                 lote_size
             )
 
-            subset = crypto_list[
-                start_idx:end_idx
-            ]
+            subset = (
+                st.session_state[
+                    "crypto_list"
+                ][start:end]
+            )
+
 
             if not subset:
 
@@ -928,32 +982,40 @@ with st.sidebar:
 
                 prog = st.progress(0)
 
-                for i, sym in enumerate(subset):
+                for i, sym in enumerate(
+                    subset
+                ):
 
                     try:
 
                         prog.progress(
-                            (i + 1) / len(subset),
+                            (i + 1)
+                            /
+                            len(subset),
+
                             text=(
                                 f"Auditando "
                                 f"{selected_tf_label}: "
                                 f"{sym}"
-                            )
+                            ),
                         )
 
 
-                        # -----------------------------------------
-                        # DATOS PRINCIPALES
-                        # -----------------------------------------
+                        # ------------------------------------
+                        # DATOS
+                        # ------------------------------------
 
-                        raw_data = ex.fetch_ohlcv(
-                            sym,
-                            timeframe=selected_tf_code,
-                            limit=1000
+                        raw_data = (
+                            ex.fetch_ohlcv(
+                                sym,
+                                timeframe=selected_tf_code,
+                                limit=1000,
+                            )
                         )
 
                         if not raw_data:
                             continue
+
 
                         df = pd.DataFrame(
                             raw_data,
@@ -963,8 +1025,8 @@ with st.sidebar:
                                 "high",
                                 "low",
                                 "close",
-                                "vol"
-                            ]
+                                "vol",
+                            ],
                         )
 
                         df["time"] = pd.to_datetime(
@@ -978,15 +1040,23 @@ with st.sidebar:
                         )
 
 
-                        data = get_sly_indicators(df)
+                        # ------------------------------------
+                        # INDICADORES
+                        # ------------------------------------
+
+                        data = (
+                            get_sly_indicators(
+                                df
+                            )
+                        )
 
                         if data.empty:
                             continue
 
 
-                        # -----------------------------------------
+                        # ------------------------------------
                         # MACD MENSUAL
-                        # -----------------------------------------
+                        # ------------------------------------
 
                         monthly_force = (
                             get_monthly_macd_force(
@@ -996,25 +1066,29 @@ with st.sidebar:
                         )
 
 
-                        # -----------------------------------------
-                        # SEÑAL SLY ORIGINAL
-                        # -----------------------------------------
+                        # ------------------------------------
+                        # SEÑAL ORIGINAL
+                        # ------------------------------------
 
                         (
                             sig_date,
                             sig_px,
                             vigente,
-                            verd
+                            verd,
                         ) = find_last_signal(
                             data,
                             bear_longs
                         )
 
 
+                        # ------------------------------------
+                        # PNL
+                        # ------------------------------------
+
                         if (
                             vigente
                             and
-                            sig_px
+                            sig_px is not None
                             and
                             sig_px != 0
                         ):
@@ -1022,7 +1096,9 @@ with st.sidebar:
                             pnl_val = (
                                 (
                                     (
-                                        data["Close"].iloc[-1]
+                                        data[
+                                            "Close"
+                                        ].iloc[-1]
                                         -
                                         sig_px
                                     )
@@ -1042,89 +1118,39 @@ with st.sidebar:
                             pnl_val = "-"
 
 
-                        # =========================================
-                        # RSI PRO — VALORES ACTUALES
-                        # =========================================
+                        # ------------------------------------
+                        # RSI PRO
+                        # ------------------------------------
 
-                        last_rsi = (
+                        last_rsi = float(
                             data[
                                 "rsi_smooth"
                             ].iloc[-1]
                         )
 
-                        previous_rsi = (
+                        previous_rsi = float(
                             data[
                                 "rsi_smooth"
                             ].iloc[-2]
                         )
 
-                        last_upper = (
-                            data[
-                                "upper_band"
-                            ].iloc[-1]
-                        )
-
-                        last_lower = (
-                            data[
-                                "lower_band"
-                            ].iloc[-1]
-                        )
-
-                        last_rsi_basis = (
-                            data[
-                                "rsi_basis"
-                            ].iloc[-1]
-                        )
-
-                        last_rsi_std = (
-                            data[
-                                "rsi_std"
-                            ].iloc[-1]
-                        )
-
-                        last_vol_z = (
-                            data[
-                                "vol_z"
-                            ].iloc[-1]
-                        )
-
-
-                        # -----------------------------------------
-                        # COLOR RSI PRO
-                        # -----------------------------------------
-
-                        rsi_pro_color = (
+                        rsi_color = str(
                             data[
                                 "rsi_pro_color"
                             ].iloc[-1]
                         )
 
-
-                        # -----------------------------------------
-                        # RSI VERDE
-                        # -----------------------------------------
-
-                        rsi_green = bool(
-                            data[
-                                "rsi_pro_green"
-                            ].iloc[-1]
+                        rsi_green = (
+                            rsi_color
+                            ==
+                            "VERDE"
                         )
 
-
-                        # -----------------------------------------
-                        # ALPHA STRIKE
-                        # -----------------------------------------
-
-                        alpha_strike = bool(
+                        alpha = bool(
                             data[
                                 "alpha_strike"
                             ].iloc[-1]
                         )
-
-
-                        # -----------------------------------------
-                        # EXHAUSTION
-                        # -----------------------------------------
 
                         exhaustion = bool(
                             data[
@@ -1132,10 +1158,90 @@ with st.sidebar:
                             ].iloc[-1]
                         )
 
+                        vol_z = float(
+                            data[
+                                "vol_z"
+                            ].iloc[-1]
+                        )
 
-                        # -----------------------------------------
+
+                        # ------------------------------------
+                        # TEXTO RSI PRO
+                        # ------------------------------------
+
+                        if rsi_color == "VERDE":
+
+                            rsi_pro_text = (
+                                "🟢 VERDE"
+                            )
+
+                        elif (
+                            rsi_color
+                            ==
+                            "VERDE OSCURO"
+                        ):
+
+                            rsi_pro_text = (
+                                "🟩 VERDE OSCURO"
+                            )
+
+                        elif rsi_color == "ROJO":
+
+                            rsi_pro_text = (
+                                "🔴 ROJO"
+                            )
+
+                        elif (
+                            rsi_color
+                            ==
+                            "ROJO OSCURO"
+                        ):
+
+                            rsi_pro_text = (
+                                "🟥 ROJO OSCURO"
+                            )
+
+                        else:
+
+                            rsi_pro_text = (
+                                "⚪ NEUTRO"
+                            )
+
+
+                        # ------------------------------------
+                        # ALERTA
+                        # ------------------------------------
+
+                        if (
+                            rsi_green
+                            and
+                            alpha
+                        ):
+
+                            alert = (
+                                "🔥🟢 VERDE + ALPHA"
+                            )
+
+                        elif rsi_green:
+
+                            alert = (
+                                "🟢 RSI PRO VERDE"
+                            )
+
+                        elif exhaustion:
+
+                            alert = (
+                                "⚠️ EXHAUSTION"
+                            )
+
+                        else:
+
+                            alert = "-"
+
+
+                        # ------------------------------------
                         # ZONA RSI
-                        # -----------------------------------------
+                        # ------------------------------------
 
                         if last_rsi > 50:
 
@@ -1150,109 +1256,9 @@ with st.sidebar:
                             )
 
 
-                        # -----------------------------------------
-                        # RSI PRO ESTADO
-                        # -----------------------------------------
-
-                        if rsi_green:
-
-                            rsi_pro_status = (
-                                "🟢 VERDE"
-                            )
-
-                        elif last_rsi > 50:
-
-                            rsi_pro_status = (
-                                "🟩 VERDE OSCURO"
-                            )
-
-                        elif last_rsi < 50 and (
-                            data[
-                                "rsi_rising"
-                            ].iloc[-1]
-                        ):
-
-                            rsi_pro_status = (
-                                "🟥 ROJO OSCURO"
-                            )
-
-                        elif last_rsi < 50:
-
-                            rsi_pro_status = (
-                                "🔴 ROJO"
-                            )
-
-                        else:
-
-                            rsi_pro_status = (
-                                "⚪ NEUTRO"
-                            )
-
-
-                        # -----------------------------------------
-                        # ALPHA STATUS
-                        # -----------------------------------------
-
-                        if alpha_strike:
-
-                            alpha_status = (
-                                "🔥 ALPHA STRIKE"
-                            )
-
-                        else:
-
-                            alpha_status = "-"
-
-
-                        # -----------------------------------------
-                        # EXHAUSTION STATUS
-                        # -----------------------------------------
-
-                        if exhaustion:
-
-                            exhaustion_status = (
-                                "⚠️ EXHAUSTION"
-                            )
-
-                        else:
-
-                            exhaustion_status = "-"
-
-
-                        # -----------------------------------------
-                        # AVISO
-                        # -----------------------------------------
-
-                        if (
-                            rsi_green
-                            and
-                            alpha_strike
-                        ):
-
-                            alert_status = (
-                                "🔥🟢 VERDE + ALPHA"
-                            )
-
-                        elif rsi_green:
-
-                            alert_status = (
-                                "🟢 RSI PRO VERDE"
-                            )
-
-                        elif exhaustion:
-
-                            alert_status = (
-                                "⚠️ EXHAUSTION"
-                            )
-
-                        else:
-
-                            alert_status = "-"
-
-
-                        # -----------------------------------------
-                        # GUARDAR RESULTADOS
-                        # -----------------------------------------
+                        # ------------------------------------
+                        # GUARDAR
+                        # ------------------------------------
 
                         st.session_state[
                             "master_results_crypto"
@@ -1264,28 +1270,84 @@ with st.sidebar:
                                     ""
                                 ),
 
-                            "Temporalidad":
-                                selected_tf_label,
-
                             "Sector":
                                 get_crypto_sector(
                                     sym
                                 ),
 
+                            "Temporalidad":
+                                selected_tf_label,
+
+                            "RSI PRO":
+                                rsi_pro_text,
+
+                            "Alerta RSI":
+                                alert,
+
+                            "Alpha Strike":
+                                (
+                                    "🔥 SI"
+                                    if alpha
+                                    else "-"
+                                ),
+
+                            "Exhaustion":
+                                (
+                                    "⚠️ SI"
+                                    if exhaustion
+                                    else "-"
+                                ),
+
+                            "RSI":
+                                round(
+                                    last_rsi,
+                                    2
+                                ),
+
+                            "RSI Anterior":
+                                round(
+                                    previous_rsi,
+                                    2
+                                ),
+
+                            "Vol Z":
+                                round(
+                                    vol_z,
+                                    2
+                                ),
+
+                            "Banda Superior":
+                                round(
+                                    float(
+                                        data[
+                                            "upper_band"
+                                        ].iloc[-1]
+                                    ),
+                                    2
+                                ),
+
+                            "Banda Inferior":
+                                round(
+                                    float(
+                                        data[
+                                            "lower_band"
+                                        ].iloc[-1]
+                                    ),
+                                    2
+                                ),
+
                             "MACD Mensual":
                                 monthly_force,
 
-                            "RSI PRO":
-                                rsi_pro_status,
-
-                            "Alerta RSI":
-                                alert_status,
-
-                            "Alpha":
-                                alpha_status,
-
-                            "Exhaustion":
-                                exhaustion_status,
+                            "Última Señal":
+                                (
+                                    sig_date.strftime(
+                                        "%d/%m %H:%M"
+                                    )
+                                    if sig_date
+                                    is not None
+                                    else "-"
+                                ),
 
                             "Estado":
                                 (
@@ -1301,53 +1363,8 @@ with st.sidebar:
                             "PnL Real":
                                 pnl_val,
 
-                            "Última Señal":
-                                (
-                                    sig_date.strftime(
-                                        "%d/%m %H:%M"
-                                    )
-                                    if sig_date
-                                    else "-"
-                                ),
-
                             "Zona RSI":
                                 rsi_zone,
-
-                            "RSI":
-                                round(
-                                    last_rsi,
-                                    2
-                                ),
-
-                            "RSI Anterior":
-                                round(
-                                    previous_rsi,
-                                    2
-                                ),
-
-                            "RSI Base":
-                                round(
-                                    last_rsi_basis,
-                                    2
-                                ),
-
-                            "Banda Superior":
-                                round(
-                                    last_upper,
-                                    2
-                                ),
-
-                            "Banda Inferior":
-                                round(
-                                    last_lower,
-                                    2
-                                ),
-
-                            "Vol Z":
-                                round(
-                                    last_vol_z,
-                                    2
-                                ),
 
                             "Precio":
                                 f"{data['Close'].iloc[-1]:.4f}",
@@ -1365,13 +1382,16 @@ with st.sidebar:
                                     ].iloc[-1]
                                     else
                                     "BAJISTA"
-                                )
+                                ),
                         }
+
 
                         time.sleep(0.05)
 
+
                     except Exception:
                         continue
+
 
                 st.rerun()
 
@@ -1387,9 +1407,9 @@ with st.sidebar:
         st.rerun()
 
 
-# ─────────────────────────────────────────────
+# ============================================================
 # RESULTADOS
-# ─────────────────────────────────────────────
+# ============================================================
 
 if st.session_state[
     "master_results_crypto"
@@ -1402,105 +1422,123 @@ if st.session_state[
     )
 
 
-    # =================================================
-    # AVISOS RSI PRO
-    # =================================================
+    # ========================================================
+    # ALERTAS
+    # ========================================================
 
     green_df = df_full[
-        df_full["RSI PRO"] == "🟢 VERDE"
+        df_full["RSI PRO"]
+        ==
+        "🟢 VERDE"
     ]
 
     alpha_df = df_full[
-        df_full["Alpha"] == "🔥 ALPHA STRIKE"
+        df_full["Alpha Strike"]
+        ==
+        "🔥 SI"
     ]
 
     exhaustion_df = df_full[
-        df_full["Exhaustion"] == "⚠️ EXHAUSTION"
+        df_full["Exhaustion"]
+        ==
+        "⚠️ SI"
     ]
 
 
-    # =================================================
-    # AVISO VERDE
-    # =================================================
+    # ========================================================
+    # RSI VERDE
+    # ========================================================
 
     if not green_df.empty:
 
+        assets = ", ".join(
+            [
+                (
+                    f"{row['Activo']} "
+                    f"{row['Temporalidad']} "
+                    f"(RSI {row['RSI']:.2f})"
+                )
+                for _, row
+                in green_df.iterrows()
+            ]
+        )
+
         st.markdown(
-            '<div class="rsi-green-box">'
-            '🟢 RSI PRO VERDE DETECTADO — '
-            'RSI DEMA(5) está por encima de 50 '
-            'y subiendo.'
-            '</div>',
-            unsafe_allow_html=True
-        )
-
-        green_assets = []
-
-        for _, row in green_df.iterrows():
-
-            green_assets.append(
-                f"**{row['Activo']} "
-                f"{row['Temporalidad']}** "
-                f"(RSI {row['RSI']:.2f})"
-            )
-
-        st.success(
-            " | ".join(green_assets)
+            f"""
+            <div class="alert-green">
+            🟢 RSI PRO VERDE DETECTADO:
+            {assets}
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
 
-    # =================================================
+    # ========================================================
     # ALPHA STRIKE
-    # =================================================
+    # ========================================================
 
     if not alpha_df.empty:
 
+        assets = ", ".join(
+            [
+                (
+                    f"{row['Activo']} "
+                    f"{row['Temporalidad']}"
+                )
+                for _, row
+                in alpha_df.iterrows()
+            ]
+        )
+
         st.markdown(
-            '<div class="alpha-box">'
-            '🔥 ALPHA STRIKE DETECTADO — '
-            'RSI acaba de cruzar 50 al alza '
-            'con Volume Z-Score > 1.5.'
-            '</div>',
-            unsafe_allow_html=True
-        )
-
-        alpha_assets = []
-
-        for _, row in alpha_df.iterrows():
-
-            alpha_assets.append(
-                f"{row['Activo']} "
-                f"{row['Temporalidad']}"
-            )
-
-        st.warning(
-            "🔥 " + " | ".join(alpha_assets)
+            f"""
+            <div class="alert-alpha">
+            🔥 ALPHA STRIKE:
+            {assets}
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
 
-    # =================================================
+    # ========================================================
     # EXHAUSTION
-    # =================================================
+    # ========================================================
 
     if not exhaustion_df.empty:
 
+        assets = ", ".join(
+            [
+                (
+                    f"{row['Activo']} "
+                    f"{row['Temporalidad']}"
+                )
+                for _, row
+                in exhaustion_df.iterrows()
+            ]
+        )
+
         st.markdown(
-            '<div class="exhaustion-box">'
-            '⚠️ EXHAUSTION — RSI cruzó por debajo '
-            'de su banda superior dinámica.'
-            '</div>',
-            unsafe_allow_html=True
+            f"""
+            <div class="alert-exhaustion">
+            ⚠️ EXHAUSTION:
+            {assets}
+            </div>
+            """,
+            unsafe_allow_html=True,
         )
 
 
-    # =================================================
+    # ========================================================
     # RESUMEN SECTORIAL
-    # =================================================
+    # ========================================================
 
     df_vigentes = df_full[
-        df_full["Estado"] == "VIGENTE 🟢"
+        df_full["Estado"]
+        ==
+        "VIGENTE 🟢"
     ]
-
 
     st.subheader(
         "📊 RESUMEN DE EXPOSICIÓN (VIGENTES)"
@@ -1520,7 +1558,9 @@ if st.session_state[
 
         for idx, row in summary.iterrows():
 
-            with cols[idx % 3]:
+            with cols[
+                idx % 3
+            ]:
 
                 st.markdown(
                     f"""
@@ -1528,12 +1568,12 @@ if st.session_state[
                         <div class="sector-title">
                             {row['Sector']}: {len(row['Activo'])}
                         </div>
-                        <div style='font-size: 0.85em;'>
+                        <div style="font-size: 0.85em;">
                             {', '.join(row['Activo'])}
                         </div>
                     </div>
                     """,
-                    unsafe_allow_html=True
+                    unsafe_allow_html=True,
                 )
 
     else:
@@ -1544,33 +1584,15 @@ if st.session_state[
         )
 
 
-    # =================================================
-    # MATRIZ PRINCIPAL
-    # =================================================
+    # ========================================================
+    # MATRIZ
+    # ========================================================
 
     st.subheader(
-        f"📋 MATRIZ DE SEÑALES "
+        f"📋 Matriz de Señales "
         f"(Filtro Actual: {selected_tf_label})"
     )
 
-
-    df_res = df_full.sort_values(
-        by=[
-            "Alerta RSI",
-            "Estado",
-            "Activo"
-        ],
-        ascending=[
-            True,
-            False,
-            True
-        ]
-    )
-
-
-    # =================================================
-    # ORDEN DE COLUMNAS
-    # =================================================
 
     cols_order = [
 
@@ -1580,7 +1602,7 @@ if st.session_state[
 
         "RSI PRO",
         "Alerta RSI",
-        "Alpha",
+        "Alpha Strike",
         "Exhaustion",
 
         "RSI",
@@ -1599,47 +1621,48 @@ if st.session_state[
 
         "Zona RSI",
         "Precio",
-        "Régimen"
+        "Régimen",
     ]
 
 
-    # Seguridad por si alguna columna no existe
-    cols_order = [
-        c
-        for c in cols_order
-        if c in df_res.columns
-    ]
-
-    df_res = df_res[
+    df_res = df_full[
         cols_order
-    ]
+    ].sort_values(
+        by=["Activo"],
+        ascending=[True],
+    )
 
 
-    # =================================================
+    # ========================================================
     # COLORES
-    # =================================================
+    # ========================================================
 
     def color_cells(val):
 
-        str_v = str(val)
+        text = str(val)
 
-        # VERDE
+
         if (
-            "🟢 VERDE" in str_v
+            "VERDE + ALPHA"
+            in text
             or
-            "VERDE 🟢" in str_v
+            "ALPHA"
+            in text
+        ):
+
+            return (
+                "background-color: #FFF3CD; "
+                "color: #7A4F00; "
+                "font-weight: bold;"
+            )
+
+
+        if (
+            "🟢 VERDE"
+            in text
             or
-            "ALPHA" in str_v
-            or
-            "VIGENTE" in str_v
-            or
-            "MANTENER" in str_v
-            or
-            "ALCISTA" in str_v
-            or
-            "SOBRE 50" in str_v
-            or
-            "GANANDO" in str_v
+            "RSI PRO VERDE"
+            in text
         ):
 
             return (
@@ -1649,35 +1672,21 @@ if st.session_state[
             )
 
 
-        # ROJO
-        if (
-            "ROJO 🔴" in str_v
-            or
-            "ROJO OSCURO" in str_v
-            or
-            "CERRADA" in str_v
-            or
-            "CERRAR" in str_v
-            or
-            "BAJISTA" in str_v
-            or
-            "BAJO 50" in str_v
-            or
-            "PERDIENDO" in str_v
-        ):
+        if "VERDE OSCURO" in text:
 
             return (
-                "background-color: #FFCDD2; "
-                "color: #B71C1C; "
+                "background-color: #DCEDC8; "
+                "color: #33691E; "
                 "font-weight: bold;"
             )
 
 
-        # AMARILLO
         if (
-            "PIERDE FUERZA" in str_v
+            "EXHAUSTION"
+            in text
             or
-            "EXHAUSTION" in str_v
+            "PIERDE FUERZA"
+            in text
         ):
 
             return (
@@ -1687,12 +1696,53 @@ if st.session_state[
             )
 
 
-        # VERDE OSCURO
-        if "VERDE OSCURO" in str_v:
+        if (
+            "ROJO"
+            in text
+            or
+            "CERRADA"
+            in text
+            or
+            "CERRAR"
+            in text
+            or
+            "BAJISTA"
+            in text
+            or
+            "BAJO 50"
+            in text
+            or
+            "PERDIENDO"
+            in text
+        ):
 
             return (
-                "background-color: #DCEDC8; "
-                "color: #33691E; "
+                "background-color: #FFCDD2; "
+                "color: #B71C1C; "
+                "font-weight: bold;"
+            )
+
+
+        if (
+            "VIGENTE"
+            in text
+            or
+            "MANTENER"
+            in text
+            or
+            "ALCISTA"
+            in text
+            or
+            "SOBRE 50"
+            in text
+            or
+            "GANANDO"
+            in text
+        ):
+
+            return (
+                "background-color: #C8E6C9; "
+                "color: #1B5E20; "
                 "font-weight: bold;"
             )
 
@@ -1703,13 +1753,13 @@ if st.session_state[
     st.dataframe(
         df_res.style.map(color_cells),
         use_container_width=True,
-        height=700
+        height=650,
     )
 
 
-    # =================================================
-    # RESUMEN RÁPIDO
-    # =================================================
+    # ========================================================
+    # RESUMEN RSI PRO
+    # ========================================================
 
     st.subheader(
         "🎯 RESUMEN RSI PRO"
@@ -1717,39 +1767,31 @@ if st.session_state[
 
     c1, c2, c3, c4 = st.columns(4)
 
-    with c1:
+    c1.metric(
+        "🟢 RSI VERDE",
+        len(green_df)
+    )
 
-        st.metric(
-            "🟢 RSI VERDE",
-            len(green_df)
-        )
+    c2.metric(
+        "🔥 ALPHA STRIKE",
+        len(alpha_df)
+    )
 
-    with c2:
+    c3.metric(
+        "⚠️ EXHAUSTION",
+        len(exhaustion_df)
+    )
 
-        st.metric(
-            "🔥 ALPHA STRIKE",
-            len(alpha_df)
-        )
-
-    with c3:
-
-        st.metric(
-            "⚠️ EXHAUSTION",
-            len(exhaustion_df)
-        )
-
-    with c4:
-
-        st.metric(
-            "Total analizados",
-            len(df_full)
-        )
+    c4.metric(
+        "Total analizados",
+        len(df_full)
+    )
 
 
 else:
 
     st.info(
         "👈 Seleccione temporalidad, "
-        "sincronice el mercado y analice los lotes."
+        "sincronice mercado y analice los lotes."
     )
 ```
