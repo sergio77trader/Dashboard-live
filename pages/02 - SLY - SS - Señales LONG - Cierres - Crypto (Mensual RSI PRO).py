@@ -1,23 +1,4 @@
-import streamlit as st
-import ccxt
-import pandas as pd
-import pandas_ta as ta
-import numpy as np
-import time
-from datetime import datetime, timedelta
- 
-# ─────────────────────────────────────────────
-# CONFIGURACIÓN INSTITUCIONAL - LIGHT THEME
-# ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY | CRIPTO MULTI-TF MONITOR")
- 
-st.markdown("""
-<style>
-    .stApp { background-color: #FFFFFF; color: #1C1E21; }
-    .stDataFrame { font-size: 11px; font-family: 'Roboto Mono', monospace; }
-    h1 { color: #E65100; font-weight: 800; border-bottom: 3px solid #E65100; }
-    .stProgress > div > div > div > div { background-color: #E65100; }
-    .sector-box { background-color: #FFF3E0; padding: 15px; border-radius: 8px; border-left: 5px solid #E64A19; margin-bottom: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
+FF3E0; padding: 15px; border-radius: 8px; border-left: 5px solid #E64A19; margin-bottom: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
     .sector-title { font-weight: bold; color: #BF360C; font-size: 1.1em; }
 </style>
 """, unsafe_allow_html=True)
@@ -125,19 +106,30 @@ def get_sly_indicators(df):
         ha_o[0] = (df['Open'].iloc[0] + df['Close'].iloc[0]) / 2
         for i in range(1, len(df)): ha_o[i] = (ha_o[i-1] + ha_c.iloc[i-1]) / 2
         df['ha_color'] = np.where(ha_c > ha_o, "Verde", "Rojo")
-        df['ema52'] = ta.ema(df['Close'], length=52)
-        df['ema260'] = ta.ema(df['Close'], length=260)
-        # Antes se exigía ema260 (260 velas) para devolver datos, lo que descartaba
-        # silenciosamente símbolos con poco historial. Ahora solo se exige lo mínimo
-        # para que el RSI/MACD/HA estén calculados; ema260 puede quedar en NaN.
+ 
+        # ta.ema() puede devolver None (no una Serie) cuando el símbolo no tiene
+        # suficiente historial para la longitud pedida (ej. EMA260 en un par recién
+        # listado). Si no se sanea, esas filas quedan con el literal None en vez de
+        # NaN, y comparar None > float más adelante rompe con TypeError. Por eso se
+        # fuerza a NaN explícito cuando pandas_ta no puede calcularlo.
+        ema52_calc = ta.ema(df['Close'], length=52)
+        df['ema52'] = ema52_calc if ema52_calc is not None else pd.Series(np.nan, index=df.index)
+        ema260_calc = ta.ema(df['Close'], length=260)
+        df['ema260'] = ema260_calc if ema260_calc is not None else pd.Series(np.nan, index=df.index)
+ 
         return df.dropna(subset=['hist', 'rsi_smooth'])
     except: return pd.DataFrame()
  
 # NUEVA FUNCIÓN: Analizar fuerza MACD Mensual
-def get_monthly_macd_force(ex, symbol):
+# Cacheada 1 hora: el MACD mensual no cambia dentro de la misma hora,
+# así que evita repetir esta llamada en cada lote/rerun (reduce a la mitad
+# la cantidad de requests contra KuCoin, que es la causa más común de
+# baneos temporales de rate-limit).
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_monthly_macd_force(_ex, symbol):
     try:
         # Pedimos pocas velas (50 son suficientes para MACD estable)
-        raw = ex.fetch_ohlcv(symbol, timeframe='1M', limit=50)
+        raw = _ex.fetch_ohlcv(symbol, timeframe='1M', limit=50)
         df = pd.DataFrame(raw, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
         
         m_macd = dema(df['close'], 12) - dema(df['close'], 26)
@@ -221,15 +213,15 @@ with st.sidebar:
                 try:
                     prog.progress((i+1)/len(subset), text=f"Auditando {selected_tf_label}: {sym}")
  
-                    # Temporalidad principal (con 1 reintento ante rate-limit/timeout)
+                    # Temporalidad principal (con reintentos y backoff ante rate-limit)
                     raw_data = None
-                    for intento in range(2):
+                    for intento in range(3):
                         try:
                             raw_data = ex.fetch_ohlcv(sym, timeframe=selected_tf_code, limit=1000)
                             break
-                        except Exception as e_fetch:
-                            if intento == 0:
-                                time.sleep(1.0)  # backoff simple, típico en rate-limit
+                        except (ccxt.RateLimitExceeded, ccxt.DDoSProtection, ccxt.NetworkError) as e_fetch:
+                            if intento < 2:
+                                time.sleep(3 * (intento + 1))  # 3s, luego 6s
                             else:
                                 raise e_fetch
  
@@ -276,7 +268,7 @@ with st.sidebar:
                             else "BAJISTA"
                         )
                     }
-                    time.sleep(0.15)  # un poco más de margen para no gatillar rate-limit
+                    time.sleep(max(ex.rateLimit / 1000, 0.2))  # respeta el límite real que informa KuCoin
                 except Exception as e_sym:
                     fallos.append((sym, f"{type(e_sym).__name__}: {e_sym}"))
                     continue
@@ -347,4 +339,5 @@ if st.session_state["master_results_crypto"]:
  
     st.dataframe(df_res.style.map(color_cells), use_container_width=True, height=600)
 else:
+    st.info("👈 Seleccione temporalidad, sincronice mercado y analice lotes.")
     st.info("👈 Seleccione temporalidad, sincronice mercado y analice lotes.")
