@@ -1,4 +1,3 @@
-
 import streamlit as st
 import ccxt
 import pandas as pd
@@ -128,7 +127,10 @@ def get_sly_indicators(df):
         df['ha_color'] = np.where(ha_c > ha_o, "Verde", "Rojo")
         df['ema52'] = ta.ema(df['Close'], length=52)
         df['ema260'] = ta.ema(df['Close'], length=260)
-        return df.dropna(subset=['ema260'])
+        # Antes se exigía ema260 (260 velas) para devolver datos, lo que descartaba
+        # silenciosamente símbolos con poco historial. Ahora solo se exige lo mínimo
+        # para que el RSI/MACD/HA estén calculados; ema260 puede quedar en NaN.
+        return df.dropna(subset=['hist', 'rsi_smooth'])
     except: return pd.DataFrame()
  
 # NUEVA FUNCIÓN: Analizar fuerza MACD Mensual
@@ -213,20 +215,33 @@ with st.sidebar:
             ex = get_exchange()
             subset = st.session_state["crypto_list"][batch_idx*lote_size : (batch_idx+1)*lote_size]
             prog = st.progress(0)
-            
+            fallos = []  # (símbolo, motivo) — para saber qué se cayó y por qué
+ 
             for i, sym in enumerate(subset):
                 try:
                     prog.progress((i+1)/len(subset), text=f"Auditando {selected_tf_label}: {sym}")
-                    
-                    # Temporalidad principal
-                    raw_data = ex.fetch_ohlcv(sym, timeframe=selected_tf_code, limit=1000)
+ 
+                    # Temporalidad principal (con 1 reintento ante rate-limit/timeout)
+                    raw_data = None
+                    for intento in range(2):
+                        try:
+                            raw_data = ex.fetch_ohlcv(sym, timeframe=selected_tf_code, limit=1000)
+                            break
+                        except Exception as e_fetch:
+                            if intento == 0:
+                                time.sleep(1.0)  # backoff simple, típico en rate-limit
+                            else:
+                                raise e_fetch
+ 
                     df = pd.DataFrame(raw_data, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
                     df['time'] = pd.to_datetime(df['time'], unit='ms')
                     df.set_index('time', inplace=True)
-                    
+ 
                     data = get_sly_indicators(df)
-                    if data.empty: continue
-                    
+                    if data.empty:
+                        fallos.append((sym, "Datos insuficientes para calcular indicadores"))
+                        continue
+ 
                     # Análisis MACD Mensual
                     monthly_force = get_monthly_macd_force(ex, sym)
                     
@@ -255,15 +270,29 @@ with st.sidebar:
                         "Agotamiento": exhaustion_txt,   # <-- columna nueva: alerta de sobre-extensión
                         "Precio": f"{data['Close'].iloc[-1]:.4f}",
                         "RSI": round(last_rsi, 1),
-                        "Régimen": "ALCISTA" if data['ema52'].iloc[-1] > data['ema260'].iloc[-1] else "BAJISTA"
+                        "Régimen": (
+                            "N/A (poco historial)" if pd.isna(data['ema260'].iloc[-1])
+                            else "ALCISTA" if data['ema52'].iloc[-1] > data['ema260'].iloc[-1]
+                            else "BAJISTA"
+                        )
                     }
-                    time.sleep(0.05)
-                except: continue
+                    time.sleep(0.15)  # un poco más de margen para no gatillar rate-limit
+                except Exception as e_sym:
+                    fallos.append((sym, f"{type(e_sym).__name__}: {e_sym}"))
+                    continue
+ 
+            st.session_state["ultimo_log_fallos"] = fallos
             st.rerun()
  
     if st.button("🗑️ Limpiar Memoria"):
         st.session_state["master_results_crypto"] = {}
         st.rerun()
+ 
+    if st.session_state.get("ultimo_log_fallos"):
+        n_fail = len(st.session_state["ultimo_log_fallos"])
+        with st.expander(f"⚠️ {n_fail} símbolo(s) fallaron en el último lote"):
+            for sym_f, motivo in st.session_state["ultimo_log_fallos"]:
+                st.write(f"**{sym_f}**: {motivo}")
  
 # ─────────────────────────────────────────────
 # RESUMEN SECTORIAL
