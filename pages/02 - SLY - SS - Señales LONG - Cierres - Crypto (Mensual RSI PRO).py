@@ -61,8 +61,6 @@ def dema(s, length):
     return 2 * ema1 - ema2
  
 # --- RSI PRO: parámetros por defecto (idénticos al Pine Script) ---
-RSI_LEN = 14
-RSI_SMOOTH_LEN = 5
 RSI_BB_MULT = 2.0
 VOL_Z_THRESHOLD = 1.5
  
@@ -74,11 +72,11 @@ def get_sly_indicators(df):
         df['macd_line'] = dema(df['Close'], 12) - dema(df['Close'], 26)
         df['signal_line'] = df['macd_line'].ewm(span=9, adjust=False).mean()
         df['hist'] = df['macd_line'] - df['signal_line']
-        df['rsi_smooth'] = dema(ta.rsi(df['Close'], length=RSI_LEN).fillna(50), RSI_SMOOTH_LEN)
+        df['rsi_smooth'] = dema(ta.rsi(df['Close'], length=14).fillna(50), 5)
  
         # ─────────────────────────────────────
-        # RSI PRO — Bandas estadísticas dinámicas
-        # (Bollinger sobre el RSI, igual que el Pine)
+        # RSI PRO (AGREGADO) — Bandas estadísticas dinámicas
+        # (Bollinger sobre el RSI, igual que el segundo script Pine)
         # ─────────────────────────────────────
         df['rsi_basis'] = df['rsi_smooth'].rolling(20).mean()
         df['rsi_std']   = df['rsi_smooth'].rolling(20).std()
@@ -86,7 +84,7 @@ def get_sly_indicators(df):
         df['rsi_lower'] = df['rsi_basis'] - (RSI_BB_MULT * df['rsi_std'])
  
         # ─────────────────────────────────────
-        # RSI PRO — Filtro de volumen institucional (Z-score)
+        # RSI PRO (AGREGADO) — Filtro de volumen institucional (Z-score)
         # ─────────────────────────────────────
         df['vol_avg'] = df['Vol'].rolling(20).mean()
         df['vol_std'] = df['Vol'].rolling(20).std()
@@ -94,8 +92,8 @@ def get_sly_indicators(df):
         df['vol_alpha'] = df['vol_z'] > VOL_Z_THRESHOLD
  
         # ─────────────────────────────────────
-        # RSI PRO — Estado cromático (4 niveles, igual lógica que el Pine)
-        # Verde fuerte  -> RSI > 50 y subiendo
+        # RSI PRO (AGREGADO) — Estado cromático de 4 niveles
+        # Verde fuerte  -> RSI > 50 y subiendo   (lo que pediste: "se pone en verde")
         # Verde débil   -> RSI > 50 pero bajando
         # Rojo fuerte   -> RSI < 50 y bajando
         # Rojo débil    -> RSI < 50 pero subiendo
@@ -112,7 +110,7 @@ def get_sly_indicators(df):
         df['rsi_state'] = np.select(conditions, choices, default="NEUTRAL ⚪")
  
         # ─────────────────────────────────────
-        # RSI PRO — Señales (Alpha Strike / Agotamiento)
+        # RSI PRO (AGREGADO) — Señales Alpha Strike / Agotamiento
         # ─────────────────────────────────────
         cross_up_50 = (rsi_now > 50) & (rsi_prev <= 50)
         df['alpha_strike'] = cross_up_50 & df['vol_alpha']
@@ -125,30 +123,16 @@ def get_sly_indicators(df):
         ha_o[0] = (df['Open'].iloc[0] + df['Close'].iloc[0]) / 2
         for i in range(1, len(df)): ha_o[i] = (ha_o[i-1] + ha_c.iloc[i-1]) / 2
         df['ha_color'] = np.where(ha_c > ha_o, "Verde", "Rojo")
- 
-        # ta.ema() puede devolver None (no una Serie) cuando el símbolo no tiene
-        # suficiente historial para la longitud pedida (ej. EMA260 en un par recién
-        # listado). Si no se sanea, esas filas quedan con el literal None en vez de
-        # NaN, y comparar None > float más adelante rompe con TypeError. Por eso se
-        # fuerza a NaN explícito cuando pandas_ta no puede calcularlo.
-        ema52_calc = ta.ema(df['Close'], length=52)
-        df['ema52'] = ema52_calc if ema52_calc is not None else pd.Series(np.nan, index=df.index)
-        ema260_calc = ta.ema(df['Close'], length=260)
-        df['ema260'] = ema260_calc if ema260_calc is not None else pd.Series(np.nan, index=df.index)
- 
-        return df.dropna(subset=['hist', 'rsi_smooth'])
+        df['ema52'] = ta.ema(df['Close'], length=52)
+        df['ema260'] = ta.ema(df['Close'], length=260)
+        return df.dropna(subset=['ema260'])
     except: return pd.DataFrame()
  
 # NUEVA FUNCIÓN: Analizar fuerza MACD Mensual
-# Cacheada 1 hora: el MACD mensual no cambia dentro de la misma hora,
-# así que evita repetir esta llamada en cada lote/rerun (reduce a la mitad
-# la cantidad de requests contra KuCoin, que es la causa más común de
-# baneos temporales de rate-limit).
-@st.cache_data(ttl=3600, show_spinner=False)
-def get_monthly_macd_force(_ex, symbol):
+def get_monthly_macd_force(ex, symbol):
     try:
         # Pedimos pocas velas (50 son suficientes para MACD estable)
-        raw = _ex.fetch_ohlcv(symbol, timeframe='1M', limit=50)
+        raw = ex.fetch_ohlcv(symbol, timeframe='1M', limit=50)
         df = pd.DataFrame(raw, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
         
         m_macd = dema(df['close'], 12) - dema(df['close'], 26)
@@ -226,42 +210,30 @@ with st.sidebar:
             ex = get_exchange()
             subset = st.session_state["crypto_list"][batch_idx*lote_size : (batch_idx+1)*lote_size]
             prog = st.progress(0)
-            fallos = []  # (símbolo, motivo) — para saber qué se cayó y por qué
- 
+            
             for i, sym in enumerate(subset):
                 try:
                     prog.progress((i+1)/len(subset), text=f"Auditando {selected_tf_label}: {sym}")
- 
-                    # Temporalidad principal (con reintentos y backoff ante rate-limit)
-                    raw_data = None
-                    for intento in range(3):
-                        try:
-                            raw_data = ex.fetch_ohlcv(sym, timeframe=selected_tf_code, limit=1000)
-                            break
-                        except (ccxt.RateLimitExceeded, ccxt.DDoSProtection, ccxt.NetworkError) as e_fetch:
-                            if intento < 2:
-                                time.sleep(3 * (intento + 1))  # 3s, luego 6s
-                            else:
-                                raise e_fetch
- 
+                    
+                    # Temporalidad principal
+                    raw_data = ex.fetch_ohlcv(sym, timeframe=selected_tf_code, limit=1000)
                     df = pd.DataFrame(raw_data, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
                     df['time'] = pd.to_datetime(df['time'], unit='ms')
                     df.set_index('time', inplace=True)
- 
+                    
                     data = get_sly_indicators(df)
-                    if data.empty:
-                        fallos.append((sym, "Datos insuficientes para calcular indicadores"))
-                        continue
- 
+                    if data.empty: continue
+                    
                     # Análisis MACD Mensual
                     monthly_force = get_monthly_macd_force(ex, sym)
                     
                     sig_date, sig_px, vigente, verd = find_last_signal(data, bear_longs)
                     pnl_val = f"{((data['Close'].iloc[-1] - sig_px) / sig_px * 100):.2f}%" if (vigente and sig_px) else "-"
- 
-                    # --- Lectura de columnas RSI PRO en la última vela ---
                     last_rsi = data['rsi_smooth'].iloc[-1]
-                    rsi_state_last = data['rsi_state'].iloc[-1]
+                    rsi_zone = "SOBRE 50 🟢" if last_rsi > 50 else "BAJO 50 🔴"
+ 
+                    # --- AGREGADO: lectura de columnas del RSI PRO en la última vela ---
+                    rsi_pro_state = data['rsi_state'].iloc[-1]
                     vol_z_last = data['vol_z'].iloc[-1]
                     vol_z_txt = f"{vol_z_last:.2f}" if pd.notna(vol_z_last) else "-"
                     alpha_strike_txt = "SÍ 🚀" if bool(data['alpha_strike'].iloc[-1]) else "-"
@@ -271,39 +243,27 @@ with st.sidebar:
                         "Activo": sym.replace("/USDT", ""), 
                         "Temporalidad": selected_tf_label,
                         "Sector": get_crypto_sector(sym),
-                        "MACD Mensual": monthly_force,
+                        "MACD Mensual": monthly_force, # AGREGADO
                         "Última Señal": sig_date.strftime('%d/%m %H:%M') if sig_date else "-",
                         "Estado": "VIGENTE 🟢" if vigente else "CERRADA 🔴",
                         "PnL Real": pnl_val,
-                        "RSI PRO": rsi_state_last,      # <-- columna nueva: se pone en verde cuando sube
-                        "Vol Z-Score": vol_z_txt,        # <-- columna nueva: filtro de volumen
-                        "Alpha Strike": alpha_strike_txt,# <-- columna nueva: entrada institucional
-                        "Agotamiento": exhaustion_txt,   # <-- columna nueva: alerta de sobre-extensión
+                        "Zona RSI": rsi_zone,
+                        "Veredicto": verd,
+                        "RSI PRO": rsi_pro_state,          # <-- NUEVO: se pone en verde cuando el RSI sube
+                        "Vol Z-Score": vol_z_txt,           # <-- NUEVO: filtro de volumen institucional
+                        "Alpha Strike": alpha_strike_txt,   # <-- NUEVO: entrada institucional
+                        "Agotamiento": exhaustion_txt,      # <-- NUEVO: alerta de sobre-extensión
                         "Precio": f"{data['Close'].iloc[-1]:.4f}",
                         "RSI": round(last_rsi, 1),
-                        "Régimen": (
-                            "N/A (poco historial)" if pd.isna(data['ema260'].iloc[-1])
-                            else "ALCISTA" if data['ema52'].iloc[-1] > data['ema260'].iloc[-1]
-                            else "BAJISTA"
-                        )
+                        "Régimen": "ALCISTA" if data['ema52'].iloc[-1] > data['ema260'].iloc[-1] else "BAJISTA"
                     }
-                    time.sleep(max(ex.rateLimit / 1000, 0.2))  # respeta el límite real que informa KuCoin
-                except Exception as e_sym:
-                    fallos.append((sym, f"{type(e_sym).__name__}: {e_sym}"))
-                    continue
- 
-            st.session_state["ultimo_log_fallos"] = fallos
+                    time.sleep(0.05)
+                except: continue
             st.rerun()
  
     if st.button("🗑️ Limpiar Memoria"):
         st.session_state["master_results_crypto"] = {}
         st.rerun()
- 
-    if st.session_state.get("ultimo_log_fallos"):
-        n_fail = len(st.session_state["ultimo_log_fallos"])
-        with st.expander(f"⚠️ {n_fail} símbolo(s) fallaron en el último lote"):
-            for sym_f, motivo in st.session_state["ultimo_log_fallos"]:
-                st.write(f"**{sym_f}**: {motivo}")
  
 # ─────────────────────────────────────────────
 # RESUMEN SECTORIAL
@@ -311,9 +271,9 @@ with st.sidebar:
 if st.session_state["master_results_crypto"]:
     df_full = pd.DataFrame(st.session_state["master_results_crypto"].values())
     
-    # Reordenar columnas (RSI PRO y sus derivados quedan agrupados)
-    cols_order = ["Activo", "Sector", "MACD Mensual", "Estado", "Veredicto" if "Veredicto" in df_full.columns else "PnL Real",
-                  "Última Señal", "Temporalidad", "RSI PRO", "Vol Z-Score", "Alpha Strike", "Agotamiento",
+    # Reordenar para que MACD Mensual esté al principio (+ columnas nuevas del RSI PRO)
+    cols_order = ["Activo", "Sector", "MACD Mensual", "Estado", "Veredicto", "PnL Real", "Última Señal",
+                  "Temporalidad", "Zona RSI", "RSI PRO", "Vol Z-Score", "Alpha Strike", "Agotamiento",
                   "RSI", "Precio", "Régimen"]
     cols_order = [c for c in cols_order if c in df_full.columns]
     df_full = df_full[cols_order]
@@ -339,20 +299,18 @@ if st.session_state["master_results_crypto"]:
     
     def color_cells(val):
         str_v = str(val)
-        # Estados fuertes / positivos -> verde intenso
+        # Estados fuertes / positivos -> verde intenso (AGREGADO)
         if "ALCISTA FUERTE" in str_v or "SÍ 🚀" in str_v:
             return 'background-color: #A5D6A7; color: #1B5E20; font-weight: bold;'
-        # Estados positivos generales -> verde
-        if "VIGENTE" in str_v or "MANTENER" in str_v or "ALCISTA" in str_v or "GANANDO" in str_v:
+        if "VIGENTE" in str_v or "MANTENER" in str_v or "ALCISTA" in str_v or "SOBRE 50" in str_v or "GANANDO" in str_v: 
             return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
-        # Estados negativos fuertes -> rojo intenso
+        # Estados negativos fuertes -> rojo intenso (AGREGADO)
         if "BAJISTA FUERTE" in str_v:
             return 'background-color: #EF9A9A; color: #B71C1C; font-weight: bold;'
-        # Estados negativos generales -> rojo
-        if "CERRADA" in str_v or "CERRAR" in str_v or "BAJISTA" in str_v or "PERDIENDO" in str_v:
+        if "CERRADA" in str_v or "CERRAR" in str_v or "BAJISTA" in str_v or "BAJO 50" in str_v or "PERDIENDO" in str_v: 
             return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
-        # Alertas -> amarillo
-        if "PIERDE FUERZA" in str_v or "SÍ ⚠️" in str_v:
+        # Alerta de agotamiento (AGREGADO)
+        if "PIERDE FUERZA" in str_v or "SÍ ⚠️" in str_v: 
             return 'background-color: #FFF9C4; color: #827717; font-weight: bold;'
         return ''
  
