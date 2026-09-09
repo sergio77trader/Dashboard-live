@@ -1,4 +1,23 @@
-FF3E0; padding: 15px; border-radius: 8px; border-left: 5px solid #E64A19; margin-bottom: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
+import streamlit as st
+import ccxt
+import pandas as pd
+import pandas_ta as ta
+import numpy as np
+import time
+from datetime import datetime, timedelta
+ 
+# ─────────────────────────────────────────────
+# CONFIGURACIÓN INSTITUCIONAL - LIGHT THEME
+# ─────────────────────────────────────────────
+st.set_page_config(layout="wide", page_title="SLY | CRIPTO MULTI-TF MONITOR")
+ 
+st.markdown("""
+<style>
+    .stApp { background-color: #FFFFFF; color: #1C1E21; }
+    .stDataFrame { font-size: 11px; font-family: 'Roboto Mono', monospace; }
+    h1 { color: #E65100; font-weight: 800; border-bottom: 3px solid #E65100; }
+    .stProgress > div > div > div > div { background-color: #E65100; }
+    .sector-box { background-color: #FFF3E0; padding: 15px; border-radius: 8px; border-left: 5px solid #E64A19; margin-bottom: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
     .sector-title { font-weight: bold; color: #BF360C; font-size: 1.1em; }
 </style>
 """, unsafe_allow_html=True)
@@ -339,5 +358,4 @@ if st.session_state["master_results_crypto"]:
  
     st.dataframe(df_res.style.map(color_cells), use_container_width=True, height=600)
 else:
-    st.info("👈 Seleccione temporalidad, sincronice mercado y analice lotes.")
     st.info("👈 Seleccione temporalidad, sincronice mercado y analice lotes.")
