@@ -196,6 +196,12 @@ def fetch_symbols():
         markets = ex.load_markets()
         symbols = [s for s in markets if '/USDT' in s and markets[s]['active']]
         filtered = [s for s in symbols if not any(x in s for x in ['3L', '3S', 'USDC', 'DAI', 'PAX', 'TUSD'])]
+        # AGREGADO: excluir contratos de futuros/perpetuos. En la notación de ccxt
+        # los pares spot son "BASE/QUOTE" (ej. "0G/USDT") y los perpetuos son
+        # "BASE/QUOTE:SETTLE" (ej. "0G/USDT:USDT") — el ":" los distingue siempre.
+        # Estos contratos suelen tener poco historial y son los que aparecían
+        # como "SIN CÁLCULO" en la tabla.
+        filtered = [s for s in filtered if ':' not in s]
         return sorted(filtered)
     except: return []
  
