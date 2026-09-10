@@ -65,9 +65,15 @@ RSI_BB_MULT = 2.0
 VOL_Z_THRESHOLD = 1.5
  
 def get_sly_indicators(df):
+    """
+    Devuelve (dataframe_calculado, motivo).
+    Si el cálculo fue exitoso: motivo = "OK".
+    Si no: dataframe vacío y motivo con la explicación puntual.
+    """
     try:
         df.columns = [c.capitalize() for c in df.columns]
         df = df.dropna(subset=['Close'])
+        velas_totales = len(df)
  
         df['macd_line'] = dema(df['Close'], 12) - dema(df['Close'], 26)
         df['signal_line'] = df['macd_line'].ewm(span=9, adjust=False).mean()
@@ -125,8 +131,15 @@ def get_sly_indicators(df):
         df['ha_color'] = np.where(ha_c > ha_o, "Verde", "Rojo")
         df['ema52'] = ta.ema(df['Close'], length=52)
         df['ema260'] = ta.ema(df['Close'], length=260)
-        return df.dropna(subset=['ema260'])
-    except: return pd.DataFrame()
+ 
+        resultado = df.dropna(subset=['ema260'])
+        if resultado.empty:
+            # El motivo casi siempre es historial insuficiente: EMA260 necesita
+            # 260 velas válidas y este símbolo/timeframe no llega a esa cantidad.
+            return pd.DataFrame(), f"Historial insuficiente: {velas_totales} velas disponibles (se necesitan ≥260 para EMA260)"
+        return resultado, "OK"
+    except Exception as e:
+        return pd.DataFrame(), f"Error de cálculo: {type(e).__name__}: {e}"
  
 # NUEVA FUNCIÓN: Analizar fuerza MACD Mensual
 def get_monthly_macd_force(ex, symbol):
@@ -214,16 +227,39 @@ with st.sidebar:
             for i, sym in enumerate(subset):
                 try:
                     prog.progress((i+1)/len(subset), text=f"Auditando {selected_tf_label}: {sym}")
-                    
+ 
                     # Temporalidad principal
                     raw_data = ex.fetch_ohlcv(sym, timeframe=selected_tf_code, limit=1000)
                     df = pd.DataFrame(raw_data, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
                     df['time'] = pd.to_datetime(df['time'], unit='ms')
                     df.set_index('time', inplace=True)
-                    
-                    data = get_sly_indicators(df)
-                    if data.empty: continue
-                    
+ 
+                    data, motivo = get_sly_indicators(df)
+ 
+                    if data.empty:
+                        # AGREGADO: aunque no se pudo calcular, se deja la fila
+                        # con el motivo explicando por qué (no desaparece en silencio).
+                        st.session_state["master_results_crypto"][sym] = {
+                            "Activo": sym.replace("/USDT", ""),
+                            "Temporalidad": selected_tf_label,
+                            "Sector": get_crypto_sector(sym),
+                            "MACD Mensual": "-",
+                            "Última Señal": "-",
+                            "Estado": "SIN CÁLCULO ⚪",
+                            "PnL Real": "-",
+                            "Zona RSI": "-",
+                            "Veredicto": "-",
+                            "RSI PRO": "-",
+                            "Vol Z-Score": "-",
+                            "Alpha Strike": "-",
+                            "Agotamiento": "-",
+                            "Precio": "-",
+                            "RSI": "-",
+                            "Régimen": "-",
+                            "Motivo": motivo,   # <-- NUEVO: por qué no se calculó
+                        }
+                        continue
+ 
                     # Análisis MACD Mensual
                     monthly_force = get_monthly_macd_force(ex, sym)
                     
@@ -255,10 +291,25 @@ with st.sidebar:
                         "Agotamiento": exhaustion_txt,      # <-- NUEVO: alerta de sobre-extensión
                         "Precio": f"{data['Close'].iloc[-1]:.4f}",
                         "RSI": round(last_rsi, 1),
-                        "Régimen": "ALCISTA" if data['ema52'].iloc[-1] > data['ema260'].iloc[-1] else "BAJISTA"
+                        "Régimen": "ALCISTA" if data['ema52'].iloc[-1] > data['ema260'].iloc[-1] else "BAJISTA",
+                        "Motivo": "OK",  # <-- NUEVO: para uniformar la columna
                     }
                     time.sleep(0.05)
-                except: continue
+                except Exception as e_sym:
+                    # AGREGADO: si falla algo antes de llegar a get_sly_indicators
+                    # (ej. error de conexión al pedir las velas), también se deja
+                    # constancia del símbolo y el motivo real en vez de perderlo.
+                    st.session_state["master_results_crypto"][sym] = {
+                        "Activo": sym.replace("/USDT", ""),
+                        "Temporalidad": selected_tf_label,
+                        "Sector": get_crypto_sector(sym),
+                        "MACD Mensual": "-", "Última Señal": "-", "Estado": "SIN CÁLCULO ⚪",
+                        "PnL Real": "-", "Zona RSI": "-", "Veredicto": "-", "RSI PRO": "-",
+                        "Vol Z-Score": "-", "Alpha Strike": "-", "Agotamiento": "-",
+                        "Precio": "-", "RSI": "-", "Régimen": "-",
+                        "Motivo": f"{type(e_sym).__name__}: {e_sym}",
+                    }
+                    continue
             st.rerun()
  
     if st.button("🗑️ Limpiar Memoria"):
@@ -274,7 +325,7 @@ if st.session_state["master_results_crypto"]:
     # Reordenar para que MACD Mensual esté al principio (+ columnas nuevas del RSI PRO)
     cols_order = ["Activo", "Sector", "MACD Mensual", "Estado", "Veredicto", "PnL Real", "Última Señal",
                   "Temporalidad", "Zona RSI", "RSI PRO", "Vol Z-Score", "Alpha Strike", "Agotamiento",
-                  "RSI", "Precio", "Régimen"]
+                  "RSI", "Precio", "Régimen", "Motivo"]
     cols_order = [c for c in cols_order if c in df_full.columns]
     df_full = df_full[cols_order]
  
