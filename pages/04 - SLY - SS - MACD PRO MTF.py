@@ -228,10 +228,17 @@ if st.session_state["master_results_crypto"]:
             return 'background-color: #2E7D32; color: white; font-weight: bold;'
         if "BAJISTA ⚠️" in str_v:
             return 'background-color: #B71C1C; color: white; font-weight: bold;'
-        if "VERDE" in str_v:
-            return 'background-color: #A5D6A7; color: #1B5E20; font-weight: bold;'
-        if "ROJO" in str_v:
-            return 'background-color: #EF9A9A; color: #B71C1C; font-weight: bold;'
+        # AGREGADO: 4 tonos en vez de 2, igual que el color_for() del Pine
+        # (verde/rojo brillante = fuerte, verde/rojo apagado = perdiendo o
+        # recuperando fuerza) en vez de tratar "Aumentando"/"Bajando" igual.
+        if "VERDE - Aumentando" in str_v:
+            return 'background-color: #2E7D32; color: white; font-weight: bold;'   # verde intenso
+        if "VERDE - Bajando" in str_v:
+            return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'  # verde pastel
+        if "ROJO - Bajando" in str_v:
+            return 'background-color: #C62828; color: white; font-weight: bold;'   # rojo intenso
+        if "ROJO - Aumentando" in str_v:
+            return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'  # rojo pastel
         if "SÍ 🔊" in str_v or "SÍ (" in str_v:
             return 'background-color: #FFF9C4; color: #827717; font-weight: bold;'
         return ''
