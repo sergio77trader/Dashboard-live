@@ -163,42 +163,42 @@ def get_monthly_macd_force(ex, symbol):
         return "N/A"
  
 # ─────────────────────────────────────────────
-# AGREGADO — RSI PRO MULTI-TIMEFRAME (1h/2h/3h/4h)
-# Traducción del indicador Pine "SLY - RSI PRO Multi-TF Confluencia".
+# AGREGADO — RSI PRO POR TEMPORALIDAD (1h/2h/3h/4h), en columnas separadas
 # En vez de pedir 4 timeframes por separado (4 llamadas a la API por
 # símbolo), se piden velas de 1h UNA sola vez y las de 2h/3h/4h se derivan
 # por resampleo con pandas — mismo resultado, 1 sola llamada extra.
+# Cada temporalidad devuelve el MISMO estado de 4 niveles que la columna
+# "RSI PRO" principal: si está "en verde" (ALCISTA FUERTE/DÉBIL) o no, y
+# si no está en verde, si al menos está subiendo (BAJISTA DÉBIL = sube).
 # ─────────────────────────────────────────────
 def resample_ohlcv(df_1h, rule):
     """Reconstruye velas de una temporalidad mayor a partir de velas de 1h."""
     r = df_1h.resample(rule).agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'vol': 'sum'})
     return r.dropna()
  
-def _rsi_pro_state_tf(df_tf):
-    """Devuelve (rsi_now, creciendo, vol_alpha) para UNA temporalidad ya resampleada."""
+def _rsi_pro_full_state_tf(df_tf):
+    """Devuelve el estado de 4 niveles (mismo texto que la columna RSI PRO) para UNA temporalidad."""
     if len(df_tf) < 25:
-        return None, None, None
+        return None
     rsi_raw = ta.rsi(df_tf['close'], length=14).fillna(50)
     rsi_smooth = dema(rsi_raw, 5)
     if len(rsi_smooth.dropna()) < 2:
-        return None, None, None
+        return None
     rsi_now, rsi_prev = rsi_smooth.iloc[-1], rsi_smooth.iloc[-2]
-    growing = rsi_now > rsi_prev
- 
-    vol_avg = df_tf['vol'].rolling(20).mean()
-    vol_std = df_tf['vol'].rolling(20).std()
-    vol_std_last = vol_std.iloc[-1]
-    if pd.notna(vol_std_last) and vol_std_last != 0:
-        vol_z_last = (df_tf['vol'].iloc[-1] - vol_avg.iloc[-1]) / vol_std_last
-        vol_alpha = bool(vol_z_last > VOL_Z_THRESHOLD)
-    else:
-        vol_alpha = False
-    return rsi_now, growing, vol_alpha
+    if rsi_now > 50 and rsi_now > rsi_prev:
+        return "ALCISTA FUERTE 🟢🟢"
+    if rsi_now > 50 and rsi_now <= rsi_prev:
+        return "ALCISTA DÉBIL 🟢"
+    if rsi_now < 50 and rsi_now < rsi_prev:
+        return "BAJISTA FUERTE 🔴🔴"
+    if rsi_now < 50 and rsi_now >= rsi_prev:
+        return "BAJISTA DÉBIL 🔴"
+    return "NEUTRAL ⚪"
  
 def get_rsi_multitf(ex, symbol, df_1h_ya_obtenido=None):
     """
-    Calcula el estado RSI PRO en 1h/2h/3h/4h y la confluencia entre ellas.
-    Devuelve None si no hay historial suficiente en alguna temporalidad.
+    Calcula el estado RSI PRO (4 niveles) en 1h/2h/3h/4h por separado.
+    Devuelve None si no se pudo obtener/resamplear alguna temporalidad.
     """
     try:
         if df_1h_ya_obtenido is not None:
@@ -213,29 +213,11 @@ def get_rsi_multitf(ex, symbol, df_1h_ya_obtenido=None):
         df_3h = resample_ohlcv(df_1h, '3h')
         df_4h = resample_ohlcv(df_1h, '4h')
  
-        estados = []
-        vol_alphas = []
-        for df_tf in [df_1h, df_2h, df_3h, df_4h]:
-            rsi_now, growing, vol_alpha = _rsi_pro_state_tf(df_tf)
-            if rsi_now is None:
-                return None  # falta historial en alguna TF, no se puede evaluar confluencia
-            if rsi_now > 50 and growing:
-                estados.append("🟢")
-            elif rsi_now < 50 and not growing:
-                estados.append("🔴")
-            else:
-                estados.append("⚪")
-            vol_alphas.append(vol_alpha)
- 
-        confluencia_bull = all(e == "🟢" for e in estados)
-        confluencia_bear = all(e == "🔴" for e in estados)
-        vol_count = sum(vol_alphas)
- 
         return {
-            "estados": estados,           # ["1h","2h","3h","4h"] en ese orden
-            "confluencia_bull": confluencia_bull,
-            "confluencia_bear": confluencia_bear,
-            "vol_count": vol_count,
+            "1h": _rsi_pro_full_state_tf(df_1h) or "-",
+            "2h": _rsi_pro_full_state_tf(df_2h) or "-",
+            "3h": _rsi_pro_full_state_tf(df_3h) or "-",
+            "4h": _rsi_pro_full_state_tf(df_4h) or "-",
         }
     except Exception:
         return None
@@ -337,9 +319,10 @@ with st.sidebar:
                             "Vol Z-Score": "-",
                             "Alpha Strike": "-",
                             "Agotamiento": "-",
-                            "RSI Multi-TF": "-",
-                            "Confluencia MTF": "-",
-                            "Vol Confluencia MTF": "-",
+                            "RSI 1h": "-",
+                            "RSI 2h": "-",
+                            "RSI 3h": "-",
+                            "RSI 4h": "-",
                             "Precio": "-",
                             "RSI": "-",
                             "Régimen": "-",
@@ -350,24 +333,16 @@ with st.sidebar:
                     # Análisis MACD Mensual
                     monthly_force = get_monthly_macd_force(ex, sym)
  
-                    # AGREGADO: RSI Multi-TF (1h/2h/3h/4h). Si la temporalidad
-                    # principal elegida ya ES 1h, reutilizamos ese mismo 'df'
-                    # crudo para no duplicar la llamada a la API.
+                    # AGREGADO: RSI PRO por temporalidad (1h/2h/3h/4h). Si la
+                    # temporalidad principal elegida ya ES 1h, reutilizamos ese
+                    # mismo 'df' crudo para no duplicar la llamada a la API.
                     df_1h_reutilizable = df if selected_tf_code == '1h' else None
                     mtf_result = get_rsi_multitf(ex, sym, df_1h_ya_obtenido=df_1h_reutilizable)
                     if mtf_result:
-                        rsi_mtf_txt = "".join(mtf_result["estados"])
-                        if mtf_result["confluencia_bull"]:
-                            confluencia_mtf_txt = "ALCISTA 🚀"
-                        elif mtf_result["confluencia_bear"]:
-                            confluencia_mtf_txt = "BAJISTA ⚠️"
-                        else:
-                            confluencia_mtf_txt = "-"
-                        vol_confluencia_txt = f"SÍ ({mtf_result['vol_count']}/4)" if mtf_result["vol_count"] >= 2 else "-"
+                        rsi_1h_txt, rsi_2h_txt = mtf_result["1h"], mtf_result["2h"]
+                        rsi_3h_txt, rsi_4h_txt = mtf_result["3h"], mtf_result["4h"]
                     else:
-                        rsi_mtf_txt = "-"
-                        confluencia_mtf_txt = "-"
-                        vol_confluencia_txt = "-"
+                        rsi_1h_txt = rsi_2h_txt = rsi_3h_txt = rsi_4h_txt = "-"
                     
                     sig_date, sig_px, vigente, verd = find_last_signal(data, bear_longs)
                     pnl_val = f"{((data['Close'].iloc[-1] - sig_px) / sig_px * 100):.2f}%" if (vigente and sig_px) else "-"
@@ -395,9 +370,10 @@ with st.sidebar:
                         "Vol Z-Score": vol_z_txt,           # <-- NUEVO: filtro de volumen institucional
                         "Alpha Strike": alpha_strike_txt,   # <-- NUEVO: entrada institucional
                         "Agotamiento": exhaustion_txt,      # <-- NUEVO: alerta de sobre-extensión
-                        "RSI Multi-TF": rsi_mtf_txt,             # <-- NUEVO: 🟢/🔴/⚪ para 1h,2h,3h,4h
-                        "Confluencia MTF": confluencia_mtf_txt,  # <-- NUEVO: las 4 TF alineadas
-                        "Vol Confluencia MTF": vol_confluencia_txt,  # <-- NUEVO: 2+ TF con volumen alpha
+                        "RSI 1h": rsi_1h_txt,   # <-- NUEVO: estado RSI PRO en 1h
+                        "RSI 2h": rsi_2h_txt,   # <-- NUEVO: estado RSI PRO en 2h
+                        "RSI 3h": rsi_3h_txt,   # <-- NUEVO: estado RSI PRO en 3h
+                        "RSI 4h": rsi_4h_txt,   # <-- NUEVO: estado RSI PRO en 4h
                         "Precio": f"{data['Close'].iloc[-1]:.4f}",
                         "RSI": round(last_rsi, 1),
                         "Régimen": "ALCISTA" if data['ema52'].iloc[-1] > data['ema260'].iloc[-1] else "BAJISTA",
@@ -415,7 +391,7 @@ with st.sidebar:
                         "MACD Mensual": "-", "Última Señal": "-", "Estado": "SIN CÁLCULO ⚪",
                         "PnL Real": "-", "Zona RSI": "-", "Veredicto": "-", "RSI PRO": "-",
                         "Vol Z-Score": "-", "Alpha Strike": "-", "Agotamiento": "-",
-                        "RSI Multi-TF": "-", "Confluencia MTF": "-", "Vol Confluencia MTF": "-",
+                        "RSI 1h": "-", "RSI 2h": "-", "RSI 3h": "-", "RSI 4h": "-",
                         "Precio": "-", "RSI": "-", "Régimen": "-",
                         "Motivo": f"{type(e_sym).__name__}: {e_sym}",
                     }
@@ -435,7 +411,7 @@ if st.session_state["master_results_crypto"]:
     # Reordenar para que MACD Mensual esté al principio (+ columnas nuevas del RSI PRO)
     cols_order = ["Activo", "Sector", "MACD Mensual", "Estado", "Veredicto", "PnL Real", "Última Señal",
                   "Temporalidad", "Zona RSI", "RSI PRO", "Vol Z-Score", "Alpha Strike", "Agotamiento",
-                  "RSI Multi-TF", "Confluencia MTF", "Vol Confluencia MTF",
+                  "RSI 1h", "RSI 2h", "RSI 3h", "RSI 4h",
                   "RSI", "Precio", "Régimen", "Motivo"]
     cols_order = [c for c in cols_order if c in df_full.columns]
     df_full = df_full[cols_order]
@@ -461,11 +437,6 @@ if st.session_state["master_results_crypto"]:
     
     def color_cells(val):
         str_v = str(val)
-        # AGREGADO: confluencia multi-timeframe
-        if "ALCISTA 🚀" in str_v:
-            return 'background-color: #2E7D32; color: white; font-weight: bold;'
-        if "BAJISTA ⚠️" in str_v:
-            return 'background-color: #B71C1C; color: white; font-weight: bold;'
         # Estados fuertes / positivos -> verde intenso (AGREGADO)
         if "ALCISTA FUERTE" in str_v or "SÍ 🚀" in str_v:
             return 'background-color: #A5D6A7; color: #1B5E20; font-weight: bold;'
