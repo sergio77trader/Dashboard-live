@@ -4,12 +4,11 @@ import pandas as pd
 import pandas_ta as ta
 import numpy as np
 import time
-from datetime import datetime, timedelta
  
 # ─────────────────────────────────────────────
-# CONFIGURACIÓN INSTITUCIONAL - LIGHT THEME
+# CONFIGURACIÓN
 # ─────────────────────────────────────────────
-st.set_page_config(layout="wide", page_title="SLY | CRIPTO MULTI-TF MONITOR")
+st.set_page_config(layout="wide", page_title="SLY | RSI PRO MULTI-TF")
  
 st.markdown("""
 <style>
@@ -17,234 +16,92 @@ st.markdown("""
     .stDataFrame { font-size: 11px; font-family: 'Roboto Mono', monospace; }
     h1 { color: #E65100; font-weight: 800; border-bottom: 3px solid #E65100; }
     .stProgress > div > div > div > div { background-color: #E65100; }
-    .sector-box { background-color: #FFF3E0; padding: 15px; border-radius: 8px; border-left: 5px solid #E64A19; margin-bottom: 10px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
-    .sector-title { font-weight: bold; color: #BF360C; font-size: 1.1em; }
 </style>
 """, unsafe_allow_html=True)
  
 if "master_results_crypto" not in st.session_state:
     st.session_state["master_results_crypto"] = {}
  
-# Mapeo de temporalidades para CCXT
-TF_OPTIONS = {
-    "30 MIN": "30m",
-    "1 HS": "1h",
-    "4 HS": "4h",
-    "1 DIA": "1d",
-    "1 SEMANA": "1w",
-    "1 MES": "1M"
-}
- 
 # ─────────────────────────────────────────────
-# MAPEO SECTORIAL CRIPTO
-# ─────────────────────────────────────────────
-CRYPTO_SECTORS = {
-    "LEADER": ["BTC/USDT", "ETH/USDT"],
-    "LAYER 1": ["SOL/USDT", "ADA/USDT", "DOT/USDT", "AVAX/USDT", "MATIC/USDT", "NEAR/USDT", "FTM/USDT", "ALGO/USDT"],
-    "DEFI/L2": ["ARB/USDT", "OP/USDT", "LINK/USDT", "UNI/USDT", "AAVE/USDT", "LDO/USDT"],
-    "AI/DEPIN": ["RNDR/USDT", "FET/USDT", "FIL/USDT", "THETA/USDT"],
-    "MEMES": ["DOGE/USDT", "SHIB/USDT", "PEPE/USDT", "BONK/USDT", "FLOKI/USDT"],
-    "EXCHANGE": ["BNB/USDT", "KCS/USDT", "OKB/USDT"]
-}
- 
-def get_crypto_sector(ticker):
-    for sector, members in CRYPTO_SECTORS.items():
-        if ticker.upper() in members: return sector
-    return "ALTCOINS / OTROS"
- 
-# ─────────────────────────────────────────────
-# MOTORES TÉCNICOS SLY
+# MOTOR DEMA (idéntico al Pine "SLY - RSI PRO Multi-TF Confluencia")
 # ─────────────────────────────────────────────
 def dema(s, length):
     ema1 = s.ewm(span=length, adjust=False).mean()
     ema2 = ema1.ewm(span=length, adjust=False).mean()
     return 2 * ema1 - ema2
  
-# --- RSI PRO: parámetros por defecto (idénticos al Pine Script) ---
-RSI_BB_MULT = 2.0
-VOL_Z_THRESHOLD = 1.5
- 
-def get_sly_indicators(df):
-    """
-    Devuelve (dataframe_calculado, motivo).
-    Si el cálculo fue exitoso: motivo = "OK".
-    Si no: dataframe vacío y motivo con la explicación puntual.
-    """
-    try:
-        df.columns = [c.capitalize() for c in df.columns]
-        df = df.dropna(subset=['Close'])
-        velas_totales = len(df)
- 
-        df['macd_line'] = dema(df['Close'], 12) - dema(df['Close'], 26)
-        df['signal_line'] = df['macd_line'].ewm(span=9, adjust=False).mean()
-        df['hist'] = df['macd_line'] - df['signal_line']
-        df['rsi_smooth'] = dema(ta.rsi(df['Close'], length=14).fillna(50), 5)
- 
-        # ─────────────────────────────────────
-        # RSI PRO (AGREGADO) — Bandas estadísticas dinámicas
-        # (Bollinger sobre el RSI, igual que el segundo script Pine)
-        # ─────────────────────────────────────
-        df['rsi_basis'] = df['rsi_smooth'].rolling(20).mean()
-        df['rsi_std']   = df['rsi_smooth'].rolling(20).std()
-        df['rsi_upper'] = df['rsi_basis'] + (RSI_BB_MULT * df['rsi_std'])
-        df['rsi_lower'] = df['rsi_basis'] - (RSI_BB_MULT * df['rsi_std'])
- 
-        # ─────────────────────────────────────
-        # RSI PRO (AGREGADO) — Filtro de volumen institucional (Z-score)
-        # ─────────────────────────────────────
-        df['vol_avg'] = df['Vol'].rolling(20).mean()
-        df['vol_std'] = df['Vol'].rolling(20).std()
-        df['vol_z']   = (df['Vol'] - df['vol_avg']) / df['vol_std']
-        df['vol_alpha'] = df['vol_z'] > VOL_Z_THRESHOLD
- 
-        # ─────────────────────────────────────
-        # RSI PRO (AGREGADO) — Estado cromático de 4 niveles
-        # Verde fuerte  -> RSI > 50 y subiendo   (lo que pediste: "se pone en verde")
-        # Verde débil   -> RSI > 50 pero bajando
-        # Rojo fuerte   -> RSI < 50 y bajando
-        # Rojo débil    -> RSI < 50 pero subiendo
-        # ─────────────────────────────────────
-        rsi_now  = df['rsi_smooth']
-        rsi_prev = df['rsi_smooth'].shift(1)
-        conditions = [
-            (rsi_now > 50) & (rsi_now > rsi_prev),
-            (rsi_now > 50) & (rsi_now <= rsi_prev),
-            (rsi_now < 50) & (rsi_now < rsi_prev),
-            (rsi_now < 50) & (rsi_now >= rsi_prev),
-        ]
-        choices = ["ALCISTA FUERTE 🟢🟢", "ALCISTA DÉBIL 🟢", "BAJISTA FUERTE 🔴🔴", "BAJISTA DÉBIL 🔴"]
-        df['rsi_state'] = np.select(conditions, choices, default="NEUTRAL ⚪")
- 
-        # ─────────────────────────────────────
-        # RSI PRO (AGREGADO) — Señales Alpha Strike / Agotamiento
-        # ─────────────────────────────────────
-        cross_up_50 = (rsi_now > 50) & (rsi_prev <= 50)
-        df['alpha_strike'] = cross_up_50 & df['vol_alpha']
- 
-        cross_under_upper = (rsi_now < df['rsi_upper']) & (rsi_prev >= df['rsi_upper'].shift(1))
-        df['exhaustion'] = cross_under_upper
- 
-        ha_c = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
-        ha_o = np.zeros(len(df))
-        ha_o[0] = (df['Open'].iloc[0] + df['Close'].iloc[0]) / 2
-        for i in range(1, len(df)): ha_o[i] = (ha_o[i-1] + ha_c.iloc[i-1]) / 2
-        df['ha_color'] = np.where(ha_c > ha_o, "Verde", "Rojo")
-        df['ema52'] = ta.ema(df['Close'], length=52)
-        df['ema260'] = ta.ema(df['Close'], length=260)
- 
-        resultado = df.dropna(subset=['ema260'])
-        if resultado.empty:
-            # El motivo casi siempre es historial insuficiente: EMA260 necesita
-            # 260 velas válidas y este símbolo/timeframe no llega a esa cantidad.
-            return pd.DataFrame(), f"Historial insuficiente: {velas_totales} velas disponibles (se necesitan ≥260 para EMA260)"
-        return resultado, "OK"
-    except Exception as e:
-        return pd.DataFrame(), f"Error de cálculo: {type(e).__name__}: {e}"
- 
-# NUEVA FUNCIÓN: Analizar fuerza MACD Mensual
-def get_monthly_macd_force(ex, symbol):
-    try:
-        # Pedimos pocas velas (50 son suficientes para MACD estable)
-        raw = ex.fetch_ohlcv(symbol, timeframe='1M', limit=50)
-        df = pd.DataFrame(raw, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
-        
-        m_macd = dema(df['close'], 12) - dema(df['close'], 26)
-        m_signal = m_macd.ewm(span=9, adjust=False).mean()
-        m_hist = m_macd - m_signal
-        
-        current_h = m_hist.iloc[-1]
-        previous_h = m_hist.iloc[-2]
-        
-        if current_h > previous_h:
-            return "GANANDO FUERZA 📈"
-        else:
-            return "PERDIENDO FUERZA 📉"
-    except:
-        return "N/A"
- 
 # ─────────────────────────────────────────────
-# AGREGADO — RSI PRO POR TEMPORALIDAD (1h/2h/3h/4h), en columnas separadas
-# En vez de pedir 4 timeframes por separado (4 llamadas a la API por
-# símbolo), se piden velas de 1h UNA sola vez y las de 2h/3h/4h se derivan
-# por resampleo con pandas — mismo resultado, 1 sola llamada extra.
-# Cada temporalidad devuelve el MISMO estado de 4 niveles que la columna
-# "RSI PRO" principal: si está "en verde" (ALCISTA FUERTE/DÉBIL) o no, y
-# si no está en verde, si al menos está subiendo (BAJISTA DÉBIL = sube).
+# RSI PRO POR TEMPORALIDAD — 1h/2h/3h/4h fijas.
+# Se pide UNA sola vez la vela de 1h por símbolo, y 2h/3h/4h se derivan
+# por resampleo con pandas (1 sola llamada a la API por símbolo, no 4) —
+# el mismo resultado que el request.security(..., lookahead_off) del Pine.
 # ─────────────────────────────────────────────
 def resample_ohlcv(df_1h, rule):
-    """Reconstruye velas de una temporalidad mayor a partir de velas de 1h."""
     r = df_1h.resample(rule).agg({'open': 'first', 'high': 'max', 'low': 'min', 'close': 'last', 'vol': 'sum'})
     return r.dropna()
  
-def _rsi_pro_full_state_tf(df_tf):
-    """Devuelve el estado de 4 niveles (mismo texto que la columna RSI PRO) para UNA temporalidad."""
+VOL_TH = 1.5  # mismo default que "Volume Z-Score Threshold" en el Pine
+ 
+def _rsi_pro_estado_tf(df_tf):
+    """
+    Reproduce f_rsi_pro_data() + color_for() del Pine, tal cual:
+    - color = "VERDE" si RSI > 50, "ROJO" si RSI < 50 (posición, no dirección)
+    - dirección = "Aumentando" si el RSI subió respecto a la vela anterior, "Bajando" si no
+    - vol_alpha = Z-score de volumen (20 velas) > vol_th (igual que en el Pine)
+    Devuelve texto, bull/bear (para la confluencia) y vol_alpha.
+    None si no hay historial suficiente en esta temporalidad.
+    """
     if len(df_tf) < 25:
         return None
-    rsi_raw = ta.rsi(df_tf['close'], length=14).fillna(50)
-    rsi_smooth = dema(rsi_raw, 5)
-    if len(rsi_smooth.dropna()) < 2:
+    rsi_raw = ta.rsi(df_tf['close'], length=14)
+    rsi_smooth = dema(rsi_raw, 5).dropna()
+    if len(rsi_smooth) < 2:
         return None
     rsi_now, rsi_prev = rsi_smooth.iloc[-1], rsi_smooth.iloc[-2]
-    if rsi_now > 50 and rsi_now > rsi_prev:
-        return "ALCISTA FUERTE 🟢🟢"
-    if rsi_now > 50 and rsi_now <= rsi_prev:
-        return "ALCISTA DÉBIL 🟢"
-    if rsi_now < 50 and rsi_now < rsi_prev:
-        return "BAJISTA FUERTE 🔴🔴"
-    if rsi_now < 50 and rsi_now >= rsi_prev:
-        return "BAJISTA DÉBIL 🔴"
-    return "NEUTRAL ⚪"
+    growing = rsi_now > rsi_prev
  
-def get_rsi_multitf(ex, symbol, df_1h_ya_obtenido=None):
-    """
-    Calcula el estado RSI PRO (4 niveles) en 1h/2h/3h/4h por separado.
-    Devuelve None si no se pudo obtener/resamplear alguna temporalidad.
-    """
+    color = "VERDE" if rsi_now > 50 else "ROJO"
+    direccion = "Aumentando" if growing else "Bajando"
+    texto = f"{color} - {direccion}"
+ 
+    es_bull = (rsi_now > 50) and growing
+    es_bear = (rsi_now < 50) and (not growing)
+ 
+    # --- Volumen (idéntico a vol_alpha del Pine) ---
+    vol_avg = df_tf['vol'].rolling(20).mean()
+    vol_std = df_tf['vol'].rolling(20).std()
+    vol_std_last = vol_std.iloc[-1]
+    if pd.notna(vol_std_last) and vol_std_last != 0:
+        vol_z_last = (df_tf['vol'].iloc[-1] - vol_avg.iloc[-1]) / vol_std_last
+        vol_alpha = bool(vol_z_last > VOL_TH)
+    else:
+        vol_alpha = False
+ 
+    return {"texto": texto, "bull": es_bull, "bear": es_bear, "vol_alpha": vol_alpha}
+ 
+def get_rsi_multitf(ex, symbol):
+    """Devuelve un dict con el estado de cada TF (1h/2h/3h/4h), o None si falló el fetch."""
     try:
-        if df_1h_ya_obtenido is not None:
-            df_1h = df_1h_ya_obtenido
-        else:
-            raw = ex.fetch_ohlcv(symbol, timeframe='1h', limit=1000)
-            df_1h = pd.DataFrame(raw, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
-            df_1h['time'] = pd.to_datetime(df_1h['time'], unit='ms')
-            df_1h.set_index('time', inplace=True)
+        raw = ex.fetch_ohlcv(symbol, timeframe='1h', limit=1000)
+        df_1h = pd.DataFrame(raw, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
+        df_1h['time'] = pd.to_datetime(df_1h['time'], unit='ms')
+        df_1h.set_index('time', inplace=True)
  
         df_2h = resample_ohlcv(df_1h, '2h')
         df_3h = resample_ohlcv(df_1h, '3h')
         df_4h = resample_ohlcv(df_1h, '4h')
  
         return {
-            "1h": _rsi_pro_full_state_tf(df_1h) or "-",
-            "2h": _rsi_pro_full_state_tf(df_2h) or "-",
-            "3h": _rsi_pro_full_state_tf(df_3h) or "-",
-            "4h": _rsi_pro_full_state_tf(df_4h) or "-",
+            "1h": _rsi_pro_estado_tf(df_1h),
+            "2h": _rsi_pro_estado_tf(df_2h),
+            "3h": _rsi_pro_estado_tf(df_3h),
+            "4h": _rsi_pro_estado_tf(df_4h),
         }
     except Exception:
         return None
  
-def find_last_signal(df, bear_longs):
-    if df.empty or len(df) < 2: return None, None, False, "-"
-    last_entry_date, last_entry_px, is_active, verdict = None, None, False, "-"
-    for i in range(1, len(df)):
-        authorized = (df['ema52'].iloc[i] > df['ema260'].iloc[i]) or bear_longs
-        ha_flip = df['ha_color'].iloc[i] == "Verde" and df['ha_color'].iloc[i-1] == "Rojo"
-        macd_accel = df['hist'].iloc[i] > df['hist'].iloc[i-1]
-        rsi_ok = df['rsi_smooth'].iloc[i] > df['rsi_smooth'].iloc[i-1] and df['rsi_smooth'].iloc[i] < 50
-        
-        if not is_active and (authorized and ha_flip and macd_accel and rsi_ok):
-            is_active, last_entry_date, last_entry_px = True, df.index[i], df['Close'].iloc[i]
-        elif is_active and (df['ha_color'].iloc[i] == "Rojo" and df['hist'].iloc[i] < df['hist'].iloc[i-1] and df['rsi_smooth'].iloc[i] < df['rsi_smooth'].iloc[i-1]):
-            is_active = False
- 
-    if is_active:
-        c_h, p_h = df['hist'].iloc[-1], df['hist'].iloc[-2]
-        if p_h > 0 and c_h <= 0: verdict = "CERRAR OPERACIÓN 🔴"
-        elif c_h > p_h: verdict = "MANTENER 🟢"
-        else: verdict = "PIERDE FUERZA 🟡"
-    return last_entry_date, last_entry_px, is_active, verdict
- 
 # ─────────────────────────────────────────────
-# INTERFAZ Y CONECTIVIDAD KUCOIN
+# CONECTIVIDAD KUCOIN (tal como en el script de referencia)
 # ─────────────────────────────────────────────
 @st.cache_resource
 def get_exchange():
@@ -256,144 +113,97 @@ def fetch_symbols():
         markets = ex.load_markets()
         symbols = [s for s in markets if '/USDT' in s and markets[s]['active']]
         filtered = [s for s in symbols if not any(x in s for x in ['3L', '3S', 'USDC', 'DAI', 'PAX', 'TUSD'])]
-        # AGREGADO: excluir contratos de futuros/perpetuos. En la notación de ccxt
-        # los pares spot son "BASE/QUOTE" (ej. "0G/USDT") y los perpetuos son
-        # "BASE/QUOTE:SETTLE" (ej. "0G/USDT:USDT") — el ":" los distingue siempre.
-        # Estos contratos suelen tener poco historial y son los que aparecían
-        # como "SIN CÁLCULO" en la tabla.
+        # Excluir contratos de futuros/perpetuos (símbolos con ":" en ccxt)
         filtered = [s for s in filtered if ':' not in s]
         return sorted(filtered)
-    except: return []
+    except:
+        return []
  
-st.title(f"🛡️ SLY | CRIPTO SIGNAL TRACKER")
+st.title("🛡️ SLY | RSI PRO MULTI-TF (1h / 2h / 3h / 4h)")
  
 with st.sidebar:
     st.header("⚙️ Configuración")
-    
-    st.subheader("1. Parámetros de Tiempo")
-    selected_tf_label = st.selectbox("Seleccionar Temporalidad:", list(TF_OPTIONS.keys()), index=2) 
-    selected_tf_code = TF_OPTIONS[selected_tf_label]
-    
+ 
     if st.button("📡 Sincronizar Mercado KuCoin"):
         st.session_state["crypto_list"] = fetch_symbols()
         st.rerun()
  
     if "crypto_list" in st.session_state:
-        st.subheader("2. Ejecución")
+        st.subheader("Ejecución")
         lote_size = st.number_input("Tamaño de Lote:", 10, 100, 50)
         total_lotes = (len(st.session_state["crypto_list"]) // lote_size) + 1
-        batch_idx = st.selectbox(f"Seleccionar Lote:", range(total_lotes), format_func=lambda x: f"Lote {x+1}")
-        bear_longs = st.checkbox("Habilitar Bear-Longs", value=True)
-        
+        batch_idx = st.selectbox("Seleccionar Lote:", range(total_lotes), format_func=lambda x: f"Lote {x+1}")
+ 
         if st.button("🚀 ACTUALIZAR Y ACUMULAR", type="primary"):
             ex = get_exchange()
             subset = st.session_state["crypto_list"][batch_idx*lote_size : (batch_idx+1)*lote_size]
             prog = st.progress(0)
-            
+ 
             for i, sym in enumerate(subset):
                 try:
-                    prog.progress((i+1)/len(subset), text=f"Auditando {selected_tf_label}: {sym}")
+                    prog.progress((i+1)/len(subset), text=f"Auditando: {sym}")
+                    result = get_rsi_multitf(ex, sym)
  
-                    # Temporalidad principal
-                    raw_data = ex.fetch_ohlcv(sym, timeframe=selected_tf_code, limit=1000)
-                    df = pd.DataFrame(raw_data, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
-                    df['time'] = pd.to_datetime(df['time'], unit='ms')
-                    df.set_index('time', inplace=True)
- 
-                    data, motivo = get_sly_indicators(df)
- 
-                    if data.empty:
-                        # AGREGADO: aunque no se pudo calcular, se deja la fila
-                        # con el motivo explicando por qué (no desaparece en silencio).
+                    if result is None:
                         st.session_state["master_results_crypto"][sym] = {
                             "Activo": sym.replace("/USDT", ""),
-                            "Temporalidad": selected_tf_label,
-                            "Sector": get_crypto_sector(sym),
-                            "MACD Mensual": "-",
-                            "Última Señal": "-",
-                            "Estado": "SIN CÁLCULO ⚪",
-                            "PnL Real": "-",
-                            "Zona RSI": "-",
-                            "Veredicto": "-",
-                            "RSI PRO": "-",
-                            "Vol Z-Score": "-",
-                            "Alpha Strike": "-",
-                            "Agotamiento": "-",
-                            "RSI 1h": "-",
-                            "RSI 2h": "-",
-                            "RSI 3h": "-",
-                            "RSI 4h": "-",
-                            "Precio": "-",
-                            "RSI": "-",
-                            "Régimen": "-",
-                            "Motivo": motivo,   # <-- NUEVO: por qué no se calculó
+                            "RSI 1hs": "-", "RSI 2hs": "-", "RSI 3hs": "-", "RSI 4hs": "-",
+                            "Vol 1hs": "-", "Vol 2hs": "-", "Vol 3hs": "-", "Vol 4hs": "-",
+                            "Confluencia RSI": "-", "Confluencia Vol": "-",
                         }
                         continue
  
-                    # Análisis MACD Mensual
-                    monthly_force = get_monthly_macd_force(ex, sym)
+                    textos = {}
+                    vols = {}
+                    bull_count = 0
+                    bear_count = 0
+                    vol_alpha_count = 0
+                    validos = 0
+                    for tf in ["1h", "2h", "3h", "4h"]:
+                        estado = result[tf]
+                        if estado is None:
+                            textos[tf] = "-"
+                            vols[tf] = "-"
+                            continue
+                        textos[tf] = estado["texto"]
+                        vols[tf] = "SÍ 🔊" if estado["vol_alpha"] else "-"
+                        validos += 1
+                        if estado["bull"]: bull_count += 1
+                        if estado["bear"]: bear_count += 1
+                        if estado["vol_alpha"]: vol_alpha_count += 1
  
-                    # AGREGADO: RSI PRO por temporalidad (1h/2h/3h/4h). Si la
-                    # temporalidad principal elegida ya ES 1h, reutilizamos ese
-                    # mismo 'df' crudo para no duplicar la llamada a la API.
-                    df_1h_reutilizable = df if selected_tf_code == '1h' else None
-                    mtf_result = get_rsi_multitf(ex, sym, df_1h_ya_obtenido=df_1h_reutilizable)
-                    if mtf_result:
-                        rsi_1h_txt, rsi_2h_txt = mtf_result["1h"], mtf_result["2h"]
-                        rsi_3h_txt, rsi_4h_txt = mtf_result["3h"], mtf_result["4h"]
+                    # Confluencia RSI: igual que el Pine (confluence_bull/confluence_bear) —
+                    # solo dice algo cuando las 4 (válidas) coinciden TOTALMENTE, si no, "-".
+                    if validos == 4 and bull_count == 4:
+                        confluencia_rsi = "ALCISTA 🚀"
+                    elif validos == 4 and bear_count == 4:
+                        confluencia_rsi = "BAJISTA ⚠️"
                     else:
-                        rsi_1h_txt = rsi_2h_txt = rsi_3h_txt = rsi_4h_txt = "-"
-                    
-                    sig_date, sig_px, vigente, verd = find_last_signal(data, bear_longs)
-                    pnl_val = f"{((data['Close'].iloc[-1] - sig_px) / sig_px * 100):.2f}%" if (vigente and sig_px) else "-"
-                    last_rsi = data['rsi_smooth'].iloc[-1]
-                    rsi_zone = "SOBRE 50 🟢" if last_rsi > 50 else "BAJO 50 🔴"
+                        confluencia_rsi = "-"
  
-                    # --- AGREGADO: lectura de columnas del RSI PRO en la última vela ---
-                    rsi_pro_state = data['rsi_state'].iloc[-1]
-                    vol_z_last = data['vol_z'].iloc[-1]
-                    vol_z_txt = f"{vol_z_last:.2f}" if pd.notna(vol_z_last) else "-"
-                    alpha_strike_txt = "SÍ 🚀" if bool(data['alpha_strike'].iloc[-1]) else "-"
-                    exhaustion_txt = "SÍ ⚠️" if bool(data['exhaustion'].iloc[-1]) else "-"
-                    
-                    st.session_state["master_results_crypto"][sym] = {
-                        "Activo": sym.replace("/USDT", ""), 
-                        "Temporalidad": selected_tf_label,
-                        "Sector": get_crypto_sector(sym),
-                        "MACD Mensual": monthly_force, # AGREGADO
-                        "Última Señal": sig_date.strftime('%d/%m %H:%M') if sig_date else "-",
-                        "Estado": "VIGENTE 🟢" if vigente else "CERRADA 🔴",
-                        "PnL Real": pnl_val,
-                        "Zona RSI": rsi_zone,
-                        "Veredicto": verd,
-                        "RSI PRO": rsi_pro_state,          # <-- NUEVO: se pone en verde cuando el RSI sube
-                        "Vol Z-Score": vol_z_txt,           # <-- NUEVO: filtro de volumen institucional
-                        "Alpha Strike": alpha_strike_txt,   # <-- NUEVO: entrada institucional
-                        "Agotamiento": exhaustion_txt,      # <-- NUEVO: alerta de sobre-extensión
-                        "RSI 1h": rsi_1h_txt,   # <-- NUEVO: estado RSI PRO en 1h
-                        "RSI 2h": rsi_2h_txt,   # <-- NUEVO: estado RSI PRO en 2h
-                        "RSI 3h": rsi_3h_txt,   # <-- NUEVO: estado RSI PRO en 3h
-                        "RSI 4h": rsi_4h_txt,   # <-- NUEVO: estado RSI PRO en 4h
-                        "Precio": f"{data['Close'].iloc[-1]:.4f}",
-                        "RSI": round(last_rsi, 1),
-                        "Régimen": "ALCISTA" if data['ema52'].iloc[-1] > data['ema260'].iloc[-1] else "BAJISTA",
-                        "Motivo": "OK",  # <-- NUEVO: para uniformar la columna
-                    }
-                    time.sleep(0.05)
-                except Exception as e_sym:
-                    # AGREGADO: si falla algo antes de llegar a get_sly_indicators
-                    # (ej. error de conexión al pedir las velas), también se deja
-                    # constancia del símbolo y el motivo real en vez de perderlo.
+                    # Confluencia de Volumen: igual que vol_confluence del Pine (2+ de 4)
+                    confluencia_vol = f"SÍ ({vol_alpha_count}/4)" if vol_alpha_count >= 2 else "-"
+ 
                     st.session_state["master_results_crypto"][sym] = {
                         "Activo": sym.replace("/USDT", ""),
-                        "Temporalidad": selected_tf_label,
-                        "Sector": get_crypto_sector(sym),
-                        "MACD Mensual": "-", "Última Señal": "-", "Estado": "SIN CÁLCULO ⚪",
-                        "PnL Real": "-", "Zona RSI": "-", "Veredicto": "-", "RSI PRO": "-",
-                        "Vol Z-Score": "-", "Alpha Strike": "-", "Agotamiento": "-",
-                        "RSI 1h": "-", "RSI 2h": "-", "RSI 3h": "-", "RSI 4h": "-",
-                        "Precio": "-", "RSI": "-", "Régimen": "-",
-                        "Motivo": f"{type(e_sym).__name__}: {e_sym}",
+                        "RSI 1hs": textos["1h"],
+                        "RSI 2hs": textos["2h"],
+                        "RSI 3hs": textos["3h"],
+                        "RSI 4hs": textos["4h"],
+                        "Vol 1hs": vols["1h"],
+                        "Vol 2hs": vols["2h"],
+                        "Vol 3hs": vols["3h"],
+                        "Vol 4hs": vols["4h"],
+                        "Confluencia RSI": confluencia_rsi,
+                        "Confluencia Vol": confluencia_vol,
+                    }
+                    time.sleep(0.05)
+                except Exception:
+                    st.session_state["master_results_crypto"][sym] = {
+                        "Activo": sym.replace("/USDT", ""),
+                        "RSI 1hs": "-", "RSI 2hs": "-", "RSI 3hs": "-", "RSI 4hs": "-",
+                        "Vol 1hs": "-", "Vol 2hs": "-", "Vol 3hs": "-", "Vol 4hs": "-",
+                        "Confluencia RSI": "-", "Confluencia Vol": "-",
                     }
                     continue
             st.rerun()
@@ -403,55 +213,29 @@ with st.sidebar:
         st.rerun()
  
 # ─────────────────────────────────────────────
-# RESUMEN SECTORIAL
+# TABLA — solo las columnas pedidas
 # ─────────────────────────────────────────────
 if st.session_state["master_results_crypto"]:
     df_full = pd.DataFrame(st.session_state["master_results_crypto"].values())
-    
-    # Reordenar para que MACD Mensual esté al principio (+ columnas nuevas del RSI PRO)
-    cols_order = ["Activo", "Sector", "MACD Mensual", "Estado", "Veredicto", "PnL Real", "Última Señal",
-                  "Temporalidad", "Zona RSI", "RSI PRO", "Vol Z-Score", "Alpha Strike", "Agotamiento",
-                  "RSI 1h", "RSI 2h", "RSI 3h", "RSI 4h",
-                  "RSI", "Precio", "Régimen", "Motivo"]
-    cols_order = [c for c in cols_order if c in df_full.columns]
-    df_full = df_full[cols_order]
+    df_full = df_full[["Activo", "RSI 1hs", "RSI 2hs", "RSI 3hs", "RSI 4hs",
+                        "Vol 1hs", "Vol 2hs", "Vol 3hs", "Vol 4hs",
+                        "Confluencia RSI", "Confluencia Vol"]]
+    df_full = df_full.sort_values("Activo")
  
-    df_vigentes = df_full[df_full["Estado"] == "VIGENTE 🟢"]
- 
-    st.subheader(f"📊 RESUMEN DE EXPOSICIÓN (VIGENTES)")
-    if not df_vigentes.empty:
-        summary = df_vigentes.groupby("Sector")["Activo"].apply(list).reset_index()
-        cols = st.columns(3)
-        for idx, row in summary.iterrows():
-            with cols[idx % 3]:
-                st.markdown(f"""
-                <div class="sector-box">
-                    <div class="sector-title">{row['Sector']}: {len(row['Activo'])}</div>
-                    <div style='font-size: 0.85em;'>{', '.join(row['Activo'])}</div>
-                </div>
-                """, unsafe_allow_html=True)
-    else: st.warning("Sin posiciones abiertas en la temporalidad analizada.")
- 
-    st.subheader(f"📋 Matriz de Señales (Filtro Actual: {selected_tf_label})")
-    df_res = df_full.sort_values(by=["Estado", "Activo"], ascending=[False, True])
-    
     def color_cells(val):
         str_v = str(val)
-        # Estados fuertes / positivos -> verde intenso (AGREGADO)
-        if "ALCISTA FUERTE" in str_v or "SÍ 🚀" in str_v:
+        if "ALCISTA 🚀" in str_v:
+            return 'background-color: #2E7D32; color: white; font-weight: bold;'
+        if "BAJISTA ⚠️" in str_v:
+            return 'background-color: #B71C1C; color: white; font-weight: bold;'
+        if "VERDE" in str_v:
             return 'background-color: #A5D6A7; color: #1B5E20; font-weight: bold;'
-        if "VIGENTE" in str_v or "MANTENER" in str_v or "ALCISTA" in str_v or "SOBRE 50" in str_v or "GANANDO" in str_v: 
-            return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
-        # Estados negativos fuertes -> rojo intenso (AGREGADO)
-        if "BAJISTA FUERTE" in str_v:
+        if "ROJO" in str_v:
             return 'background-color: #EF9A9A; color: #B71C1C; font-weight: bold;'
-        if "CERRADA" in str_v or "CERRAR" in str_v or "BAJISTA" in str_v or "BAJO 50" in str_v or "PERDIENDO" in str_v: 
-            return 'background-color: #FFCDD2; color: #B71C1C; font-weight: bold;'
-        # Alerta de agotamiento (AGREGADO)
-        if "PIERDE FUERZA" in str_v or "SÍ ⚠️" in str_v: 
+        if "SÍ 🔊" in str_v or "SÍ (" in str_v:
             return 'background-color: #FFF9C4; color: #827717; font-weight: bold;'
         return ''
  
-    st.dataframe(df_res.style.map(color_cells), use_container_width=True, height=600)
+    st.dataframe(df_full.style.map(color_cells), use_container_width=True, height=600)
 else:
-    st.info("👈 Seleccione temporalidad, sincronice mercado y analice lotes.")
+    st.info("👈 Sincronice mercado y analice un lote.")
