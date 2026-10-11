@@ -21,7 +21,7 @@ if "master_results_estructura" not in st.session_state:
     st.session_state["master_results_estructura"] = {}
 
 # Temporalidades FIJAS del análisis (KuCoin las entrega nativas, sin resampleo)
-TF_MAP = {"1H": "1h", "4H": "4h", "1D": "1d", "1S": "1w", "1M": "1M"}
+TF_MAP = {"1 Hora": "1h", "4 Horas": "4h", "1 Día": "1d", "1 Semana": "1w", "1 Mes": "1M"}
 
 # ─────────────────────────────────────────────
 # MOTOR TÉCNICO — traducción del indicador Pine
@@ -122,7 +122,7 @@ def texto_estado(r):
         partes.append("MÍN↑ 🔺")
     if r["pattern"]:
         return " · ".join(["ALCISTA 🟢"] + partes)
-    return " · ".join(partes) if partes else "-"
+    return " · ".join(partes) if partes else "Sin estructura"
 
 def analizar_tf(ex, sym, tf_code, modo, left, right, max_age, ventana, solo_cerradas):
     """Devuelve (texto_para_la_celda, tiene_estructura). Un fallo en una temporalidad no afecta a las demás."""
@@ -136,8 +136,8 @@ def analizar_tf(ex, sym, tf_code, modo, left, right, max_age, ventana, solo_cerr
         osc = calcular_oscilador(df['close'].astype(float), modo).to_numpy()
         r = estructura_alcista(osc, left, right, max_age, ventana)
         return texto_estado(r), r["pattern"]
-    except Exception:
-        return "Error API", False
+    except Exception as e:
+        return f"Error: {type(e).__name__}", False
 
 # ─────────────────────────────────────────────
 # CONECTIVIDAD KUCOIN (mismo universo que el monitor cripto: todos los pares spot /USDT)
@@ -157,7 +157,7 @@ def fetch_symbols():
     except Exception:
         return []
 
-st.title("🛡️ SLY | ESTRUCTURA ALCISTA MULTI-TF (1H · 4H · 1D · 1S · 1M)")
+st.title("🛡️ SLY | ESTRUCTURA ALCISTA MULTI-TF (1 Hora · 4 Horas · 1 Día · 1 Semana · 1 Mes)")
 
 with st.sidebar:
     st.header("⚙️ Configuración")
@@ -219,7 +219,9 @@ if st.session_state["master_results_estructura"]:
             return 'background-color: #2E7D32; color: white; font-weight: bold;'
         if "ALCISTA" in s or "MÍN↑" in s:
             return 'background-color: #C8E6C9; color: #1B5E20; font-weight: bold;'
-        return ''
+        if "Error" in s or "Sin historial" in s:
+            return 'background-color: #FFF3E0; color: #E65100;'
+        return 'color: #9E9E9E;'
 
     st.dataframe(df_full.style.map(color_cells, subset=list(TF_MAP.keys())),
                  use_container_width=True, height=600)
