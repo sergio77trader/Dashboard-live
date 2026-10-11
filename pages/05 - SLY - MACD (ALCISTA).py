@@ -21,6 +21,9 @@ if "master_results_estructura" not in st.session_state:
     st.session_state["master_results_estructura"] = {}
  
 # Temporalidades FIJAS del análisis (KuCoin las entrega nativas, sin resampleo)
+# Parámetros del indicador Pine, tal cual vienen por defecto (no se configuran)
+OSC_MODO, LEFT, RIGHT, MAX_AGE = "MACD PRO", 6, 6, 120
+ 
 TF_MAP = {"1 Hora": "1h", "4 Horas": "4h", "1 Día": "1d", "1 Semana": "1w", "1 Mes": "1M"}
  
 # ─────────────────────────────────────────────
@@ -110,26 +113,22 @@ def _hace(e):
     return "en la última vela" if e == 0 else f"hace {e} vela" + ("" if e == 1 else "s")
  
 def texto_estado(r):
+    """La señal más reciente que marca el indicador en ese timeframe (con hace cuántas velas)."""
     etiquetas = {"x": "PIERDE LÍNEA 🔴", "brk": "BRK 🚀", "hl": "MÍN↑ 🔺", "hh": "MÁX↑ 🟡"}
-    eventos = sorted(
-        [(e, k) for k, e in r["edad"].items() if e is not None and e < r["ventana"]]
-    )
-    partes = [f"{etiquetas[k]} {_hace(e)}" for e, k in eventos]
-    if r["pattern"]:
-        return " · ".join(["ALCISTA 🟢"] + partes)
-    return " · ".join(partes) if partes else "Sin señal"
+    prioridad = {"x": 0, "brk": 1, "hl": 2, "hh": 3}
+    eventos = sorted([(e, prioridad[k], k) for k, e in r["edad"].items() if e is not None])
+    señal = f"{etiquetas[eventos[0][2]]} {_hace(eventos[0][0])}" if eventos else "Sin señal"
+    return f"ALCISTA 🟢 · {señal}" if r["pattern"] else señal
  
-def analizar_tf(ex, sym, tf_code, modo, left, right, max_age, ventana, solo_cerradas):
+def analizar_tf(ex, sym, tf_code):
     """Devuelve (texto_para_la_celda, tiene_estructura). Un fallo en una temporalidad no afecta a las demás."""
     try:
         raw = ex.fetch_ohlcv(sym, timeframe=tf_code, limit=1000)
         df = pd.DataFrame(raw, columns=['time', 'open', 'high', 'low', 'close', 'vol'])
-        if solo_cerradas and len(df) > 0:
-            df = df.iloc[:-1]  # descarta la vela en formación (evita señales que luego desaparecen)
         if len(df) < 60:
             return "Sin historial", False
-        osc = calcular_oscilador(df['close'].astype(float), modo).to_numpy()
-        r = estructura_alcista(osc, left, right, max_age, ventana)
+        osc = calcular_oscilador(df['close'].astype(float), OSC_MODO).to_numpy()
+        r = estructura_alcista(osc, LEFT, RIGHT, MAX_AGE, 0)
         return texto_estado(r), r["pattern"]
     except Exception as e:
         return f"Error: {type(e).__name__}", False
@@ -157,21 +156,13 @@ st.title("🛡️ SLY | ESTRUCTURA ALCISTA MULTI-TF (1 Hora · 4 Horas · 1 Día
 with st.sidebar:
     st.header("⚙️ Configuración")
  
-    st.subheader("1. Estructura")
-    modo = st.selectbox("Oscilador a analizar:", ["MACD PRO", "RSI PRO"], index=0)
-    left = st.number_input("Pivote: velas a la izquierda", 1, 30, 6)
-    right = st.number_input("Pivote: velas a la derecha (confirmación)", 1, 30, 6)
-    max_age = st.number_input("Vigencia del patrón (velas)", 10, 500, 120)
-    ventana = st.number_input("Mostrar señales de las últimas N velas", 1, 100, 10)
-    solo_cerradas = st.checkbox("Usar solo velas cerradas", value=True)
- 
-    st.subheader("2. Mercado")
+    st.subheader("1. Mercado")
     if st.button("📡 Sincronizar Mercado KuCoin"):
         st.session_state["crypto_list"] = fetch_symbols()
         st.rerun()
  
     if "crypto_list" in st.session_state:
-        st.subheader("3. Ejecución")
+        st.subheader("2. Ejecución")
         lote_size = st.number_input("Tamaño de Lote:", 10, 100, 30)
         total_lotes = (len(st.session_state["crypto_list"]) // lote_size) + 1
         batch_idx = st.selectbox("Seleccionar Lote:", range(total_lotes), format_func=lambda x: f"Lote {x+1}")
@@ -186,8 +177,7 @@ with st.sidebar:
                 fila = {"Activo": sym.replace("/USDT", "")}
                 n_alineadas = 0
                 for label, code in TF_MAP.items():
-                    texto, tiene = analizar_tf(ex, sym, code, modo, int(left), int(right),
-                                               int(max_age), int(ventana), solo_cerradas)
+                    texto, tiene = analizar_tf(ex, sym, code)
                     fila[label] = texto
                     n_alineadas += 1 if tiene else 0
                 fila["_n"] = n_alineadas
@@ -222,4 +212,3 @@ if st.session_state["master_results_estructura"]:
                  use_container_width=True, height=600)
 else:
     st.info("👈 Sincronice mercado y analice un lote.")
- 
