@@ -113,12 +113,9 @@ def _hace(e):
     return "en la última vela" if e == 0 else f"hace {e} vela" + ("" if e == 1 else "s")
  
 def texto_estado(r):
-    """La señal más reciente que marca el indicador en ese timeframe (con hace cuántas velas)."""
-    etiquetas = {"x": "PIERDE LÍNEA 🔴", "brk": "BRK 🚀", "hl": "MÍN↑ 🔺", "hh": "MÁX↑ 🟡"}
-    prioridad = {"x": 0, "brk": 1, "hl": 2, "hh": 3}
-    eventos = sorted([(e, prioridad[k], k) for k, e in r["edad"].items() if e is not None])
-    señal = f"{etiquetas[eventos[0][2]]} {_hace(eventos[0][0])}" if eventos else "Sin señal"
-    return f"ALCISTA 🟢 · {señal}" if r["pattern"] else señal
+    """Solo el triángulo verde del indicador (mínimo creciente): cuándo fue la última vez."""
+    e = r["edad"]["hl"]
+    return "Sin señal" if e is None else f"MÍN↑ 🔺 {_hace(e)}"
  
 def analizar_tf(ex, sym, tf_code):
     """Devuelve (texto_para_la_celda, tiene_estructura). Un fallo en una temporalidad no afecta a las demás."""
@@ -199,7 +196,7 @@ with st.sidebar:
 # ─────────────────────────────────────────────
 if st.session_state["master_results_estructura"]:
     df_full = pd.DataFrame(st.session_state["master_results_estructura"].values())
-    df_full = df_full.sort_values(by=["_n", "Activo"], ascending=[False, True]).drop(columns=["_n"])
+    df_full = df_full.sort_values(by=["Activo"]).drop(columns=["_n"])
     cols_tf = [c for c in TF_MAP if c in tf_sel]
     df_full = df_full.reindex(columns=["Activo"] + cols_tf).fillna("-")
  
@@ -219,3 +216,4 @@ if st.session_state["master_results_estructura"]:
                  use_container_width=True, height=600)
 else:
     st.info("👈 Sincronice mercado y analice un lote.")
+ 
