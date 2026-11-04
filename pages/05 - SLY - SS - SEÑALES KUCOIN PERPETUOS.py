@@ -176,17 +176,18 @@ def info_volumen(df, tf):
     std = pd.Series(v).rolling(20).std().iloc[-1]
     rvol = (v[-1] - sma) / std if std and std > 0 else 0.0
     if close > pr["vah"]:
-        zona = "SOBRE VAH 🟢"
+        zona, zkey = "SOBRE VAH 🟢", "SOBRE_VAH"
     elif close < pr["val"]:
-        zona = "BAJO VAL 🔴"
+        zona, zkey = "BAJO VAL 🔴", "BAJO_VAL"
     elif abs(close - pr["poc"]) / close * 100 <= POC_TOL:
-        zona = "EN EL POC 🟠"
+        zona, zkey = "EN EL POC 🟠", "EN_POC"
     elif close > pr["poc"]:
-        zona = "Entre POC y VAH"
+        zona, zkey = "Entre POC y VAH", "POC_VAH"
     else:
-        zona = "Entre VAL y POC"
+        zona, zkey = "Entre VAL y POC", "VAL_POC"
     dist = lambda x: f"{fmt_px(x)} ({(x / close - 1) * 100:+.1f}%)"
-    return {"zona": zona, "poc": dist(pr["poc"]), "vah": dist(pr["vah"]), "val": dist(pr["val"]),
+    return {"zona": zona, "zkey": zkey, "delta": pr["delta"],
+            "poc": dist(pr["poc"]), "vah": dist(pr["vah"]), "val": dist(pr["val"]),
             "vol": f"Δ {pr['delta']:+.0f}% · RVOL {rvol:+.1f} ({n_prof} velas)"}
  
  
@@ -273,6 +274,56 @@ def macd_semanal(ex, sym, per_call):
         return "N/A"
  
  
+REC_OPCIONES = ["LONG FUERTE", "LONG", "SHORT FUERTE", "SHORT", "VIGILAR", "SALIR", "ESPERAR"]
+ 
+ 
+def recomendar(d, a_favor, edad, veredicto, r_up, r_over, r_under, ha_g, adx_v, di_plus,
+               zkey, delta, macro, con_macro):
+    """
+    Recomendación de reglas SLY (no es asesoramiento financiero). Suma puntos a favor de la dirección de la señal vigente:
+      tendencia EMA a favor +2 · señal fresca (≤3 velas) +1 / vieja (>10) -1 · MACD manteniendo fuerza +1 ·
+      RSI a favor +1 (-1 si está en extremo contrario) · Heikin Ashi a favor +1 ·
+      ADX con DI a favor: ≥25 +2, 20-25 +1, rango -1; DI en contra -1 ·
+      zona de volumen a favor +1 / en contra -1 · delta compra-venta a favor +1 · MACD semanal a favor +1 / en contra -1.
+    Devuelve (texto, clave, puntaje, máximo).
+    """
+    if d == "-":
+        return "ESPERAR ⚪ (sin señal)", "ESPERAR", 0, 0
+    if veredicto.startswith("CERRAR"):
+        return "SALIR 🟠 (el MACD perdió el cero)", "SALIR", 0, 0
+    s = 1 if d == "LONG" else -1
+    long_ = s == 1
+    items = [
+        (2 if a_favor else 0, 2),
+        (1 if edad <= 3 else -1 if edad > 10 else 0, 1),
+        (1 if veredicto.startswith("MANTENER") else 0, 1),
+        (1 if r_up == long_ else 0, 1),
+        (-1 if (long_ and r_over) or ((not long_) and r_under) else 0, 0),
+        (1 if ha_g == long_ else 0, 1),
+    ]
+    if di_plus != long_:
+        adx_pts = -1
+    else:
+        adx_pts = 2 if adx_v >= 25 else 1 if adx_v >= 20 else -1
+    items.append((adx_pts, 2))
+    favor = {"SOBRE_VAH": 1, "POC_VAH": 1, "EN_POC": 0, "VAL_POC": 0, "BAJO_VAL": -1}.get(zkey, 0)
+    items.append((favor * s, 1))
+    items.append((1 if delta * s > 0 else 0, 1))
+    if con_macro and macro != "N/A" and macro != "-":
+        items.append((1 if (macro.startswith("Alcista")) == long_ else -1, 1))
+    score = sum(p for p, _ in items)
+    mx = sum(m for _, m in items)
+    ratio = score / mx if mx else 0
+    fuerte = ratio >= 0.65 and a_favor
+    if ratio >= 0.40:
+        key = f"{d} FUERTE" if fuerte else d
+    else:
+        key = "VIGILAR"
+    icono = {"LONG FUERTE": "🟢🟢", "LONG": "🟢", "SHORT FUERTE": "🔴🔴", "SHORT": "🔴", "VIGILAR": "🟡"}[key]
+    texto = f"{key if key != 'VIGILAR' else 'VIGILAR ' + d} {icono} ({score}/{mx})" + ("" if a_favor else " · REBOTE")
+    return texto, key, score, mx
+ 
+ 
 def analizar(ex, kind, sym, tf, solo_cerradas, contra_tendencia, con_semanal, qv):
     per_call = 200 if kind == "futures" else 1000
     df = recortar(fetch_ohlcv_df(ex, sym, tf, 800, per_call), tf, solo_cerradas)
@@ -346,16 +397,22 @@ def analizar(ex, kind, sym, tf, solo_cerradas, contra_tendencia, con_semanal, qv
     # Volumen
     vol = info_volumen(df, tf) or {"zona": "s/d", "poc": "-", "vah": "-", "val": "-", "vol": "-"}
  
+    macro = macd_semanal(ex, sym, per_call) if con_semanal else "-"
+    rec_txt, rec_key, score, mx = recomendar(
+        direccion, (a_favor if vig else True), edad, veredicto, bool(r_now > r_prev),
+        bool(r_now > basis + 2 * sd), bool(r_now < basis - 2 * sd), bool(ha[-1]), float(a),
+        bool(pdi.iloc[-1] > mdi.iloc[-1]), vol.get("zkey", ""), float(vol.get("delta", 0.0)), macro, con_semanal)
+ 
     base = sym.split("/")[0]
     return {
-        "Activo": base, "Sector": get_sector(base), "Tendencia": tendencia,
+        "Activo": base, "Recomendación": rec_txt, "Sector": get_sector(base), "Tendencia": tendencia,
         "Señal": senal, "Veredicto": veredicto, "PnL": pnl,
         "MACD": macd_txt, "RSI": rsi_txt, "Heikin Ashi": ha_txt,
-        "MACD 1w": macd_semanal(ex, sym, per_call) if con_semanal else "-",
+        "MACD 1w": macro,
         "Precio vs volumen": vol["zona"], "POC": vol["poc"], "VAH": vol["vah"], "VAL": vol["val"],
         "Volumen": vol["vol"], "ADX": adx_txt,
         "Precio": fmt_px(float(close.iloc[-1])), "Vol 24h (M)": round(qv / 1e6, 1),
-        "TF": tf, "_dir": direccion, "_edad": edad,
+        "TF": tf, "_dir": direccion, "_edad": edad, "_rec": rec_key, "_score": score, "_mx": mx,
     }
  
  
@@ -429,6 +486,9 @@ if res:
     solo_vig = f1.checkbox("Solo con señal vigente", value=True)
     max_edad = f2.number_input("Antigüedad máxima de la señal (velas)", 0, 500, 10)
     dir_sel = f3.radio("Dirección", ["Todas", "LONG", "SHORT"], horizontal=True)
+    rec_sel = st.multiselect("Recomendación", REC_OPCIONES, default=REC_OPCIONES,
+                             help="Puntaje de reglas SLY (tendencia, señal, MACD, RSI, Heikin Ashi, ADX, volumen). "
+                                  "Es una guía para ordenar, no asesoramiento financiero.")
  
     dfa = pd.DataFrame(res)
     vig = dfa[dfa["_dir"] != "-"]
@@ -451,9 +511,11 @@ if res:
         show = show[(show["_dir"] != "-") & (show["_edad"] <= max_edad)]
     if dir_sel != "Todas":
         show = show[show["_dir"] == dir_sel]
-    show = show.sort_values(by=["_edad", "Vol 24h (M)"], ascending=[True, False])
+    show = show[show["_rec"].isin(rec_sel)]
+    show = show.assign(_ratio=show["_score"] / show["_mx"].replace(0, np.nan)).sort_values(
+        by=["_ratio", "_edad", "Vol 24h (M)"], ascending=[False, True, False], na_position="last")
  
-    cols_order = ["Activo", "Sector", "Tendencia", "Señal", "Veredicto", "PnL", "MACD", "RSI", "Heikin Ashi", "MACD 1w",
+    cols_order = ["Activo", "Recomendación", "Sector", "Tendencia", "Señal", "Veredicto", "PnL", "MACD", "RSI", "Heikin Ashi", "MACD 1w",
                   "Precio vs volumen", "POC", "VAH", "VAL", "Volumen", "ADX", "Precio", "Vol 24h (M)", "TF"]
     if not con_semanal and (show["MACD 1w"] == "-").all():
         cols_order.remove("MACD 1w")
@@ -461,6 +523,16 @@ if res:
  
     def color_cells(val):
         s = str(val)
+        if s.startswith("LONG FUERTE"):
+            return "background-color: #81C784; color: #0B3D0B; font-weight: bold;"
+        if s.startswith("SHORT FUERTE"):
+            return "background-color: #E57373; color: #5F0A0A; font-weight: bold;"
+        if s.startswith("SALIR"):
+            return "background-color: #FFCC80; color: #E65100; font-weight: bold;"
+        if s.startswith("VIGILAR"):
+            return "background-color: #FFF9C4; color: #827717; font-weight: bold;"
+        if s.startswith("ESPERAR"):
+            return "color: #9E9E9E;"
         if s.startswith("LONG") or "VERDE" in s or "GANA" in s or "gana" in s or "MANTENER" in s or "SOBRE VAH" in s or s.startswith("Alcista") or "se recupera" in s:
             return "background-color: #C8E6C9; color: #1B5E20; font-weight: bold;"
         if s.startswith("SHORT") or "ROJA" in s or "CERRAR" in s or "BAJO VAL" in s or s.startswith("Bajista") or "cae con" in s:
@@ -476,7 +548,7 @@ if res:
         st.info("Ningún activo analizado cumple el filtro. Probá subir la antigüedad máxima o desmarcar 'Solo con señal vigente'.")
     else:
         st.dataframe(show.style.map(color_cells,
-                                    subset=[c for c in ["Tendencia", "Señal", "Veredicto", "MACD", "RSI", "Heikin Ashi", "MACD 1w", "Precio vs volumen"] if c in show.columns]),
+                                    subset=[c for c in ["Recomendación", "Tendencia", "Señal", "Veredicto", "MACD", "RSI", "Heikin Ashi", "MACD 1w", "Precio vs volumen"] if c in show.columns]),
                      use_container_width=True, height=600, hide_index=True)
 else:
     st.info("👈 Elegí mercado y temporalidad, sincronizá el mercado y analizá lotes.")
