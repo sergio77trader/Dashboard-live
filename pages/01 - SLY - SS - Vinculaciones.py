@@ -1,11 +1,14 @@
 """
-SLY | MAPA DE VÍNCULOS  —  quién depende de quién y cómo se contagia un shock.
+SLY | MAPA DE VÍNCULOS v2 — cómo se mueve una acción cuando se mueve otra.
  
-Requisitos:  pip install streamlit plotly pandas numpy
-Ejecutar:    streamlit run sly_mapa_vinculos.py
+Dos capas de vínculos:
+  1) DATOS: correlación y beta medidas con precios reales (yfinance) para TODA tu lista del V56 (≈500 acciones/ETFs),
+     más tu cartera y lo que agregues. Es lo que cubre "todas las acciones".
+  2) CRITERIO: cadena de negocio armada a mano (proveedor, cliente, factores como tasas o petróleo). Es una guía
+     editable, no un dato oficial.
  
-IMPORTANTE: los vínculos y pesos son un criterio aproximado armado a mano (hipótesis de trabajo),
-NO datos oficiales ni una predicción. Podés corregirlos desde la pestaña "Editar vínculos".
+Requisitos:  pip install streamlit plotly pandas numpy yfinance
+Ejecutar:    streamlit run sly_mapa_vinculos_v2.py
 """
 import math
  
@@ -15,8 +18,25 @@ import plotly.graph_objects as go
 import streamlit as st
  
 # ─────────────────────────────────────────────
-# NODOS  (id -> (ecosistema, descripción))
-# Los nodos "driver" son factores/sectores (no empresas): demanda, commodities, macro.
+# LISTA Y SECTORES DEL V56
+# ─────────────────────────────────────────────
+SECTOR_MAP = {
+    "ÍNDICES/ETFs": ["SPY", "QQQ", "DIA", "IWM", "VTI", "VOO", "VEA", "VWO", "EEM", "XLK", "XLF", "XLE", "XLV", "XLI", "XLP", "XLB", "XLU", "XLY", "XLC", "XLRE", "ARKK", "BITO", "IBIT"],
+    "TECNOLOGÍA": ["AAPL", "MSFT", "NVDA", "GOOGL", "META", "AVGO", "AMD", "INTC", "QCOM", "TXN", "MU", "ADI", "AMAT", "LRCX", "KLAC", "ASML", "SNOW", "PLTR", "NOW", "CRM", "ADBE", "ORCL", "DELL", "SMCI"],
+    "FINANCIERO": ["JPM", "BAC", "WFC", "GS", "MS", "C", "V", "MA", "AXP", "BLK", "SPGI", "CME", "ICE", "PYPL", "SQ", "HOOD"],
+    "ENERGÍA/OIL": ["XOM", "CVX", "PBR", "SLB", "COP", "OXY", "HAL", "BKR", "VIST", "YPF", "TGS", "PAM"],
+    "ARGENTINA (ADRs)": ["GGAL", "BMA", "BFR", "SUPV", "PAM", "PAMP", "EDN", "CEPU", "CRESY", "IRS", "LOMA", "MELI", "GLOB", "TX"],
+    "CRIPTO/BLOCKCHAIN": ["BTC-USD", "ETH-USD", "MSTR", "COIN", "MARA", "RIOT", "BITX", "BITI", "IREN", "CLSK", "HUT"],
+    "CONSUMO/RETAIL": ["AMZN", "TSLA", "WMT", "COST", "KO", "PEP", "MCD", "NKE", "SBUX", "TGT", "PG", "PM", "HD", "LOW", "EL", "MDLZ"],
+    "SALUD/BIO": ["LLY", "UNH", "JNJ", "ABBV", "MRK", "PFE", "AMGN", "TMO", "DHR", "BMY", "ISRG", "ABT"],
+    "INDUSTRIAL/AÉREO": ["GE", "CAT", "BA", "HON", "RTX", "LMT", "DE", "UNP", "UPS", "FDX", "DAL", "AAL"]
+}
+ 
+RAW_TICKERS = "BIL, SPY, QQQ, ARKK, BOTZ, DBC, GLD, BND, VWO, VNQ, HYG, VEA, EMB, AAPL, AMZN, TSLA, MSFT, META, NVDA, GOOGL, ARGT, MELI, GLOB, TTWO, RKLB, HOOD, HOG, MSTR, COIN, SWK, INTC, AMD, DIS, GME, ABNB, AMC, KO, DIA, F, ADBE, MO, C, COST, DE, DOCU, GE, ETSY, HAL, CRM, HSBC, IBM, JD, JNJ, LMT, MA, MCD, NFLX, NKE, PYPL, PEP, PBR, SHOP, SNAP, SONY, SPOT, SBUX, TGT, UL, WMT, SMCI, JPM, WFC, AVGO, MU, LLY, UNH, V, QCOM, HD, BAC, GGAL, BABA, YPF, PAM, XOM, AMAT, GS, ACN, MARA, SNOW, ORCL, UBER, DELL, LRCX, CVX, CSCO, CRWD, CVNA, BA, VRT, HUBS, MRK, PLTR, NEE, CAT, PFE, LIN, CMG, GM, BKNG, PG, MRVL, LOW, TXN, ADI, MS, DAL, AMGN, T, LCID, ABBV, NOW, UPS, LEN, BMY, ENPH, SOUN, INTU, SPGI, CMCSA, DHR, AXP, DHI, RTX, BK, CME, PANW, KLAC, BLK, ICE, MDLZ, MRNA, VOO, VTI, VUG, VTV, IWF, IJH, IJR, VIG, VGT, XLK, VO, IWM, TLT, VB, SCHX, XLF, XLV, SCHF, MUB, XLE, XLI, XLY, VHT, SOXX, PHO, XLRE, SCHH, IYR, ICF, DUOL, LUV, AFRM, ITA, SH, IEF, VGIT, GOVT, SGOV, IBIT, EETH, SATL, RMAX, COMP, AGNT, OPAD, OPEN, SSO, SCHD, EWJ, EWZ, EWW, ECH, INDA, EWT, EWS, ENZL, EWA, DGRO, PINS, ZM, ULTA, PM, SCHW, MMM, FDX, CVS, PSX, DASH, KMB, MSI, MNST, TMO, EA, TMUS, ABT, BX, VZ, ISRG, DDOG, MCHI, BSV, IFS, BAP, BVN, TQQQ, SOXL, TMF, SPXL, UPRO, TECL, YINN, SQQQ, FAS, TNA, LABU, SPXS, SOXS, MCO, CL, MAR, KDP, UNP, TEAM, GEHC, SOFI, CCL, NET, WST, MKC, GDDY, HPE, MDB, WBD, KHC, EBAY, HLT, FISV, EEM, AAL, JMIA, BP, BB, BBD, SVXY, REK, VIST, ADM, TSM, RIOT, TLRY, NOC, CGC, GD, IIPR, SYM, NU, ANET, OXY, O, ASML, VEGI, OKLO, PFF, RDDT, SPYD, HSY, PTON, DJT, BITX, KODK, VIXY, RACE, LULU, HMC, FWONK, TS, TX, HIMS, ITUB, ABEV, BIDU, GRWG, HYFM, MANU, FAZ, FNGU, MSFU, AAPU, FBL, LOMA, DLTR, DUK, GPRK, NEM, SO, QBTS, RGTI, BITI, PCAR, NVO, UMAC, AXON, XYZ, PDD, NTES, SOS, RCAT, BN, VALE, ARM, QSI, TM, WM, URTH, BBAR, IRS, BIOX, EDN, SUPV, XP, BBAI, DAPP, TEM, KULR, INBS, TBX, EAT, LMND, UUUU, GDX, ASTS, RCL, APP, PAGS, TTT, UNCY, PL, NIO, CONY, CLOV, JOBY, UGL, TBF, BYND, TWLO, MMSI, LODE, TBT, CEG, UUP, OTLY, SHY, IEI, TLH, IREN, NWTG, FLIN, OSCR, ALAB, AMZY, APLY, AVY, BG, BIIB, BMA, CELH, CEPU, CRESY, DOW, DPZ, EWY, FXI, FXY, HON, HUT, IGPT, LAES, ONON, PYPY, SEDG, SLB, SNA, STLA, STZ, TTEK, URBN, VSCO, AAP, YBIT, ADP, HERO, ABSI, PDBA, MAGS, B, SMMT, SETH, SLV, PATH, AIQ, SHEL, TGS, PSQ, MKL, XLP, XPEV, DXYZ, MSTY, CRCL, PLBY, FIG, AOM, OWNB, BKR, SPYG, USO, APLD, ASPN, AUR, BITO, BKCH, BLDR, BLOK, CDNS, COO, DAVA, EIX, EL, ELF, EVTL, FEZ, FSLR, GAUZ, GPN, HDV, HELO, BMRN, VXUS, URA, ACWI, NVDL, GRAB, GTLB, VT, SPMO, QQQM, IONQ, TSLL, AMZU, SBET, JEPQ, JEPI, QYLD, TXRH, ABCL, AOK, VBR, IAU, IEO, ZETA, KBH, OMC, RYDE, SVCO, POOL, VYM, ANF, TMDX, MTUM, BMNR, TMQ, BNKK, VEEE, QNRX, HRZN"
+ 
+# ─────────────────────────────────────────────
+# MAPA CAUSAL (criterio manual)
+# Los nodos "driver" son factores/sectores sin cotización propia (tasas, petróleo, gasto en IA...).
 # ─────────────────────────────────────────────
 GRUPOS = {
     "IA y centros de datos": "#7E57C2",
@@ -223,9 +243,7 @@ CARTERA_DEFAULT = {
 CARTERA_DF_DEFAULT = pd.DataFrame({"Ticker": list(CARTERA_DEFAULT), "Valor ARS": list(CARTERA_DEFAULT.values())})
  
  
-# ─────────────────────────────────────────────
-# LÓGICA
-# ─────────────────────────────────────────────
+ 
 def limpiar_edges(df):
     """Normaliza la tabla editable: descarta filas incompletas y fuerza tipos."""
     d = df.copy()
@@ -253,15 +271,6 @@ def limpiar_cartera(df):
     d = d.dropna(subset=["Ticker", "Valor ARS"])
     d = d[~d["Ticker"].isin(["", "NAN", "NONE"])]
     return d.groupby("Ticker", as_index=False)["Valor ARS"].sum()
- 
- 
-def armar_nodos(edges, cartera):
-    """Nodos conocidos + cualquier ticker nuevo que aparezca en vínculos o cartera (grupo 'Otros')."""
-    nodos = dict(NODOS)
-    for t in set(edges["origen"]) | set(edges["destino"]) | set(cartera["Ticker"]):
-        if t not in nodos:
-            nodos[t] = ("Otros", "Agregado por el usuario")
-    return nodos
  
  
 def propagar(edges, origen, shock, profundidad=3, decaimiento=0.7):
@@ -298,109 +307,304 @@ def impacto_cartera(efectos, cartera):
     return d
  
  
-def sensibilidad_por_factor(edges, cartera, shock=-10.0, profundidad=3, decaimiento=0.7):
-    """Qué factor (driver) le pegaría más a tu cartera ante un shock de -10%."""
+ 
+# ─────────────────────────────────────────────
+# DATOS DE MERCADO (yfinance) · VÍNCULOS ESTADÍSTICOS
+# ─────────────────────────────────────────────
+VENTANAS = {"6 meses": 183, "1 año": 365, "2 años": 730}
+MIN_OBS = 60                      # mínimo de días en común para calcular un vínculo
+CACHE_PRECIOS = "sly_precios_cache.pkl"
+CACHE_SECT = "sly_sectores_cache.json"
+SECT_ES = {"Technology": "Tecnología", "Healthcare": "Salud", "Financial Services": "Financiero",
+           "Consumer Cyclical": "Consumo cíclico", "Consumer Defensive": "Consumo defensivo", "Energy": "Energía",
+           "Industrials": "Industriales", "Utilities": "Servicios públicos", "Real Estate": "Inmobiliario",
+           "Basic Materials": "Materiales", "Communication Services": "Comunicaciones"}
+TICKERS_V56 = sorted(set(t.strip().upper() for t in RAW_TICKERS.split(",") if t.strip()))
+PALETA = ["#7E57C2", "#EF6C00", "#26A69A", "#EC407A", "#5C6BC0", "#8D6E63", "#F9A825", "#546E7A", "#00897B",
+          "#C0CA33", "#29B6F6", "#AB47BC", "#78909C"]
+ 
+ 
+def universo(cartera, extra=()):
+    """Tu lista del V56 + tus posiciones + los activos del mapa causal + lo que agregues a mano."""
+    u = set(TICKERS_V56) | set(cartera["Ticker"]) | {t.strip().upper() for t in extra if t and t.strip()}
+    u |= {n for n in NODOS if n not in DRIVERS and n != "OPENAI"}
+    return sorted(u)
+ 
+ 
+def extraer_cierres(raw, tickers):
+    """Cierres ajustados desde lo que devuelve yf.download (cubre las distintas formas de columnas)."""
+    if raw is None or len(raw) == 0:
+        return pd.DataFrame()
+    if isinstance(raw.columns, pd.MultiIndex):
+        if "Close" in raw.columns.get_level_values(0):
+            c = raw["Close"]
+        elif "Close" in raw.columns.get_level_values(1):
+            c = raw.xs("Close", axis=1, level=1)
+        else:
+            return pd.DataFrame()
+    elif "Close" in raw.columns:
+        c = raw[["Close"]].rename(columns={"Close": tickers[0]})
+    else:
+        return pd.DataFrame()
+    if isinstance(c, pd.Series):
+        c = c.to_frame(tickers[0])
+    idx = pd.to_datetime(c.index)
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_localize(None)
+    c = c.copy()
+    c.index = idx.normalize()
+    return c.dropna(how="all", axis=1).astype(float)
+ 
+ 
+def descargar_precios(tickers, lote=100, periodo="2y", progreso=None):
+    """Descarga por lotes (como el V56). Devuelve (precios, errores)."""
+    import yfinance as yf
+    partes, errores = [], []
+    for i in range(0, len(tickers), lote):
+        sub = tickers[i:i + lote]
+        try:
+            raw = yf.download(sub, period=periodo, interval="1d", auto_adjust=True, progress=False, threads=True)
+            c = extraer_cierres(raw, sub)
+            if not c.empty:
+                partes.append(c)
+        except Exception as ex:
+            errores.append(f"Lote que empieza en {sub[0]}: {type(ex).__name__}: {str(ex)[:80]}")
+        if progreso:
+            progreso(min(1.0, (i + lote) / len(tickers)))
+    if not partes:
+        return pd.DataFrame(), errores
+    df = pd.concat(partes, axis=1)
+    df = df.loc[:, ~df.columns.duplicated()].sort_index()
+    return df, errores
+ 
+ 
+def retornos(precios, dias):
+    """Retornos diarios de la ventana elegida. Descarta activos con pocos datos y recorta extremos (splits/errores)."""
+    if precios is None or precios.empty:
+        return pd.DataFrame()
+    P = precios.loc[precios.index >= precios.index.max() - pd.Timedelta(days=dias)]
+    R = P.pct_change(fill_method=None).iloc[1:]
+    R = R.loc[:, R.count() >= MIN_OBS]
+    return R.clip(-0.5, 0.5)
+ 
+ 
+def residualizar(R, mercado="SPY"):
+    """Quita el movimiento del mercado (SPY): queda lo propio de cada activo, que es donde se ven los vínculos reales."""
+    if mercado not in R.columns:
+        return R
+    m = R[mercado]
+    beta = R.apply(lambda s: s.cov(m)) / m.var()
+    ajuste = pd.DataFrame(np.outer(m.fillna(0.0).to_numpy(), beta.to_numpy()), index=R.index, columns=R.columns)
+    return R.sub(ajuste).drop(columns=[mercado])
+ 
+ 
+def calcular_matrices_puro(precios, dias, quitar_mercado):
+    R = retornos(precios, dias)
+    if R.empty:
+        return R, pd.DataFrame(), pd.DataFrame()
+    if quitar_mercado:
+        R = residualizar(R)
+    return R, R.corr(min_periods=MIN_OBS), R.cov(min_periods=MIN_OBS)
+ 
+ 
+def vinculos_stat(corr, cov, A, n_pos=8, n_neg=3, min_abs=0.15):
+    """Los que más se mueven con A (y al revés). Beta = cuánto se mueve B por cada 1% de A."""
+    cols = ["Ticker", "Correlación", "Beta"]
+    if corr.empty or A not in corr.columns:
+        return pd.DataFrame(columns=cols)
+    c = corr[A].drop(A).dropna()
+    sel = pd.concat([c[c >= min_abs].sort_values(ascending=False).head(n_pos),
+                     c[c <= -min_abs].sort_values().head(n_neg)])
+    va = cov.loc[A, A]
+    return pd.DataFrame({"Ticker": sel.index, "Correlación": sel.values,
+                         "Beta": [cov.loc[A, t] / va if va else np.nan for t in sel.index]})
+ 
+ 
+def tabla_vecinos(A, edges, corr, cov, shock, n_pos=8, n_neg=3):
+    """Une vínculos causales (criterio) y estadísticos (datos) de A, con impacto esperado ante 'shock' %."""
+    filas = {}
+ 
+    def f(n):
+        return filas.setdefault(n, {"Nodo": n, "Rol": [], "Dir": "", "Signo": 0, "Peso": 0.0, "Correlación": np.nan,
+                                    "Beta": np.nan, "Impacto %": np.nan, "Fuente": ""})
+    for o, d, s, w, t in zip(edges["origen"], edges["destino"], edges["signo"], edges["peso"], edges["tipo"]):
+        if o == A:
+            x = f(d)
+            x["Rol"].append(f"{A} → {d}: {t}")
+            x["Dir"], x["Signo"], x["Peso"] = "sale", int(s), float(w)
+        elif d == A:
+            x = f(o)
+            x["Rol"].append(f"{o} → {A}: {t}")
+            if not x["Dir"]:
+                x["Dir"], x["Signo"], x["Peso"] = "entra", int(s), float(w)
+    for _, r in vinculos_stat(corr, cov, A, n_pos, n_neg).iterrows():
+        x = f(r["Ticker"])
+        if not x["Signo"]:
+            x["Signo"] = 1 if r["Correlación"] > 0 else -1
+    if not corr.empty and A in corr.columns:
+        va = cov.loc[A, A]
+        for n, x in filas.items():
+            if n in corr.columns and n != A:
+                x["Correlación"] = corr.loc[A, n]
+                x["Beta"] = cov.loc[A, n] / va if va else np.nan
+    for n, x in filas.items():
+        if pd.notna(x["Beta"]):
+            x["Impacto %"], x["Fuente"] = x["Beta"] * shock, "datos"
+        elif x["Dir"] == "sale":
+            x["Impacto %"], x["Fuente"] = x["Signo"] * x["Peso"] * shock, "criterio"
+    df = pd.DataFrame(list(filas.values()))
+    if df.empty:
+        return df
+    df["Rol"] = df["Rol"].map(lambda r: " · ".join(r))
+    df["_causal"] = df["Rol"] != ""
+    df["_abs"] = df["Correlación"].abs().fillna(0)
+    return df.sort_values(["_causal", "_abs"], ascending=[False, False]).drop(columns=["_abs"]).reset_index(drop=True)
+ 
+ 
+def efectos_simulador(A, shock, edges, cov, prof=3, decae=0.7):
+    """Efecto esperado (%) sobre cada nodo: por datos (beta) cuando hay precios; por criterio causal si no."""
+    ef, fuente = {}, {}
+    if not cov.empty and A in cov.columns and cov.loc[A, A] > 0:
+        b = (cov[A] / cov.loc[A, A]).drop(A).dropna()
+        for t, v in b.items():
+            ef[t], fuente[t] = float(v) * shock, "datos"
+    for n, v in propagar(edges, A, shock, prof, decae).items():
+        if n != A and n not in ef:
+            ef[n], fuente[n] = v, "criterio"
+    return ef, fuente
+ 
+ 
+def pares_cartera(corr, tickers, top=10):
+    ts = [t for t in tickers if t in corr.columns]
     filas = []
-    total = float(cartera["Valor ARS"].sum())
-    for dr in sorted(DRIVERS):
-        if dr not in set(edges["origen"]):
-            continue
-        ef = propagar(edges, dr, shock, profundidad, decaimiento)
-        imp = float(impacto_cartera(ef, cartera)["Impacto ARS"].sum())
-        filas.append({"Factor": ETIQUETA.get(dr, dr), "Shock": shock, "Impacto ARS": imp,
-                      "Impacto % cartera": imp / total * 100 if total else 0.0})
-    return pd.DataFrame(filas).sort_values("Impacto ARS").reset_index(drop=True)
+    for i, a in enumerate(ts):
+        for b in ts[i + 1:]:
+            v = corr.loc[a, b]
+            if pd.notna(v):
+                filas.append((a, b, float(v)))
+    return pd.DataFrame(filas, columns=["Activo A", "Activo B", "Correlación"]).sort_values(
+        "Correlación", ascending=False).head(top).reset_index(drop=True)
  
  
-def posiciones(nodos):
-    """Cada ecosistema es un racimo: factores adentro, empresas en el anillo exterior."""
-    centros = {"IA y centros de datos": (0, 0), "Energía y metales": (9, 3), "Cripto": (9, -3.6),
-               "Consumo y medios": (-9, 3.5), "Salud": (-9, -3.6), "Defensa y aeroespacial": (0, -8.5),
-               "Japón y autos": (0, 8.2), "Tasas y macro": (-9, 9.5), "Otros": (9, -9)}
-    pos = {}
+def retorno_sectorial(R, sector_fn, min_n=3):
+    """Retorno promedio de cada sector (solo sectores con al menos min_n activos)."""
     grupos = {}
-    for n, (g, _) in nodos.items():
-        grupos.setdefault(g, []).append(n)
-    for g, ns in grupos.items():
-        cx, cy = centros.get(g, (0, 0))
-        drivers = [n for n in ns if n in DRIVERS]
-        emp = [n for n in ns if n not in DRIVERS]
-        r_out = 0.9 + 0.17 * len(emp) if emp else 0
-        r_in = 0 if len(drivers) <= 1 else 0.6 + 0.12 * len(drivers)
-        for i, n in enumerate(drivers):
-            a = 2 * math.pi * i / max(1, len(drivers))
-            pos[n] = (cx + r_in * math.cos(a), cy + r_in * math.sin(a))
-        for i, n in enumerate(emp):
-            a = 2 * math.pi * i / max(1, len(emp)) + math.pi / 2
-            pos[n] = (cx + r_out * math.cos(a), cy + r_out * math.sin(a))
-    return pos
+    for t in R.columns:
+        s = sector_fn(t)
+        if s not in ("Sin clasificar", "Factor / sin cotización", "ÍNDICES/ETFs"):
+            grupos.setdefault(s, []).append(t)
+    return pd.DataFrame({s: R[ts].mean(axis=1) for s, ts in grupos.items() if len(ts) >= min_n})
  
  
-def figura(nodos, edges, cartera, seleccion=None, efectos=None):
-    pos = posiciones(nodos)
-    valor = dict(zip(cartera["Ticker"], cartera["Valor ARS"]))
-    total = max(1.0, float(cartera["Valor ARS"].sum()))
-    vecinos = set()
-    if seleccion:
-        vecinos = set(edges.loc[edges["origen"] == seleccion, "destino"]) | set(
-            edges.loc[edges["destino"] == seleccion, "origen"])
-    activos = ({seleccion} | vecinos) if seleccion else set(nodos)
+# ---------- sectores ----------
+def cargar_sectores():
+    import json
+    import os
+    if os.path.exists(CACHE_SECT):
+        try:
+            with open(CACHE_SECT, encoding="utf-8") as fh:
+                return json.load(fh)
+        except Exception:
+            return {}
+    return {}
  
+ 
+def descargar_sectores(tickers, cache, progreso=None):
+    """Sector de cada ticker según yfinance (lento: ~0,3 s por activo). Se guarda y se puede reanudar."""
+    import json
+    import yfinance as yf
+    pend = [t for t in tickers if t not in cache]
+    for i, t in enumerate(pend):
+        try:
+            cache[t] = (yf.Ticker(t).info or {}).get("sector") or ""
+        except Exception:
+            cache[t] = ""
+        if progreso:
+            progreso((i + 1) / max(1, len(pend)), t)
+        if (i + 1) % 25 == 0 or i == len(pend) - 1:
+            with open(CACHE_SECT, "w", encoding="utf-8") as fh:
+                json.dump(cache, fh, ensure_ascii=False)
+    return cache
+ 
+ 
+def sector_de(t, cache):
+    if t in DRIVERS or t == "OPENAI":
+        return "Factor / sin cotización"
+    s = cache.get(t)
+    if s:
+        return SECT_ES.get(s, s)
+    for k, v in SECTOR_MAP.items():
+        if t in v:
+            return k
+    return "Sin clasificar"
+ 
+ 
+# ---------- figuras ----------
+def figura_ego(A, vec, sector_fn, valor):
+    """Un solo activo en el centro y sus vínculos alrededor. Pocos nodos, lectura rápida."""
     fig = go.Figure()
-    # líneas tenues: verde = mismo sentido, rojo = sentido inverso
-    for signo, color in ((1, "rgba(46,125,50,0.18)"), (-1, "rgba(198,40,40,0.22)")):
-        xs, ys = [], []
-        for o, d, s in zip(edges["origen"], edges["destino"], edges["signo"]):
-            if s == signo and o in pos and d in pos:
-                xs += [pos[o][0], pos[d][0], None]
-                ys += [pos[o][1], pos[d][1], None]
-        fig.add_trace(go.Scatter(x=xs, y=ys, mode="lines", line=dict(color=color, width=1),
-                                 hoverinfo="skip", showlegend=False))
-    # vínculos del nodo elegido, con flecha
-    if seleccion:
-        for o, d, s, w in zip(edges["origen"], edges["destino"], edges["signo"], edges["peso"]):
-            if (o == seleccion or d == seleccion) and o in pos and d in pos:
-                fig.add_annotation(x=pos[d][0], y=pos[d][1], ax=pos[o][0], ay=pos[o][1], xref="x", yref="y",
-                                   axref="x", ayref="y", showarrow=True, arrowhead=3, arrowsize=1.2,
-                                   arrowwidth=1 + 2.2 * min(w, 1.5),
-                                   arrowcolor="#2E7D32" if s > 0 else "#C62828", opacity=0.9)
-    # nodos por ecosistema
-    for g, color in list(GRUPOS.items()) + [("Otros", "#9E9E9E")]:
-        ns = [n for n, (gg, _) in nodos.items() if gg == g and n in pos]
-        if not ns:
-            continue
-        sizes, lines, texts, hov, opac = [], [], [], [], []
-        for n in ns:
-            en_cartera = n in valor
-            base = 16 if n in DRIVERS else 12
-            sizes.append(base + (min(28, math.sqrt(valor[n] / total) * 70) if en_cartera else 0))
-            lines.append("#111111" if en_cartera else "rgba(0,0,0,0)")
-            texts.append(ETIQUETA.get(n, n))
-            ef = efectos.get(n) if efectos else None
-            hov.append(f"<b>{ETIQUETA.get(n, n)}</b><br>{nodos[n][1]}"
-                       + (f"<br>En cartera: ARS {valor[n]:,.0f}".replace(",", ".") if n in valor else "")
-                       + (f"<br>Efecto simulado: {ef:+.1f}%" if ef is not None else ""))
-            opac.append(1.0 if n in activos else 0.18)
-        symbols = ["diamond" if n in DRIVERS else "circle" for n in ns]
-        fig.add_trace(go.Scatter(
-            x=[pos[n][0] for n in ns], y=[pos[n][1] for n in ns], mode="markers+text", name=g,
-            text=texts, textposition="top center", textfont=dict(size=10), hovertext=hov, hoverinfo="text",
-            marker=dict(size=sizes, color=color, symbol=symbols, opacity=opac, line=dict(color=lines, width=2.2))))
-    fig.update_layout(height=720, margin=dict(l=0, r=0, t=10, b=0), plot_bgcolor="white",
-                      xaxis=dict(visible=False), yaxis=dict(visible=False, scaleanchor="x"),
+    n = len(vec)
+    sectores = sorted({sector_fn(t) for t in vec["Nodo"]} | {sector_fn(A)})
+    color = {s: PALETA[i % len(PALETA)] for i, s in enumerate(sectores)}
+    orden = vec.assign(_s=[sector_fn(t) for t in vec["Nodo"]]).sort_values(["_s", "Nodo"]).reset_index(drop=True)
+    pos = {A: (0.0, 0.0)}
+    for i, nodo in enumerate(orden["Nodo"]):
+        a = 2 * math.pi * i / max(n, 1) + math.pi / 2
+        pos[nodo] = (math.cos(a), math.sin(a))
+    # líneas estadísticas (grosor = fuerza) y flechas causales
+    for _, r in orden.iterrows():
+        x1, y1 = pos[r["Nodo"]]
+        if pd.notna(r["Correlación"]):
+            col = "rgba(46,125,50,0.55)" if r["Correlación"] > 0 else "rgba(198,40,40,0.6)"
+            fig.add_trace(go.Scatter(x=[0, x1], y=[0, y1], mode="lines", hoverinfo="skip", showlegend=False,
+                                     line=dict(color=col, width=1 + 7 * abs(float(r["Correlación"])))))
+        if r["Dir"]:
+            ini, fin = (0.16, 0.84) if r["Dir"] == "sale" else (0.84, 0.16)
+            ac = "#1B5E20" if r["Signo"] > 0 else "#B71C1C"
+            fig.add_annotation(x=x1 * fin, y=y1 * fin, ax=x1 * ini, ay=y1 * ini, xref="x", yref="y", axref="x",
+                               ayref="y", showarrow=True, arrowhead=3, arrowsize=1.4, arrowwidth=2.4, arrowcolor=ac)
+    xs, ys, txt, hov, siz, bord, sym, col_n = [], [], [], [], [], [], [], []
+    for _, r in orden.iterrows():
+        nodo = r["Nodo"]
+        xs.append(pos[nodo][0]); ys.append(pos[nodo][1]); txt.append(ETIQUETA.get(nodo, nodo))
+        c = r["Correlación"]
+        siz.append(20 + (22 * abs(float(c)) if pd.notna(c) else 8))
+        bord.append("#111111" if nodo in valor else "rgba(0,0,0,0)")
+        sym.append("diamond" if nodo in DRIVERS or nodo == "OPENAI" else "circle")
+        col_n.append(color[sector_fn(nodo)])
+        h = f"<b>{ETIQUETA.get(nodo, nodo)}</b> · {sector_fn(nodo)}"
+        if r["Rol"]:
+            h += f"<br>Causal: {r['Rol']}"
+        if pd.notna(c):
+            h += f"<br>Correlación: {float(c):+.2f} · Beta: {float(r['Beta']):+.2f}"
+        if pd.notna(r["Impacto %"]):
+            h += f"<br>Impacto esperado: {float(r['Impacto %']):+.1f}% ({r['Fuente']})"
+        if nodo in valor:
+            h += "<br>En tu cartera"
+        hov.append(h)
+    fig.add_trace(go.Scatter(x=xs, y=ys, mode="markers+text", text=txt, textposition="top center", hovertext=hov,
+                             hoverinfo="text", showlegend=False, textfont=dict(size=11),
+                             marker=dict(size=siz, color=col_n, symbol=sym, line=dict(color=bord, width=2.5))))
+    fig.add_trace(go.Scatter(x=[0], y=[0], mode="markers+text", text=[ETIQUETA.get(A, A)], textposition="middle center",
+                             hovertext=[f"<b>{ETIQUETA.get(A, A)}</b> · {sector_fn(A)}"], hoverinfo="text",
+                             showlegend=False, textfont=dict(size=12, color="white"),
+                             marker=dict(size=58, color="#004D40", line=dict(color="#111111" if A in valor else "#004D40",
+                                                                            width=3))))
+    for s in sectores:   # leyenda de sectores
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name=s, marker=dict(size=10, color=color[s])))
+    fig.update_layout(height=560, margin=dict(l=0, r=0, t=0, b=0), plot_bgcolor="white",
+                      xaxis=dict(visible=False, range=[-1.45, 1.45]),
+                      yaxis=dict(visible=False, range=[-1.3, 1.3], scaleanchor="x"),
                       legend=dict(orientation="h", y=-0.02), hovermode="closest")
     return fig
  
  
-def tabla_vinculos(edges, nodo):
-    """Qué le pasa a 'nodo' y a quién afecta, en palabras."""
-    sale = edges[edges["origen"] == nodo].copy()
-    entra = edges[edges["destino"] == nodo].copy()
-    sale["Lectura"] = [f"Si {ETIQUETA.get(nodo, nodo)} sube, {ETIQUETA.get(d, d)} tiende a {'subir' if s > 0 else 'bajar'}"
-                       for d, s in zip(sale["destino"], sale["signo"])]
-    entra["Lectura"] = [f"Si {ETIQUETA.get(o, o)} sube, {ETIQUETA.get(nodo, nodo)} tiende a {'subir' if s > 0 else 'bajar'}"
-                        for o, s in zip(entra["origen"], entra["signo"])]
-    return sale, entra
+def figura_sectores(corr_sec):
+    fig = go.Figure(go.Heatmap(z=corr_sec.values, x=list(corr_sec.columns), y=list(corr_sec.index), zmin=-1, zmax=1,
+                               colorscale=[[0, "#C62828"], [0.5, "#FFFFFF"], [1, "#2E7D32"]],
+                               text=np.round(corr_sec.values, 2), texttemplate="%{text}", hoverongaps=False))
+    fig.update_layout(height=520, margin=dict(l=0, r=0, t=10, b=0), yaxis=dict(autorange="reversed"))
+    return fig
  
  
 # ═════════════════════════════════════════════
@@ -413,144 +617,186 @@ st.markdown("""
     h1 { color: #004D40; font-weight: 800; border-bottom: 3px solid #004D40; }
 </style>
 """, unsafe_allow_html=True)
-st.title("🕸️ SLY | MAPA DE VÍNCULOS")
-st.caption("Quién le vende a quién, quién depende de qué factor y cómo se contagia un shock. "
-           "Los vínculos y pesos son aproximados y editables: sirven para ordenar ideas, no para predecir precios.")
+st.title("🔗 SLY | MAPA DE VÍNCULOS")
  
-if "edges_df" not in st.session_state:
-    st.session_state["edges_df"] = EDGES_DEFAULT.copy()
-if "cartera_df" not in st.session_state:
-    st.session_state["cartera_df"] = CARTERA_DF_DEFAULT.copy()
- 
-tab_mapa, tab_sim, tab_sens, tab_edit = st.tabs(
-    ["🗺️ Mapa", "💥 Simulador de shock", "📊 Sensibilidad de mi cartera", "✏️ Editar vínculos y cartera"])
+for k, v in {"edges_df": EDGES_DEFAULT.copy(), "cartera_df": CARTERA_DF_DEFAULT.copy(), "extra": [],
+             "sectores": None, "precios": None, "errores_precios": []}.items():
+    if k not in st.session_state:
+        st.session_state[k] = v
+if st.session_state["sectores"] is None:
+    st.session_state["sectores"] = cargar_sectores()
+if st.session_state["precios"] is None:
+    import os
+    st.session_state["precios"] = pd.read_pickle(CACHE_PRECIOS) if os.path.exists(CACHE_PRECIOS) else pd.DataFrame()
  
 edges = limpiar_edges(st.session_state["edges_df"])
 cartera = limpiar_cartera(st.session_state["cartera_df"])
-nodos = armar_nodos(edges, cartera)
+valor = dict(zip(cartera["Ticker"], cartera["Valor ARS"]))
 total_cartera = float(cartera["Valor ARS"].sum())
+UNI = universo(cartera, st.session_state["extra"])
+precios = st.session_state["precios"]
+sec_cache = st.session_state["sectores"]
+sector_fn = lambda t: sector_de(t, sec_cache)
  
  
-def nombre(n):
-    return f"{ETIQUETA.get(n, n)}  ({n})" if n in ETIQUETA else n
+@st.cache_data(show_spinner="Calculando vínculos…")
+def matrices_cache(_precios, firma, dias, quitar):
+    return calcular_matrices_puro(_precios, dias, quitar)
  
  
-# ---------------- Mapa ----------------
-with tab_mapa:
-    c1, c2 = st.columns([1, 3])
-    with c1:
-        opciones = ["(ninguno)"] + sorted(nodos, key=lambda n: (nodos[n][0], n))
-        sel = st.selectbox("Elegí un nodo para ver sus vínculos:", opciones, format_func=lambda n: n if n == "(ninguno)" else nombre(n))
-        sel = None if sel == "(ninguno)" else sel
-        st.markdown("**Cómo leerlo**\n- ◆ factor o sector · ● empresa\n- Borde negro: está en tu cartera (más grande = más peso)\n"
-                    "- Flecha verde: el destino se mueve en el mismo sentido · roja: en sentido inverso\n- Grosor de la flecha: intensidad aproximada")
-        if sel:
-            sale, entra = tabla_vinculos(edges, sel)
-            st.markdown(f"**{nodos[sel][1]}**")
-            if sel in set(cartera["Ticker"]):
-                v = float(cartera.loc[cartera["Ticker"] == sel, "Valor ARS"].iloc[0])
-                st.metric("En tu cartera", f"ARS {v:,.0f}".replace(",", "."), f"{v / total_cartera * 100:.1f}% del total" if total_cartera else "")
-    with c2:
-        st.plotly_chart(figura(nodos, edges, cartera, sel), use_container_width=True)
-    if sel:
-        a, b = st.columns(2)
-        with a:
-            st.markdown(f"**Afecta a** ({len(sale)})")
-            st.dataframe(sale[["Lectura", "peso", "tipo", "confianza"]], hide_index=True, use_container_width=True)
-        with b:
-            st.markdown(f"**Depende de** ({len(entra)})")
-            st.dataframe(entra[["Lectura", "peso", "tipo", "confianza"]], hide_index=True, use_container_width=True)
+firma = (len(precios), str(precios.index.max()) if len(precios) else "")
+ 
+with st.sidebar:
+    st.header("⚙️ Datos")
+    ventana = st.selectbox("Ventana de análisis:", list(VENTANAS), index=1)
+    st.caption(f"{len(UNI)} activos en el universo (tu lista del V56 + tu cartera + factores).")
+    nuevos = st.text_input("Agregar tickers (separados por coma):", "")
+    if nuevos:
+        st.session_state["extra"] = sorted({t.strip().upper() for t in nuevos.split(",") if t.strip()})
+    if st.button("🚀 Descargar / actualizar precios", type="primary", use_container_width=True):
+        barra = st.progress(0, text="Descargando por lotes…")
+        df, errs = descargar_precios(UNI, 100, "2y", lambda p: barra.progress(p, text="Descargando por lotes…"))
+        barra.empty()
+        if not df.empty:
+            df.to_pickle(CACHE_PRECIOS)
+            st.session_state["precios"] = df
+        st.session_state["errores_precios"] = errs
+        st.rerun()
+    if len(precios):
+        st.caption(f"Precios hasta {precios.index.max():%d/%m/%Y} · {precios.shape[1]} activos con datos.")
+    else:
+        st.info("Todavía no hay precios. Descargalos para ver los vínculos por datos.")
+    if st.button("🏷️ Cargar sectores (una vez, tarda unos minutos)", use_container_width=True):
+        barra = st.progress(0, text="Sectores…")
+        st.session_state["sectores"] = descargar_sectores(
+            UNI, dict(sec_cache), lambda p, t: barra.progress(p, text=f"Sector de {t}"))
+        barra.empty()
+        st.rerun()
+    if st.session_state["errores_precios"]:
+        with st.expander("⚠️ Errores de descarga"):
+            st.write("\n\n".join(st.session_state["errores_precios"]))
+ 
+tab_v, tab_s, tab_sec, tab_c = st.tabs(["🔗 Vínculos", "💥 Simulador", "🧭 Sectores", "💼 Mi cartera"])
+OPCIONES = sorted(set(UNI) | DRIVERS | {"OPENAI"})
+nombre = lambda n: f"{ETIQUETA[n]} ({n})" if n in ETIQUETA else n
+dias = VENTANAS[ventana]
+ 
+# ---------------- Vínculos ----------------
+with tab_v:
+    c1, c2, c3, c4 = st.columns([2, 1, 1, 1])
+    A = c1.selectbox("Activo o factor:", OPCIONES, index=OPCIONES.index("NVDA") if "NVDA" in OPCIONES else 0,
+                     format_func=nombre)
+    n_pos = c2.slider("Se mueven igual", 0, 15, 8)
+    n_neg = c3.slider("Se mueven al revés", 0, 6, 3)
+    shock = c4.number_input("Si se mueve (%)", -50.0, 50.0, -5.0, 0.5)
+    quitar = st.checkbox("Quitar el efecto del mercado (SPY)", value=True,
+                         help="Con esto ves lo propio de cada vínculo (sector, cadena de suministro) y no solo que "
+                              "'todo sube y baja con el mercado'.")
+    R, corr, cov = matrices_cache(precios, firma, dias, quitar) if len(precios) else (pd.DataFrame(),) * 3
+    vec = tabla_vecinos(A, edges, corr, cov, shock, n_pos, n_neg)
+    if vec.empty:
+        st.info("No hay vínculos para este activo. Descargá precios (barra lateral) o agregale vínculos causales en 'Mi cartera'.")
+    else:
+        gcol, tcol = st.columns([3, 2])
+        with gcol:
+            st.plotly_chart(figura_ego(A, vec, sector_fn, valor), use_container_width=True)
+            st.caption("Línea verde: se mueven en el mismo sentido · roja: al revés · grosor = fuerza (correlación). "
+                       "Flecha: vínculo causal de la cadena de negocio (criterio manual). ◆ factor sin cotización · "
+                       "borde negro: está en tu cartera.")
+        with tcol:
+            st.markdown(f"**Si {nombre(A)} se mueve {shock:+.1f}%, lo esperable es:**")
+            vista = pd.DataFrame({
+                "Activo": vec["Nodo"], "Sector": [sector_fn(t) for t in vec["Nodo"]],
+                "Corr.": vec["Correlación"].round(2), "Impacto %": vec["Impacto %"].round(2), "Fuente": vec["Fuente"],
+                "Vínculo causal": vec["Rol"], "Mi cartera (ARS)": [valor.get(t, np.nan) for t in vec["Nodo"]]})
+            st.dataframe(vista, hide_index=True, use_container_width=True, height=520)
+        if not len(precios):
+            st.warning("Solo se muestran los vínculos causales (criterio manual). Descargá precios para sumar los vínculos medidos con datos.")
+    st.caption("Correlación no es causalidad: dos activos pueden moverse juntos por un tercer factor. "
+               "'Impacto %' por datos = beta histórica × el movimiento; por criterio = peso manual del vínculo. Es una guía, no una predicción.")
  
 # ---------------- Simulador ----------------
-with tab_sim:
-    st.markdown("Elegí qué se mueve y cuánto. El efecto se propaga por los vínculos y se pierde fuerza en cada salto.")
-    s1, s2, s3, s4 = st.columns(4)
-    origen = s1.selectbox("Qué se mueve:", sorted(nodos, key=lambda n: (nodos[n][0], n)), format_func=nombre,
-                          index=sorted(nodos, key=lambda n: (nodos[n][0], n)).index("IA_GASTO") if "IA_GASTO" in nodos else 0)
-    shock = s2.slider("Variación (%)", -30.0, 30.0, -10.0, 0.5)
-    prof = s3.slider("Saltos de contagio", 1, 4, 3)
-    decae = s4.slider("Fuerza que se mantiene desde el 2.º salto", 0.3, 1.0, 0.7, 0.05)
-    ccl = st.slider("Variación del dólar CCL (%) — afecta a todos los CEDEARs en pesos", -20.0, 20.0, 0.0, 0.5)
- 
-    efectos = propagar(edges, origen, shock, prof, decae)
-    imp = impacto_cartera(efectos, cartera)
+with tab_s:
+    if not len(precios):
+        st.info("Descargá precios para simular con datos. Sin precios solo funciona el contagio causal de los factores.")
+    s1, s2, s3 = st.columns([2, 1, 1])
+    O = s1.selectbox("Qué se mueve:", OPCIONES, index=OPCIONES.index("NVDA") if "NVDA" in OPCIONES else 0,
+                     format_func=nombre, key="sim_o")
+    sh = s2.slider("Variación (%)", -30.0, 30.0, -10.0, 0.5, key="sim_sh")
+    ccl = s3.slider("Dólar CCL (%)", -20.0, 20.0, 0.0, 0.5)
+    mercado_ok = st.checkbox("Incluir el movimiento general del mercado", value=True,
+                             help="Si cae una empresa grande, suele arrastrar al índice. Tildado = efecto total. "
+                                  "Destildado = solo el vínculo propio.")
+    Rs, corr_s, cov_s = matrices_cache(precios, firma, dias, not mercado_ok) if len(precios) else (pd.DataFrame(),) * 3
+    ef, fuente = efectos_simulador(O, sh, edges, cov_s, 3, 0.7)
+    imp = impacto_cartera(ef, cartera)
     imp["Efecto total %"] = (1 + imp["Efecto %"] / 100) * (1 + ccl / 100) * 100 - 100
-    imp["Impacto total ARS"] = imp["Valor ARS"] * imp["Efecto total %"] / 100
-    tot = float(imp["Impacto total ARS"].sum())
-    m1, m2, m3 = st.columns(3)
+    imp["Impacto ARS"] = imp["Valor ARS"] * imp["Efecto total %"] / 100
+    imp["Fuente"] = imp["Ticker"].map(fuente).fillna("—")
+    tot = float(imp["Impacto ARS"].sum())
+    m1, m2 = st.columns(2)
     m1.metric("Impacto estimado en tu cartera", f"ARS {tot:,.0f}".replace(",", "."),
               f"{tot / total_cartera * 100:+.2f}%" if total_cartera else "")
-    m2.metric("Posiciones afectadas", int((imp["Efecto %"].abs() > 0.05).sum()))
-    m3.metric("Nodos alcanzados", len(efectos))
-    st.plotly_chart(figura(nodos, edges, cartera, origen, efectos), use_container_width=True)
+    m2.metric("Posiciones con efecto", int((imp["Efecto %"].abs() > 0.05).sum()))
+    a, b = st.columns(2)
+    with a:
+        st.markdown("**Los más afectados (todo el universo)**")
+        top = pd.DataFrame([{"Activo": k, "Sector": sector_fn(k), "Efecto %": round(v, 2), "Fuente": fuente[k],
+                             "En cartera": k in valor} for k, v in ef.items()])
+        if len(top):
+            st.dataframe(top.sort_values("Efecto %", key=lambda s_: s_.abs(), ascending=False).head(25),
+                         hide_index=True, use_container_width=True, height=420)
+    with b:
+        st.markdown("**Tu cartera**")
+        v2 = imp[imp["Efecto %"].abs() > 0.05].sort_values("Impacto ARS")[
+            ["Ticker", "Valor ARS", "Efecto total %", "Impacto ARS", "Fuente"]].round(2)
+        st.dataframe(v2, hide_index=True, use_container_width=True, height=420)
+    st.caption("Por datos: beta histórica de cada activo respecto del que se mueve. Por criterio: contagio causal manual "
+               "(factores y activos sin historial). El CCL se combina aparte. No es una predicción.")
  
-    lista = pd.DataFrame([{"Nodo": nombre(n), "Efecto %": round(v, 2), "En cartera": n in set(cartera["Ticker"])}
-                          for n, v in efectos.items() if n != origen])
-    cA, cB = st.columns(2)
-    with cA:
-        st.markdown("**Todos los nodos alcanzados**")
-        if len(lista):
-            st.dataframe(lista.sort_values("Efecto %", key=lambda s: s.abs(), ascending=False), hide_index=True,
-                         use_container_width=True, height=380)
-        else:
-            st.info("Ese nodo no tiene vínculos de salida en la tabla actual.")
-    with cB:
-        st.markdown("**Tu cartera: mayor impacto**")
-        vista = imp[imp["Efecto %"].abs() > 0.05].sort_values("Impacto total ARS")[
-            ["Ticker", "Valor ARS", "Efecto %", "Impacto total ARS"]].round(2)
-        st.dataframe(vista, hide_index=True, use_container_width=True, height=380)
-    st.caption("El primer salto usa el peso completo del vínculo. Se toma la ruta de mayor efecto para cada nodo (no se suman rutas). Los pesos son criterio aproximado. "
-               "El CCL se combina aparte: efecto total = (1 + efecto del activo) × (1 + CCL) − 1.")
- 
-# ---------------- Sensibilidad ----------------
-with tab_sens:
-    st.markdown("¿A qué factor está más expuesta tu cartera? Se aplica un shock de **-10%** a cada factor "
-                "(IA, petróleo, tasas, bitcoin, etc.) y se mide cuánto perdería tu cartera.")
-    sh = st.slider("Shock a aplicar (%)", -30.0, -2.0, -10.0, 1.0, key="sh_sens")
-    sens = sensibilidad_por_factor(edges, cartera, sh, 3, 0.7)
-    if sens.empty:
-        st.info("No hay factores con vínculos en la tabla actual.")
+# ---------------- Sectores ----------------
+with tab_sec:
+    if not len(precios):
+        st.info("Descargá precios para ver cómo se mueven los sectores entre sí.")
     else:
-        fig2 = go.Figure(go.Bar(x=sens["Impacto % cartera"], y=sens["Factor"], orientation="h",
-                                marker_color=["#C62828" if v < 0 else "#2E7D32" for v in sens["Impacto % cartera"]],
-                                text=[f"{v:+.2f}%" for v in sens["Impacto % cartera"]], textposition="outside"))
-        fig2.update_layout(height=520, margin=dict(l=0, r=40, t=10, b=0), plot_bgcolor="white",
-                           xaxis_title="Impacto estimado sobre el total de la cartera (%)")
-        st.plotly_chart(fig2, use_container_width=True)
-        st.dataframe(sens.round(2), hide_index=True, use_container_width=True)
-        st.caption("Negativo = te perjudica; positivo = te beneficia (p. ej. una baja de tasas o de inflación).")
-    # exposición por ecosistema
-    st.markdown("**Cuánto de tu cartera está en cada ecosistema**")
-    por_grupo = cartera.assign(Ecosistema=cartera["Ticker"].map(lambda t: nodos[t][0] if t in nodos else "Otros"))
-    por_grupo = por_grupo.groupby("Ecosistema", as_index=False)["Valor ARS"].sum().sort_values("Valor ARS", ascending=False)
-    por_grupo["% cartera"] = (por_grupo["Valor ARS"] / total_cartera * 100).round(1) if total_cartera else 0.0
-    st.dataframe(por_grupo, hide_index=True, use_container_width=True)
-    st.caption("Ojo: un mismo activo puede depender de más de un factor, y MSTR suma exposición a cripto aunque la veas en otro rubro.")
+        q2 = st.checkbox("Quitar el efecto del mercado (SPY)", value=True, key="q_sec")
+        Rq, cq, _ = matrices_cache(precios, firma, dias, q2)
+        rs = retorno_sectorial(Rq, sector_fn)
+        if rs.shape[1] < 3:
+            st.info("Hay pocos sectores clasificados. Usá '🏷️ Cargar sectores' en la barra lateral.")
+        else:
+            cs = rs.corr(min_periods=MIN_OBS)
+            st.plotly_chart(figura_sectores(cs), use_container_width=True)
+            st.caption("Verde: sectores que se mueven juntos · rojo: se mueven al revés. Cada sector es el promedio "
+                       "de sus activos. Más sectores aparecen al cargar los sectores desde yfinance.")
  
-# ---------------- Edición ----------------
-with tab_edit:
-    st.markdown("**Tu cartera** (valores en ARS; los iniciales son los de tu captura del 5/11 — actualizalos)")
+# ---------------- Mi cartera ----------------
+with tab_c:
+    st.markdown("**Tu cartera** (valores en ARS; los iniciales son los de tu captura del 5/11, actualizalos)")
     st.session_state["cartera_df"] = st.data_editor(st.session_state["cartera_df"], num_rows="dynamic",
-                                                    use_container_width=True, key="ed_cartera")
-    st.markdown("**Vínculos** — signo +1 (mismo sentido) o -1 (inverso) · peso: intensidad (1.0 = se mueve igual) · "
-                "usá los códigos de los nodos (NVDA, TASAS, BRENT…). Podés agregar filas y empresas nuevas.")
-    st.session_state["edges_df"] = st.data_editor(st.session_state["edges_df"], num_rows="dynamic",
-                                                  use_container_width=True, height=520, key="ed_edges")
-    cdl1, cdl2 = st.columns(2)
-    cdl1.download_button("⬇️ Bajar vínculos (CSV)", st.session_state["edges_df"].to_csv(index=False).encode("utf-8"),
-                         "vinculos_sly.csv", "text/csv")
-    sub = cdl2.file_uploader("Subir vínculos (CSV con las mismas columnas)", type="csv")
-    if sub is not None and st.session_state.get("csv_cargado") != (sub.name, sub.size):
-        try:
-            st.session_state["edges_df"] = pd.read_csv(sub)[EDGE_COLS]
+                                                    use_container_width=True, key="ed_cartera", height=300)
+    if len(precios):
+        Rc, cc, _ = matrices_cache(precios, firma, dias, True)
+        pc = pares_cartera(cc, list(cartera["Ticker"]), 10)
+        st.markdown("**Riesgo oculto: tus posiciones que más se mueven juntas** (sin efecto del mercado)")
+        st.dataframe(pc.round(2), hide_index=True, use_container_width=True)
+    with st.expander("✏️ Editar vínculos causales (criterio manual)"):
+        st.markdown("signo +1 (mismo sentido) o -1 (inverso) · peso: intensidad (1.0 = se mueve igual) · "
+                    "usá los tickers (NVDA, TSM…) o factores (TASAS, BRENT…).")
+        st.session_state["edges_df"] = st.data_editor(st.session_state["edges_df"], num_rows="dynamic",
+                                                      use_container_width=True, height=420, key="ed_edges")
+        d1, d2 = st.columns(2)
+        d1.download_button("⬇️ Bajar vínculos (CSV)", st.session_state["edges_df"].to_csv(index=False).encode("utf-8"),
+                           "vinculos_sly.csv", "text/csv")
+        sub = d2.file_uploader("Subir vínculos (CSV)", type="csv")
+        if sub is not None and st.session_state.get("csv_cargado") != (sub.name, sub.size):
             st.session_state["csv_cargado"] = (sub.name, sub.size)
-            st.success("Vínculos cargados.")
+            try:
+                st.session_state["edges_df"] = pd.read_csv(sub)[EDGE_COLS]
+                st.rerun()
+            except Exception as ex:
+                st.error(f"No pude leer el CSV: {ex}")
+        if st.button("↩️ Volver a los originales"):
+            st.session_state["edges_df"] = EDGES_DEFAULT.copy()
+            st.session_state["cartera_df"] = CARTERA_DF_DEFAULT.copy()
             st.rerun()
-        except Exception as ex:
-            st.session_state["csv_cargado"] = (sub.name, sub.size)
-            st.error(f"No pude leer el CSV: {ex}")
-    if st.button("↩️ Volver a los vínculos y cartera originales"):
-        st.session_state["edges_df"] = EDGES_DEFAULT.copy()
-        st.session_state["cartera_df"] = CARTERA_DF_DEFAULT.copy()
-        st.rerun()
-    st.caption("Los cambios viven en la sesión del navegador: si cerrás la pestaña se pierden. Bajá el CSV para guardarlos.")
