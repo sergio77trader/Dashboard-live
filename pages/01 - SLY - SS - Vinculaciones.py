@@ -1,5 +1,5 @@
 """
-SLY | MAPA DE VÍNCULOS v2 — cómo se mueve una acción cuando se mueve otra.
+SLY | MAPA DE VÍNCULOS v3 — organigrama de vínculos: elegís una empresa y ves toda su cadena.
  
 Dos capas de vínculos:
   1) DATOS: correlación y beta medidas con precios reales (yfinance) para TODA tu lista del V56 (≈500 acciones/ETFs),
@@ -8,7 +8,7 @@ Dos capas de vínculos:
      editable, no un dato oficial.
  
 Requisitos:  pip install streamlit plotly pandas numpy yfinance
-Ejecutar:    streamlit run sly_mapa_vinculos_v2.py
+Ejecutar:    streamlit run sly_mapa_vinculos_v3.py
 """
 import math
  
@@ -607,6 +607,173 @@ def figura_sectores(corr_sec):
     return fig
  
  
+# ---------- organigrama ----------
+TIER_NOMBRES = ["Macro", "Demanda y precios", "Proveedores e infraestructura", "Plataformas y empresas",
+                "Servicios, distribución y ETFs", "Otros (sumados por datos)"]
+TIER = {}
+for _t, _ns in enumerate([
+    ["TASAS", "DXY", "INFL", "ARANCEL", "YEN"],
+    ["IA_GASTO", "BRENT", "ORO", "PLATA", "BTC", "CONSUMO", "PUBLI", "SALUD", "DEFENSA", "AEROESP", "AEROL"],
+    ["ASML", "TSM", "NVDA", "AMD", "AVGO", "QCOM", "VST", "NEE", "XOM", "CVX", "YPF", "RTX", "HON"],
+    ["OPENAI", "MSFT", "AMZN", "GOOGL", "META", "ORCL", "CRM", "ADBE", "LMT", "NFLX", "SPOT", "UBER", "SBUX", "TM",
+     "SONY", "MDT", "ISRG", "ABT", "AMGN", "VZ", "TMUS", "PG", "PEP", "HSY"],
+    ["ACN", "CVS", "XLE", "GDX", "SLV", "EWZ", "MSTR", "O"]]):
+    for _n in _ns:
+        TIER[_n] = _t
+ 
+ 
+def tier_de(n):
+    return TIER.get(n, 5)
+ 
+ 
+def cadena(S, edges, prof_abajo=3, prof_arriba=3):
+    """Cadena completa de S: todo lo que lo afecta (hacia arriba) y todo lo que afecta (hacia abajo), por saltos."""
+    out_adj, in_adj = {}, {}
+    for o, d in zip(edges["origen"], edges["destino"]):
+        out_adj.setdefault(o, []).append(d)
+        in_adj.setdefault(d, []).append(o)
+ 
+    def bfs(adj, prof, inverso):
+        nivel, usados, frente = {S: 0}, set(), [S]
+        for k in range(1, int(prof) + 1):
+            sig = []
+            for n in frente:
+                for m in adj.get(n, []):
+                    if m == S:
+                        continue
+                    if m not in nivel:
+                        nivel[m] = k
+                        sig.append(m)
+                    if nivel[m] == k:
+                        usados.add((m, n) if inverso else (n, m))
+            frente = sig
+        return nivel, usados
+ 
+    nd, ed = bfs(out_adj, prof_abajo, False)
+    na, ea = bfs(in_adj, prof_arriba, True)
+    roles = {S: "sel"}
+    for n in nd:
+        if n != S:
+            roles[n] = "afecta"
+    for n in na:
+        if n != S:
+            roles[n] = "ambos" if n in roles else "depende"
+    return roles, ed | ea, nd, na
+ 
+ 
+def posiciones_org(nodos, eco_fn):
+    """Organigrama por niveles: arriba los factores macro, abajo las empresas y lo agregado por datos."""
+    pos, maxk = {}, 1
+    for t in range(6):
+        ns = sorted([n for n in nodos if tier_de(n) == t], key=lambda n: (eco_fn(n), n))
+        maxk = max(maxk, len(ns))
+        for i, n in enumerate(ns):
+            pos[n] = ((i - (len(ns) - 1) / 2) * 1.0, -t * 1.7)
+    return pos, maxk
+ 
+ 
+def curva(p0, p1, k=14):
+    (x0, y0), (x1, y1) = p0, p1
+    dx, dy = x1 - x0, y1 - y0
+    L = math.hypot(dx, dy) or 1.0
+    if abs(dy) < 1e-9:                      # misma fila: arco hacia arriba o abajo según el sentido
+        nx, ny, off = 0.0, 1.0, (0.45 + 0.04 * L) * (1 if x1 > x0 else -1)
+    else:
+        nx, ny, off = -dy / L, dx / L, 0.12 * L
+    cx, cy = (x0 + x1) / 2 + nx * off, (y0 + y1) / 2 + ny * off
+    ts = np.linspace(0, 1, k)
+    return [((1 - t) ** 2 * x0 + 2 * (1 - t) * t * cx + t * t * x1, (1 - t) ** 2 * y0 + 2 * (1 - t) * t * cy + t * t * y1)
+            for t in ts]
+ 
+ 
+def figura_org(S, roles, aristas, pos, maxk, valor, eco_fn, sector_fn):
+    """Organigrama de vínculos. 'activa' = pertenece a la cadena elegida; el resto queda tenue de fondo."""
+    fig = go.Figure()
+    tiers = sorted({tier_de(n) for n in pos})
+    for t in tiers:   # franjas por nivel
+        fig.add_shape(type="rect", xref="paper", x0=0, x1=1, y0=-t * 1.7 - 0.85, y1=-t * 1.7 + 0.85,
+                      fillcolor="#F6F8F8" if t % 2 == 0 else "#FFFFFF", line_width=0, layer="below")
+        fig.add_annotation(x=-(maxk / 2) - 0.6, y=-t * 1.7, text=f"<b>{TIER_NOMBRES[t]}</b>", showarrow=False,
+                           xanchor="right", font=dict(size=11, color="#607D8B"))
+    mids = dict(x=[], y=[], t=[])
+    for a in sorted(aristas, key=lambda z: z["activa"]):     # fondo primero
+        if a["o"] not in pos or a["d"] not in pos:
+            continue
+        pts = curva(pos[a["o"]], pos[a["d"]])
+        verde = a["signo"] > 0
+        if a["activa"]:
+            col = "rgba(46,125,50,0.85)" if verde else "rgba(198,40,40,0.85)"
+            w = 1.4 + 2.2 * min(float(a["peso"]), 1.2)
+        else:
+            col, w = "rgba(120,120,120,0.10)", 1
+        fig.add_trace(go.Scatter(x=[p[0] for p in pts], y=[p[1] for p in pts], mode="lines", hoverinfo="skip",
+                                 showlegend=False, line=dict(color=col, width=w, dash="dot" if a["fuente"] == "datos" else "solid")))
+        if a["activa"]:
+            if a["fuente"] == "criterio":
+                (xa, ya), (xb, yb) = pts[-3], pts[-2]
+                fig.add_annotation(x=xb, y=yb, ax=xa, ay=ya, xref="x", yref="y", axref="x", ayref="y", showarrow=True,
+                                   arrowhead=3, arrowsize=1.5, arrowwidth=1.6, arrowcolor=col)
+            m = pts[len(pts) // 2]
+            mids["x"].append(m[0]); mids["y"].append(m[1])
+            mids["t"].append(f"<b>{a['o']} → {a['d']}</b><br>{a['tipo']}<br>{'mismo sentido' if verde else 'sentido inverso'}"
+                             f" · peso {float(a['peso']):.2f} · {a['conf']}")
+    if mids["x"]:
+        fig.add_trace(go.Scatter(x=mids["x"], y=mids["y"], mode="markers", hovertext=mids["t"], hoverinfo="text",
+                                 showlegend=False, marker=dict(size=9, color="rgba(0,0,0,0.0)")))
+    ids = list(pos)
+    chain = set(roles)
+    colores = {g: c for g, c in GRUPOS.items()}
+    xs, ys, txt, hov, siz, bord, col, opa, tpos, sym = [], [], [], [], [], [], [], [], [], []
+    for i, n in enumerate(ids):
+        xs.append(pos[n][0]); ys.append(pos[n][1])
+        txt.append(ETIQUETA.get(n, n))
+        activo = n in chain
+        opa.append(1.0 if activo else 0.22)
+        es_sel = n == S
+        siz.append(46 if es_sel else 17 + (min(24, math.sqrt(valor[n] / max(1.0, sum(valor.values()))) * 60) if n in valor else 0))
+        bord.append("#111111" if n in valor else "rgba(0,0,0,0)")
+        col.append("#004D40" if es_sel else colores.get(eco_fn(n), "#9E9E9E"))
+        sym.append("diamond" if n in DRIVERS or n == "OPENAI" else "circle")
+        tpos.append("middle center" if es_sel else ("top center" if i % 2 == 0 else "bottom center"))
+        rol = {"sel": "elegido", "afecta": "afectado por el elegido", "depende": "de quien depende el elegido",
+               "ambos": "se influyen mutuamente", "datos": "se mueve con él (datos)"}.get(roles.get(n, ""), "")
+        h = f"<b>{ETIQUETA.get(n, n)}</b> · {sector_fn(n)}<br>{TIER_NOMBRES[tier_de(n)]}"
+        if rol:
+            h += f"<br>{rol}"
+        if n in valor:
+            h += f"<br>En tu cartera: ARS {valor[n]:,.0f}".replace(",", ".")
+        hov.append(h)
+    fig.add_trace(go.Scatter(x=xs, y=ys, mode="markers+text", text=txt, textposition=tpos, customdata=ids,
+                             hovertext=hov, hoverinfo="text", showlegend=False, textfont=dict(size=10),
+                             marker=dict(size=siz, color=col, symbol=sym, opacity=opa,
+                                         line=dict(color=bord, width=2.2))))
+    for g, c in GRUPOS.items():
+        fig.add_trace(go.Scatter(x=[None], y=[None], mode="markers", name=g, marker=dict(size=9, color=c)))
+    alto = 130 * len(tiers) + 70
+    fig.update_layout(height=max(380, alto), margin=dict(l=0, r=0, t=0, b=0), plot_bgcolor="white",
+                      xaxis=dict(visible=False, range=[-(maxk / 2) - 3.4, (maxk / 2) + 1.2]),
+                      yaxis=dict(visible=False, range=[-max(tiers) * 1.7 - 1.0, 1.0]),
+                      legend=dict(orientation="h", y=-0.03), hovermode="closest", clickmode="event+select")
+    return fig
+ 
+ 
+def aplicar_click_org(opciones):
+    """Si se hizo clic en un nodo del organigrama, pasa ese nodo al selector."""
+    ev = st.session_state.get("org_chart")
+    try:
+        pts = ev["selection"]["points"] if ev else []
+    except Exception:
+        pts = []
+    if pts:
+        cd = pts[0].get("customdata")
+        if isinstance(cd, (list, tuple)):
+            cd = cd[0] if cd else None
+        sig = (cd, pts[0].get("x"), pts[0].get("y"))
+        if cd in opciones and sig != st.session_state.get("org_ultimo_click"):
+            st.session_state["org_ultimo_click"] = sig
+            st.session_state["sel_nodo"] = cd
+ 
+ 
 # ═════════════════════════════════════════════
 # INTERFAZ
 # ═════════════════════════════════════════════
@@ -676,10 +843,98 @@ with st.sidebar:
         with st.expander("⚠️ Errores de descarga"):
             st.write("\n\n".join(st.session_state["errores_precios"]))
  
-tab_v, tab_s, tab_sec, tab_c = st.tabs(["🔗 Vínculos", "💥 Simulador", "🧭 Sectores", "💼 Mi cartera"])
+tab_o, tab_v, tab_s, tab_sec, tab_c = st.tabs(["🏢 Organigrama", "🔗 Vínculos", "💥 Simulador", "🧭 Sectores", "💼 Mi cartera"])
 OPCIONES = sorted(set(UNI) | DRIVERS | {"OPENAI"})
 nombre = lambda n: f"{ETIQUETA[n]} ({n})" if n in ETIQUETA else n
 dias = VENTANAS[ventana]
+ 
+# ---------------- Organigrama ----------------
+aplicar_click_org(OPCIONES)
+if st.session_state.get("sel_nodo") not in OPCIONES:
+    st.session_state["sel_nodo"] = "NVDA" if "NVDA" in OPCIONES else OPCIONES[0]
+with tab_o:
+    o1, o2, o3, o4 = st.columns([2, 1, 1, 1])
+    S = o1.selectbox("Elegí una empresa o factor (o hacé clic en el organigrama):", OPCIONES, key="sel_nodo",
+                     format_func=nombre)
+    p_arr = o2.slider("De quién depende (saltos)", 0, 4, 3)
+    p_abj = o3.slider("A quién afecta (saltos)", 0, 4, 3)
+    shock_o = o4.number_input("Si se mueve (%)", -50.0, 50.0, -5.0, 0.5, key="shock_org")
+    k1, k2, k3 = st.columns(3)
+    solo = k1.checkbox("Mostrar solo su cadena", True, help="Destildado muestra todo el organigrama con la cadena resaltada.")
+    hay_datos = len(precios) > 0
+    con_datos = k2.checkbox("Sumar los que se mueven con él (por datos)", True, disabled=not hay_datos,
+                            help="Agrega, con línea punteada, las acciones que más se mueven junto con el elegido "
+                                 "según precios reales. Así cubre toda tu lista, no solo el mapa manual.")
+    n_dat = k3.slider("Cuántos sumar", 1, 12, 6, disabled=not hay_datos)
+    usar_datos = con_datos and hay_datos
+ 
+    roles, usados, nd, na = cadena(S, edges, p_abj, p_arr)
+    attr = {(o, d): (s, w, t, c) for o, d, s, w, t, c in zip(edges["origen"], edges["destino"], edges["signo"],
+                                                              edges["peso"], edges["tipo"], edges["confianza"])}
+    aristas = [dict(o=o, d=d, signo=attr[(o, d)][0], peso=attr[(o, d)][1], tipo=attr[(o, d)][2],
+                    conf=attr[(o, d)][3], fuente="criterio", activa=True) for (o, d) in usados]
+    if usar_datos:
+        _, co, vo = matrices_cache(precios, firma, dias, True)
+        est = vinculos_stat(co, vo, S, n_dat, max(1, n_dat // 3))
+        for _, r in est.iterrows():
+            roles.setdefault(r["Ticker"], "datos")
+            aristas.append(dict(o=S, d=r["Ticker"], signo=1 if r["Correlación"] > 0 else -1, peso=abs(r["Correlación"]),
+                                tipo=f"correlación {r['Correlación']:+.2f} · beta {r['Beta']:+.2f}", conf="datos",
+                                fuente="datos", activa=True))
+    nodos_vis = set(roles)
+    if not solo:
+        act = {(a["o"], a["d"]) for a in aristas}
+        for (o, d), (s, w, t, c) in attr.items():
+            if (o, d) not in act:
+                aristas.append(dict(o=o, d=d, signo=s, peso=w, tipo=t, conf=c, fuente="criterio", activa=False))
+        nodos_vis |= set(NODOS) | set(edges["origen"]) | set(edges["destino"])
+    eco = lambda n: NODOS[n][0] if n in NODOS else "zz"
+    if len(nodos_vis) <= 1 and not aristas:
+        st.info("Este activo no tiene vínculos manuales. Descargá precios (barra lateral) para sumar los que se mueven con él.")
+    else:
+        pos, maxk = posiciones_org(nodos_vis, eco)
+        fig = figura_org(S, roles, aristas, pos, maxk, valor, eco, sector_fn)
+        try:
+            st.plotly_chart(fig, use_container_width=True, key="org_chart", on_select="rerun", selection_mode="points")
+        except TypeError:
+            st.plotly_chart(fig, use_container_width=True)
+        st.caption("Se lee de arriba hacia abajo: factores macro → demanda y precios → proveedores → empresas. Flecha: "
+                   "'afecta a'. Verde: mismo sentido · roja: inverso · punteada: se mueve con él según datos. "
+                   "Pasá el mouse por las líneas para ver el vínculo. Borde negro: está en tu cartera.")
+        _, _, cov_raw = matrices_cache(precios, firma, dias, False) if hay_datos else (None, None, pd.DataFrame())
+        ef, fu = efectos_simulador(S, shock_o, edges, cov_raw, max(p_abj, 1), 0.7)
+        tot_cad = sum(valor.get(n, 0.0) for n in roles)
+        mm1, mm2, mm3 = st.columns(3)
+        mm1.metric("Nodos en la cadena", len(roles))
+        mm2.metric("Tu exposición en la cadena", f"ARS {tot_cad:,.0f}".replace(",", "."),
+                   f"{tot_cad / total_cartera * 100:.1f}% de tu cartera" if total_cartera else "")
+        imp_tot = sum(valor[n] * (shock_o if n == S else ef.get(n, 0.0)) / 100 for n in valor)
+        mm3.metric(f"Efecto en tu cartera si {ETIQUETA.get(S, S)} {shock_o:+.1f}%", f"ARS {imp_tot:,.0f}".replace(",", "."),
+                   f"{imp_tot / total_cartera * 100:+.2f}%" if total_cartera else "")
+        ta, tb = st.columns(2)
+        with ta:
+            st.markdown("**De quién depende**")
+            filas = []
+            for n, k in sorted(na.items(), key=lambda z: z[1]):
+                if n == S:
+                    continue
+                v = next(((o, d) for (o, d) in usados if o == n and (d == S or d in na and na[d] < k)), None)
+                filas.append({"Activo": nombre(n), "Saltos": k, "Vínculo": attr[v][2] if v else "",
+                              "Mi cartera (ARS)": valor.get(n, np.nan)})
+            st.dataframe(pd.DataFrame(filas), hide_index=True, use_container_width=True, height=300)
+        with tb:
+            st.markdown(f"**A quién afecta** (si {ETIQUETA.get(S, S)} {shock_o:+.1f}%)")
+            filas = []
+            for n, k in sorted(nd.items(), key=lambda z: z[1]):
+                if n == S:
+                    continue
+                v = next(((o, d) for (o, d) in usados if d == n and (o == S or o in nd and nd[o] < k)), None)
+                filas.append({"Activo": nombre(n), "Saltos": k, "Efecto %": round(ef[n], 2) if n in ef else np.nan,
+                              "Fuente": fu.get(n, ""), "Vínculo": attr[v][2] if v else "",
+                              "Mi cartera (ARS)": valor.get(n, np.nan)})
+            st.dataframe(pd.DataFrame(filas), hide_index=True, use_container_width=True, height=300)
+        st.caption("Efecto por datos = beta histórica (incluye el movimiento del mercado); por criterio = peso manual del "
+                   "vínculo, que se atenúa en cada salto. Guía para ordenar ideas, no una predicción.")
  
 # ---------------- Vínculos ----------------
 with tab_v:
