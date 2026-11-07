@@ -1,5 +1,5 @@
 """
-SLY | MAPA DE VÍNCULOS v3 — organigrama de vínculos: elegís una empresa y ves toda su cadena.
+SLY | MAPA DE VÍNCULOS v4 — organigrama de vínculos + régimen macro (dólar, tasas, inflación, tensión comercial).
  
 Dos capas de vínculos:
   1) DATOS: correlación y beta medidas con precios reales (yfinance) para TODA tu lista del V56 (≈500 acciones/ETFs),
@@ -8,7 +8,7 @@ Dos capas de vínculos:
      editable, no un dato oficial.
  
 Requisitos:  pip install streamlit plotly pandas numpy yfinance
-Ejecutar:    streamlit run sly_mapa_vinculos_v3.py
+Ejecutar:    streamlit run sly_mapa_vinculos_v4.py
 """
 import math
  
@@ -774,6 +774,208 @@ def aplicar_click_org(opciones):
             st.session_state["sel_nodo"] = cd
  
  
+# ---------- régimen macro ----------
+CACHE_MACRO = "sly_macro_cache.pkl"
+MACRO_YF = {"DXY": "DX-Y.NYB", "TASA10": "^TNX"}
+FRED_IDS = {"INFL": "T5YIE", "COMERCIO": "USEPUINDXD"}
+MACRO_NOMBRES = {"DXY": "Dólar (DXY)", "TASA10": "Tasa 10 años EEUU", "INFL": "Inflación esperada (5 años)",
+                 "COMERCIO": "Tensión comercial (incertidumbre de política)"}
+MACRO_UNIDAD = {"DXY": "%", "TASA10": "pp", "INFL": "pp", "COMERCIO": "%"}
+TF_MACRO = {"1 DIA": dict(freq="D", ema=20, n=10, ventana_beta=365, txt="últimas 2 semanas"),
+            "1 SEMANA": dict(freq="W", ema=10, n=4, ventana_beta=730, txt="últimas 4 semanas")}
+ 
+ 
+def leer_fred_df(d):
+    """Serie de un CSV de FRED (primera columna = fecha, segunda = valor; los '.' son faltantes)."""
+    f = pd.to_datetime(d.iloc[:, 0], errors="coerce")
+    v = pd.to_numeric(d.iloc[:, 1], errors="coerce")
+    s = pd.Series(v.to_numpy(), index=f).dropna()
+    s = s[~s.index.isna()]
+    return s.sort_index()
+ 
+ 
+def descargar_macro(periodo_dias=800):
+    """Dólar y tasa 10 años (yfinance) + inflación esperada y tensión comercial (FRED, sin clave). Devuelve (df, notas)."""
+    import yfinance as yf
+    cols, notas = {}, []
+    for k, t in MACRO_YF.items():
+        try:
+            raw = yf.download(t, period="3y", interval="1d", auto_adjust=True, progress=False)
+            c = extraer_cierres(raw, [t])
+            if not c.empty:
+                cols[k] = c.iloc[:, 0]
+            else:
+                notas.append(f"Macro: sin datos de {t}")
+        except Exception as ex:
+            notas.append(f"Macro {t}: {type(ex).__name__}: {str(ex)[:70]}")
+    for k, sid in FRED_IDS.items():
+        try:
+            s = leer_fred_df(pd.read_csv(f"https://fred.stlouisfed.org/graph/fredgraph.csv?id={sid}"))
+            s.index = s.index.normalize()
+            cols[k] = s[s.index >= s.index.max() - pd.Timedelta(days=periodo_dias)]
+        except Exception as ex:
+            notas.append(f"Macro FRED {sid}: {type(ex).__name__}: {str(ex)[:70]}")
+    if "INFL" not in cols:     # alternativa: bonos protegidos (TIP) contra nominales (IEF)
+        try:
+            raw = yf.download(["TIP", "IEF"], period="3y", interval="1d", auto_adjust=True, progress=False)
+            c = extraer_cierres(raw, ["TIP", "IEF"])
+            cols["INFL"] = (np.log(c["TIP"] / c["IEF"]) * 100).dropna()
+            notas.append("Inflación esperada: se usó TIP/IEF como alternativa (FRED no respondió).")
+        except Exception as ex:
+            notas.append(f"Inflación esperada sin datos: {type(ex).__name__}")
+    if not cols:
+        return pd.DataFrame(), notas
+    return pd.DataFrame(cols).sort_index().ffill(), notas
+ 
+ 
+def _serie_tf(M, k, freq):
+    s = M[k].dropna()
+    if k == "COMERCIO":      # el índice diario de noticias es muy ruidoso: se suaviza
+        return s.rolling(5, min_periods=1).mean() if freq == "D" else s.resample("W-FRI").mean().dropna()
+    return s if freq == "D" else s.resample("W-FRI").last().dropna()
+ 
+ 
+def estado_factor(M, k, tf):
+    """Tendencia de un factor macro: SUBE / BAJA / LATERAL, con el cambio en la ventana (% o pp)."""
+    p = TF_MACRO[tf]
+    s = _serie_tf(M, k, p["freq"])
+    n = p["n"]
+    if len(s) < n + 30:
+        return None
+    ema = s.ewm(span=p["ema"], adjust=False).mean()
+    pct = MACRO_UNIDAD[k] == "%"
+    cambios = (s.pct_change(n) * 100) if pct else s.diff(n)
+    cambio = float(cambios.iloc[-1])
+    sig = float(cambios.tail(250).std())
+    arriba = bool(s.iloc[-1] > ema.iloc[-1])
+    if sig > 0 and abs(cambio) < 0.5 * sig:
+        est = "LATERAL"
+    elif arriba and cambio > 0:
+        est = "SUBE"
+    elif (not arriba) and cambio < 0:
+        est = "BAJA"
+    else:
+        est = "LATERAL"
+    return {"estado": est, "cambio": cambio, "nivel": float(s.iloc[-1]), "unidad": MACRO_UNIDAD[k],
+            "fecha": s.index[-1]}
+ 
+ 
+def cambios_macro(M, freq):
+    """Cambios de cada factor en la frecuencia elegida (para medir la sensibilidad de las acciones)."""
+    out = {}
+    if "DXY" in M:
+        out["DXY"] = _serie_tf(M, "DXY", freq).pct_change() * 100
+    if "TASA10" in M:
+        out["TASA10"] = _serie_tf(M, "TASA10", freq).diff()
+    if "INFL" in M:
+        out["INFL"] = _serie_tf(M, "INFL", freq).diff()
+    if "COMERCIO" in M:
+        out["COMERCIO"] = np.log(_serie_tf(M, "COMERCIO", freq).clip(lower=1e-6)).diff() * 100
+    return pd.DataFrame(out).replace([np.inf, -np.inf], np.nan)
+ 
+ 
+def betas_macro(R, X, mercado=None, lam=5.0, min_obs=MIN_OBS):
+    """
+    Sensibilidad de cada acción a cada factor macro (regresión ridge). R: retornos % de las acciones, X: cambios del
+    factor, mercado: retorno % de SPY como control (así el beta macro es 'neto' del mercado general).
+    Devuelve % de variación de la acción por cada unidad del factor (1% de dólar, 1 pp de tasa, etc.).
+    Los betas que no son estadísticamente distintos de cero se anulan, para no rankear ruido.
+    """
+    Z = X.copy()
+    if mercado is not None:
+        Z = pd.concat([mercado.rename("MKT"), Z], axis=1)
+    idx = R.index.intersection(Z.dropna().index)
+    if len(idx) < min_obs or Z.shape[1] == 0:
+        return pd.DataFrame()
+    Z = Z.loc[idx]
+    Y = R.loc[idx]
+    Y = Y.loc[:, Y.count() >= min_obs].fillna(0.0)
+    mu, sd = Z.mean(), Z.std().replace(0, np.nan)
+    Zs = ((Z - mu) / sd).fillna(0.0).to_numpy()
+    Yc = (Y - Y.mean()).to_numpy()
+    k = Zs.shape[1]
+    Ainv = np.linalg.inv(Zs.T @ Zs + lam * np.eye(k))
+    B = Ainv @ (Zs.T @ Yc)
+    # significancia: si el beta no se distingue del ruido (|t| < 1,5) se anula; entre 1,5 y 2,5 se atenúa
+    resid = Yc - Zs @ B
+    s2 = (resid ** 2).sum(axis=0) / max(1, len(Zs) - k - 1)
+    se = np.sqrt(np.outer(np.diag(Ainv), s2))
+    t = np.divide(B, se, out=np.zeros_like(B), where=se > 0)
+    B = B * np.clip(np.abs(t) - 1.5, 0.0, 1.0)
+    nat = B / sd.to_numpy()[:, None]
+    out = pd.DataFrame(nat.T, index=Y.columns, columns=Z.columns)
+    return out.drop(columns=["MKT"], errors="ignore")
+ 
+ 
+def efecto_regimen(betas, deltas):
+    """Efecto estimado (%) del régimen actual sobre cada acción = suma de beta × cambio de cada factor."""
+    contrib = pd.DataFrame({k: betas[k] * d for k, d in deltas.items() if k in betas.columns})
+    return contrib.sum(axis=1), contrib
+ 
+ 
+def lectura_regimen(est):
+    g = lambda k: est[k]["estado"] if k in est and est[k] else None
+    dx, ta, inf, com = g("DXY"), g("TASA10"), g("INFL"), g("COMERCIO")
+    if dx == "SUBE" and ta == "SUBE":
+        cond = "Las condiciones financieras se **APRIETAN**: dólar y tasas suben a la vez."
+    elif dx == "BAJA" and ta == "BAJA":
+        cond = "Las condiciones financieras se **AFLOJAN**: dólar y tasas bajan a la vez."
+    elif dx and ta:
+        cond = "Condiciones financieras **mixtas**: el dólar y las tasas no van en el mismo sentido."
+    else:
+        cond = "Faltan datos de dólar o tasas."
+    txt = {"SUBE": "sube", "BAJA": "baja", "LATERAL": "está estable"}
+    extra = []
+    if inf:
+        extra.append(f"La inflación esperada {txt[inf]}.")
+    if com:
+        extra.append(f"La tensión comercial / incertidumbre de política {txt[com]}.")
+    return cond + " " + " ".join(extra)
+ 
+ 
+def ranking_regimen(precios, M, sector_fn, valor, solo_cartera=False, sin_etf=True):
+    """Ranking de acciones según el efecto estimado del régimen en 1 día y 1 semana."""
+    cols, estados, deltas = {}, {}, {}
+    mkt_nombre = "SPY"
+    for tf, p in TF_MACRO.items():
+        est = {k: estado_factor(M, k, tf) for k in MACRO_UNIDAD if k in M}
+        estados[tf] = est
+        X = cambios_macro(M, p["freq"])
+        if p["freq"] == "D":
+            P = precios.loc[precios.index >= precios.index.max() - pd.Timedelta(days=p["ventana_beta"])]
+            Rr = P.pct_change(fill_method=None).iloc[1:] * 100
+        else:
+            Rr = precios.resample("W-FRI").last().pct_change(fill_method=None).iloc[1:] * 100
+        Rr = Rr.clip(-50, 50)
+        mk = Rr[mkt_nombre] if mkt_nombre in Rr.columns else None
+        B = betas_macro(Rr.drop(columns=[mkt_nombre], errors="ignore"), X, mk)
+        d = {k: (v["cambio"] if v and v["estado"] != "LATERAL" else 0.0) for k, v in est.items()}
+        deltas[tf] = d
+        if B.empty:
+            continue
+        ef, ct = efecto_regimen(B, d)
+        cols[tf] = (ef, ct)
+    if len(cols) < 2:
+        return pd.DataFrame(), estados, deltas
+    ef1, ct1 = cols["1 DIA"]
+    ef2, ct2 = cols["1 SEMANA"]
+    idx = ef1.index.intersection(ef2.index)
+    df = pd.DataFrame({"Activo": idx, "Efecto 1 DIA %": ef1.loc[idx].to_numpy(),
+                       "Efecto 1 SEMANA %": ef2.loc[idx].to_numpy()})
+    df["Promedio %"] = df[["Efecto 1 DIA %", "Efecto 1 SEMANA %"]].mean(axis=1)
+    df["Coincidencia"] = np.where((df["Efecto 1 DIA %"] > 0) & (df["Efecto 1 SEMANA %"] > 0), "✔ favorable en ambos",
+                         np.where((df["Efecto 1 DIA %"] < 0) & (df["Efecto 1 SEMANA %"] < 0), "✖ adverso en ambos", "mixto"))
+    princ = ct2.loc[idx].abs().idxmax(axis=1) if not ct2.empty else ""
+    df["Factor principal"] = [MACRO_NOMBRES.get(f, f).split(" (")[0] for f in princ]
+    df["Sector"] = [sector_fn(t) for t in df["Activo"]]
+    df["En cartera (ARS)"] = [valor.get(t, np.nan) for t in df["Activo"]]
+    if sin_etf:
+        df = df[df["Sector"] != "ÍNDICES/ETFs"]
+    if solo_cartera:
+        df = df[df["Activo"].isin(valor)]
+    return df.sort_values("Promedio %", ascending=False).reset_index(drop=True), estados, deltas
+ 
+ 
 # ═════════════════════════════════════════════
 # INTERFAZ
 # ═════════════════════════════════════════════
@@ -787,11 +989,14 @@ st.markdown("""
 st.title("🔗 SLY | MAPA DE VÍNCULOS")
  
 for k, v in {"edges_df": EDGES_DEFAULT.copy(), "cartera_df": CARTERA_DF_DEFAULT.copy(), "extra": [],
-             "sectores": None, "precios": None, "errores_precios": []}.items():
+             "sectores": None, "precios": None, "macro": None, "errores_precios": []}.items():
     if k not in st.session_state:
         st.session_state[k] = v
 if st.session_state["sectores"] is None:
     st.session_state["sectores"] = cargar_sectores()
+if st.session_state["macro"] is None:
+    import os
+    st.session_state["macro"] = pd.read_pickle(CACHE_MACRO) if os.path.exists(CACHE_MACRO) else pd.DataFrame()
 if st.session_state["precios"] is None:
     import os
     st.session_state["precios"] = pd.read_pickle(CACHE_PRECIOS) if os.path.exists(CACHE_PRECIOS) else pd.DataFrame()
@@ -827,7 +1032,12 @@ with st.sidebar:
         if not df.empty:
             df.to_pickle(CACHE_PRECIOS)
             st.session_state["precios"] = df
-        st.session_state["errores_precios"] = errs
+        with st.spinner("Descargando datos macro (dólar, tasas, inflación esperada, tensión comercial)…"):
+            m, notas = descargar_macro()
+        if not m.empty:
+            m.to_pickle(CACHE_MACRO)
+            st.session_state["macro"] = m
+        st.session_state["errores_precios"] = errs + notas
         st.rerun()
     if len(precios):
         st.caption(f"Precios hasta {precios.index.max():%d/%m/%Y} · {precios.shape[1]} activos con datos.")
@@ -843,7 +1053,7 @@ with st.sidebar:
         with st.expander("⚠️ Errores de descarga"):
             st.write("\n\n".join(st.session_state["errores_precios"]))
  
-tab_o, tab_v, tab_s, tab_sec, tab_c = st.tabs(["🏢 Organigrama", "🔗 Vínculos", "💥 Simulador", "🧭 Sectores", "💼 Mi cartera"])
+tab_o, tab_r, tab_v, tab_s, tab_sec, tab_c = st.tabs(["🏢 Organigrama", "🌐 Régimen macro", "🔗 Vínculos", "💥 Simulador", "🧭 Sectores", "💼 Mi cartera"])
 OPCIONES = sorted(set(UNI) | DRIVERS | {"OPENAI"})
 nombre = lambda n: f"{ETIQUETA[n]} ({n})" if n in ETIQUETA else n
 dias = VENTANAS[ventana]
@@ -935,6 +1145,65 @@ with tab_o:
             st.dataframe(pd.DataFrame(filas), hide_index=True, use_container_width=True, height=300)
         st.caption("Efecto por datos = beta histórica (incluye el movimiento del mercado); por criterio = peso manual del "
                    "vínculo, que se atenúa en cada salto. Guía para ordenar ideas, no una predicción.")
+ 
+# ---------------- Régimen macro ----------------
+with tab_r:
+    st.markdown("**¿Qué está haciendo el mercado?** Dólar, tasas, inflación esperada y tensión comercial, leídos en "
+                "**1 día** (últimas 2 semanas) y **1 semana** (últimas 4 semanas), y qué acciones podrían beneficiarse.")
+    macro = st.session_state["macro"]
+    if macro is None or macro.empty or not len(precios):
+        st.info("Necesito los datos macro y los precios. Tocá '🚀 Descargar / actualizar precios' en la barra lateral: "
+                "baja las dos cosas juntas.")
+    else:
+        cols_tf = st.columns(2)
+        estados = {tf: {k: estado_factor(macro, k, tf) for k in MACRO_UNIDAD if k in macro} for tf in TF_MACRO}
+        for col, tf in zip(cols_tf, TF_MACRO):
+            with col:
+                st.markdown(f"### {tf}")
+                filas = []
+                for k, v in estados[tf].items():
+                    if not v:
+                        filas.append({"Factor": MACRO_NOMBRES[k], "Nivel": "s/d", "Cambio": "", "Estado": "sin datos"})
+                        continue
+                    ico = {"SUBE": "🔺 SUBE", "BAJA": "🔻 BAJA", "LATERAL": "➖ LATERAL"}[v["estado"]]
+                    filas.append({"Factor": MACRO_NOMBRES[k], "Nivel": f"{v['nivel']:.2f}",
+                                  "Cambio": f"{v['cambio']:+.2f} {v['unidad']}", "Estado": ico})
+                st.dataframe(pd.DataFrame(filas), hide_index=True, use_container_width=True)
+                st.markdown(lectura_regimen(estados[tf]))
+        f_macro = max((v["fecha"] for e_ in estados.values() for v in e_.values() if v), default=None)
+        if f_macro is not None:
+            st.caption(f"Último dato macro: {f_macro:%d/%m/%Y}. Inflación esperada y tensión comercial vienen de FRED y "
+                       "pueden tener un día de atraso. La tensión comercial es un indicador indirecto (índice de "
+                       "incertidumbre de política económica), no mide aranceles directamente.")
+ 
+        r1, r2, r3 = st.columns(3)
+        n_top = r1.slider("Cuántas mostrar", 5, 30, 15)
+        solo_c = r2.checkbox("Solo mi cartera", False)
+        sin_etf = r3.checkbox("Excluir ETFs/índices", True)
+        rk, _, deltas = ranking_regimen(precios, macro, sector_fn, valor, solo_c, sin_etf)
+        if rk.empty:
+            st.warning("No alcanzan los datos para estimar la sensibilidad (hace falta al menos ~1 año de precios y macro).")
+        else:
+            cols_show = ["Activo", "Sector", "Efecto 1 DIA %", "Efecto 1 SEMANA %", "Coincidencia", "Factor principal",
+                         "En cartera (ARS)"]
+            ca, cb = st.columns(2)
+            with ca:
+                st.markdown("#### 🟢 Podrían beneficiarse")
+                st.dataframe(rk.head(n_top)[cols_show].round(2), hide_index=True, use_container_width=True, height=520)
+            with cb:
+                st.markdown("#### 🔴 Podrían perjudicarse")
+                st.dataframe(rk.tail(n_top).iloc[::-1][cols_show].round(2), hide_index=True,
+                             use_container_width=True, height=520)
+            sec = rk.groupby("Sector").filter(lambda g: len(g) >= 3).groupby("Sector")["Promedio %"].mean().sort_values(
+                ascending=False).round(2)
+            if len(sec):
+                st.markdown("**Por sector** (efecto promedio estimado, %)")
+                st.dataframe(sec.rename("Efecto promedio %").to_frame().T, use_container_width=True)
+            st.caption("Cómo se calcula: para cada acción se mide, con datos históricos, cuánto reacciona al dólar, a la tasa a 10 años, "
+                       "a la inflación esperada y a la tensión comercial (descontando el movimiento general del mercado, SPY). Luego se "
+                       "aplica lo que esos factores se movieron en la ventana. '✔ favorable en ambos' significa que 1 día y 1 semana "
+                       "coinciden, lo que da más confianza. Es un modelo estadístico simple: las sensibilidades cambian con el tiempo y "
+                       "no es una recomendación de compra.")
  
 # ---------------- Vínculos ----------------
 with tab_v:
