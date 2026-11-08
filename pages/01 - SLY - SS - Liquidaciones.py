@@ -293,8 +293,8 @@ errs = [m for (s, e), m in st.session_state["l_errors"].items() if e == ex_id]
  
 if res:
     f1, f2, f3 = st.columns(3)
-    max_d = f1.slider("Cúmulo a menos de (%)", 0.5, 15.0, 5.0, 0.5)
-    min_vol = f2.number_input("Volumen 24h mínimo (M USDT)", 0.0, 1000.0, 5.0, 1.0)
+    max_d = f1.slider("Cúmulo a menos de (%)", 0.5, 15.0, 15.0, 0.5)
+    min_vol = f2.number_input("Volumen 24h mínimo (M USDT)", 0.0, 1000.0, 0.0, 1.0)
     lado = f3.radio("Lectura", ["Todas", "ARRIBA (cortos)", "ABAJO (largos)"], horizontal=True)
     dfa = pd.DataFrame(res)
     show = dfa[(dfa["_min"] <= max_d) & (dfa["Vol 24h (M)"] >= min_vol)]
@@ -321,4 +321,3 @@ else:
 if errs:
     with st.expander(f"⚠️ {len(errs)} activos con error"):
         st.write("\n\n".join(errs))
- 
