@@ -39,7 +39,8 @@ for _k, _v in {"l_results": {}, "l_errors": {}, "l_list": [], "l_vols": {}, "l_e
     if _k not in st.session_state:
         st.session_state[_k] = _v
  
-EXCHANGES = {"Binance Futuros (USDT-M)": "binanceusdm", "Bybit (perpetuos USDT)": "bybit"}
+EXCHANGES = {"Bybit (perpetuos USDT)": "bybit",
+             "OKX (perpetuos USDT)": "okx", "Binance Futuros (USDT-M)": "binanceusdm"}
 STABLES = {"USDC", "USDT", "DAI", "TUSD", "FDUSD", "USDE", "PYUSD", "USDD", "BUSD", "PAX"}
 LEVS = [10, 25, 50, 100]
 PESOS = [0.40, 0.30, 0.20, 0.10]
@@ -91,7 +92,7 @@ def fetch_velas_oi(ex, ex_id, sym):
     """Velas de 1 h y OI por hora (en USD) del mismo período."""
     ohlcv = ex.fetch_ohlcv(sym, timeframe="1h", limit=BARS)
     df = pd.DataFrame(ohlcv, columns=["time", "open", "high", "low", "close", "vol"])
-    lim = 200 if ex_id == "bybit" else 500
+    lim = {"bybit": 200, "okx": 100}.get(ex_id, 500)
     hist = ex.fetch_open_interest_history(sym, timeframe="1h", limit=lim)
     filas = []
     for h in hist:
@@ -245,7 +246,10 @@ with st.sidebar:
             else:
                 st.rerun()
         except Exception as e:
-            st.error(f"No se pudo leer el mercado: {type(e).__name__}: {str(e)[:400]}")
+            msg = str(e)
+            st.error(f"No se pudo leer el mercado: {type(e).__name__}: {msg[:400]}")
+            if "451" in msg or "restricted" in msg.lower():
+                st.warning("Este exchange bloquea tu ubicación. Probá con otro de la lista.")
     if st.button("🩺 Diagnóstico (probar BTC)"):
         ex = get_exchange(ex_id)
         pasos = [("Cargar mercados", lambda: len(ex.load_markets())),
@@ -317,3 +321,4 @@ else:
 if errs:
     with st.expander(f"⚠️ {len(errs)} activos con error"):
         st.write("\n\n".join(errs))
+ 
