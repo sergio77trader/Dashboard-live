@@ -240,9 +240,24 @@ with st.sidebar:
         try:
             lst, vols = fetch_symbols(ex_id)
             st.session_state["l_list"], st.session_state["l_vols"], st.session_state["l_ex"] = lst, vols, ex_id
+            if not lst:
+                st.error("El exchange respondió pero no devolvió perpetuos USDT.")
+            else:
+                st.rerun()
         except Exception as e:
-            st.error(f"No se pudo leer el mercado: {type(e).__name__}: {str(e)[:150]}")
-        st.rerun()
+            st.error(f"No se pudo leer el mercado: {type(e).__name__}: {str(e)[:400]}")
+    if st.button("🩺 Diagnóstico (probar BTC)"):
+        ex = get_exchange(ex_id)
+        pasos = [("Cargar mercados", lambda: len(ex.load_markets())),
+                 ("Velas 1h BTC", lambda: len(ex.fetch_ohlcv("BTC/USDT:USDT", timeframe="1h", limit=5))),
+                 ("Interés abierto BTC", lambda: len(ex.fetch_open_interest_history("BTC/USDT:USDT", timeframe="1h", limit=5))),
+                 ("Análisis completo BTC", lambda: analizar(ex, ex_id, "BTC/USDT:USDT", 0.0)["Lectura"])]
+        for nombre, fn in pasos:
+            try:
+                st.success(f"✅ {nombre}: {fn()}")
+            except Exception as e:
+                st.error(f"❌ {nombre}: {type(e).__name__}: {str(e)[:500]}")
+                break
     if st.session_state["l_list"] and st.session_state["l_ex"] == ex_id:
         st.subheader("Lotes (más líquidos primero)")
         lote_size = st.number_input("Tamaño de lote:", 5, 50, 15)
@@ -259,7 +274,7 @@ with st.sidebar:
                     st.session_state["l_results"][(sym, ex_id)] = analizar(ex, ex_id, sym, st.session_state["l_vols"].get(sym, 0.0))
                     st.session_state["l_errors"].pop((sym, ex_id), None)
                 except Exception as e:
-                    st.session_state["l_errors"][(sym, ex_id)] = f"{sym}: {type(e).__name__}: {str(e)[:110]}"
+                    st.session_state["l_errors"][(sym, ex_id)] = f"{sym}: {type(e).__name__}: {str(e)[:300]}"
                 time.sleep(0.05)
             prog.empty()
             st.rerun()
