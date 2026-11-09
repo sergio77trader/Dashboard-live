@@ -329,6 +329,56 @@ def figura_mapa(r):
     return fig
  
  
+def niveles_principales(mapa, n=6, min_rel=0.15):
+    """Los n picos más grandes de liquidación de cada lado: lista de dicts (px, usd, lado)."""
+    out = []
+    for lado, arr in (("cortos", mapa["cortos"]), ("largos", mapa["largos"])):
+        sm = np.convolve(arr, np.array([1, 1, 1]) / 3, mode="same")
+        if sm.max() <= 0:
+            continue
+        pad = np.r_[0.0, sm, 0.0]
+        picos = [i for i in range(len(sm)) if pad[i + 1] >= pad[i] and pad[i + 1] > pad[i + 2] and sm[i] >= min_rel * sm.max()]
+        picos = sorted(picos, key=lambda i: -sm[i])[:n]
+        out += [{"px": float(mapa["centros"][i]), "usd": float(sm[i]), "lado": lado} for i in picos]
+    return out
+ 
+ 
+def figura_velas_liq(sym, mapa, velas):
+    """Velas de 1 H con líneas horizontales en los cúmulos de liquidación (verde = cortos arriba, rojo = largos abajo)."""
+    price = mapa["price"]
+    niv = niveles_principales(mapa)
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(x=velas["time"], open=velas["open"], high=velas["high"], low=velas["low"], close=velas["close"],
+                                 name=sym, increasing_line_color="#2E7D32", decreasing_line_color="#C62828"))
+    max_usd = max([v["usd"] for v in niv], default=1.0)
+    for v in niv:
+        color = "#2E7D32" if v["lado"] == "cortos" else "#C62828"
+        pct = (v["px"] / price - 1) * 100
+        fig.add_shape(type="line", xref="paper", x0=0, x1=1, yref="y", y0=v["px"], y1=v["px"],
+                      line=dict(color=color, width=1 + 3 * v["usd"] / max_usd, dash="solid"), opacity=0.75)
+        fig.add_annotation(xref="paper", x=1, xanchor="left", yref="y", y=v["px"], showarrow=False,
+                           text=f"{fmt_px(v['px'])} · {v['usd'] / 1e6:.2f}M · {pct:+.1f}%", font=dict(color=color, size=10))
+    fig.add_shape(type="line", xref="paper", x0=0, x1=1, yref="y", y0=price, y1=price, line=dict(color="#1565C0", width=1, dash="dash"))
+    fig.add_annotation(xref="paper", x=0, xanchor="left", yref="y", y=price, showarrow=False, yshift=10,
+                       text=f"Precio al escanear {fmt_px(price)}", font=dict(color="#1565C0", size=10))
+    lo = min([velas["low"].min()] + [v["px"] for v in niv])
+    hi = max([velas["high"].max()] + [v["px"] for v in niv])
+    pad_y = (hi - lo) * 0.04
+    fig.update_layout(height=560, margin=dict(l=0, r=170, t=30, b=0), plot_bgcolor="white", xaxis_rangeslider_visible=False,
+                      yaxis=dict(range=[lo - pad_y, hi + pad_y], title="Precio"), showlegend=False,
+                      title=f"{sym}: velas 1 H y niveles de liquidación estimados (verde = cortos, rojo = largos)")
+    return fig
+ 
+ 
+@st.cache_data(ttl=300, show_spinner=False)
+def velas_liq(ex_id, sym_spot, limit=200):
+    ex = get_liq_exchange(ex_id)
+    if not ex.markets:
+        ex.load_markets()
+    raw = ex.fetch_ohlcv(sym_spot + ":USDT", timeframe="1h", limit=limit)
+    d = pd.DataFrame(raw, columns=["time", "open", "high", "low", "close", "vol"])
+    d["time"] = pd.to_datetime(d["time"], unit="ms")
+    return d
  
  
 LIQ_EXCHANGES = {"Bybit": "bybit", "OKX": "okx"}
@@ -593,6 +643,12 @@ if st.session_state["master_results_crypto"]:
         if _ops:
             pick = st.selectbox("🧨 Ver mapa de liquidaciones de:", _ops)
             st.plotly_chart(figura_mapa({"_mapa": st.session_state["liq_mapas"][pick + "/USDT"]}), use_container_width=True)
+            try:
+                _ex_vel = globals().get("liq_ex_id", "okx")
+                _velas = velas_liq(_ex_vel, pick + "/USDT")
+                st.plotly_chart(figura_velas_liq(pick, st.session_state["liq_mapas"][pick + "/USDT"], _velas), use_container_width=True)
+            except Exception as e_vel:
+                st.warning(f"No se pudo dibujar el gráfico de velas: {type(e_vel).__name__}: {str(e_vel)[:200]}")
     if st.session_state["liq_errores"]:
         with st.expander(f"⚠️ {len(st.session_state['liq_errores'])} cripto sin liquidaciones"):
             st.write("\n\n".join(st.session_state["liq_errores"].values()))
