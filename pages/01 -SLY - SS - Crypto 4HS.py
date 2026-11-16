@@ -9,9 +9,10 @@ Qué muestra por cada cripto:
   Régimen 4H · MACD 4H · RSI PRO 4H
   Última señal 4H / 1H (o 2H) / 30M  y el PnL de cada una
 
-La lógica de señales es la misma del tracker SLY (DEMA MACD 12/26/9, RSI suavizado con DEMA,
-Heikin Ashi, EMA52/EMA260, Bear-Longs), aplicada por separado en cada temporalidad.
-PnL: si la señal sigue vigente = ganancia/pérdida abierta contra el precio actual;
+La dirección la decide el régimen de 4H (EMA52 vs EMA260): alcista -> señales LONG, bajista -> señales SHORT,
+y esa misma dirección se usa en 4H, 1H/2H y 30M. La lógica es la del tracker SLY (DEMA MACD 12/26/9, RSI suavizado
+con DEMA, Heikin Ashi), con su versión espejo para SHORT.
+PnL (en la dirección de la operación; en SHORT gana si el precio baja): si la señal sigue vigente = ganancia/pérdida abierta contra el precio actual;
 si ya se cerró = resultado entre la entrada y la salida de esa señal.
 Por defecto solo usa velas CERRADAS, para que una señal no aparezca y desaparezca mientras la vela se forma.
 Las horas se muestran en horario de Argentina. No es una recomendación de inversión.
@@ -127,24 +128,40 @@ def get_sly_indicators(df):
         return pd.DataFrame(), f"Error de cálculo: {type(e).__name__}: {e}"
 
 
-def find_last_signal(df, bear_longs):
-    """Misma lógica del tracker SLY. Además guarda la salida para poder calcular el PnL de señales cerradas."""
-    out = {"entry_date": None, "entry_px": None, "active": False, "exit_date": None, "exit_px": None, "verdict": "-"}
+def find_last_signal(df, direction):
+    """
+    Lógica SLY para LONG o SHORT (espejo una de otra).
+      LONG : entrada = Heikin Ashi pasa de rojo a verde + MACD acelera + RSI sube estando bajo 50.
+             salida  = HA rojo + MACD cae + RSI cae.
+      SHORT: entrada = Heikin Ashi pasa de verde a rojo + MACD desacelera + RSI baja estando sobre 50.
+             salida  = HA verde + MACD sube + RSI sube.
+    Guarda también la salida para calcular el PnL de señales cerradas.
+    """
+    out = {"dir": direction, "entry_date": None, "entry_px": None, "active": False,
+           "exit_date": None, "exit_px": None, "verdict": "-"}
     if df.empty or len(df) < 2:
         return out
+    short = direction == "SHORT"
     for i in range(1, len(df)):
-        authorized = (df["ema52"].iloc[i] > df["ema260"].iloc[i]) or bear_longs
-        ha_flip = df["ha_color"].iloc[i] == "Verde" and df["ha_color"].iloc[i - 1] == "Rojo"
-        macd_accel = df["hist"].iloc[i] > df["hist"].iloc[i - 1]
-        rsi_ok = df["rsi_smooth"].iloc[i] > df["rsi_smooth"].iloc[i - 1] and df["rsi_smooth"].iloc[i] < 50
-        if not out["active"] and (authorized and ha_flip and macd_accel and rsi_ok):
+        hc, hp_ = df["ha_color"].iloc[i], df["ha_color"].iloc[i - 1]
+        h, hp = df["hist"].iloc[i], df["hist"].iloc[i - 1]
+        r, rp = df["rsi_smooth"].iloc[i], df["rsi_smooth"].iloc[i - 1]
+        if short:
+            entrada = hc == "Rojo" and hp_ == "Verde" and h < hp and r < rp and r > 50
+            salida = hc == "Verde" and h > hp and r > rp
+        else:
+            entrada = hc == "Verde" and hp_ == "Rojo" and h > hp and r > rp and r < 50
+            salida = hc == "Rojo" and h < hp and r < rp
+        if not out["active"] and entrada:
             out.update(active=True, entry_date=df.index[i], entry_px=float(df["Close"].iloc[i]), exit_date=None, exit_px=None)
-        elif out["active"] and (df["ha_color"].iloc[i] == "Rojo" and df["hist"].iloc[i] < df["hist"].iloc[i - 1]
-                                and df["rsi_smooth"].iloc[i] < df["rsi_smooth"].iloc[i - 1]):
+        elif out["active"] and salida:
             out.update(active=False, exit_date=df.index[i], exit_px=float(df["Close"].iloc[i]))
     if out["active"]:
         c, p = df["hist"].iloc[-1], df["hist"].iloc[-2]
-        out["verdict"] = "cerrar" if (p > 0 and c <= 0) else ("mantener" if c > p else "pierde fuerza")
+        if short:
+            out["verdict"] = "cerrar" if (p < 0 and c >= 0) else ("mantener" if c < p else "pierde fuerza")
+        else:
+            out["verdict"] = "cerrar" if (p > 0 and c <= 0) else ("mantener" if c > p else "pierde fuerza")
     return out
 
 
@@ -186,25 +203,27 @@ def senal_txt(sig, tf):
         t = f"{sig['entry_date'].strftime('%d/%m %H:%M')} (en formación)"
     else:
         t = cierre.strftime("%d/%m %H:%M")
-    return f"{t} · {'VIGENTE 🟢' if sig['active'] else 'CERRADA 🔴'}"
+    return f"{t} · {sig['dir']} {'VIGENTE 🟢' if sig['active'] else 'CERRADA 🔴'}"
 
 
 def pnl_txt(sig, px_now):
+    """PnL en la dirección de la operación: en SHORT, ganar es que el precio baje."""
     if sig["entry_px"] is None:
         return "-"
+    k = -1 if sig["dir"] == "SHORT" else 1
     if sig["active"]:
-        return f"{(px_now / sig['entry_px'] - 1) * 100:+.2f}% (abierta)"
+        return f"{k * (px_now / sig['entry_px'] - 1) * 100:+.2f}% (abierta)"
     if sig["exit_px"] is not None:
-        return f"{(sig['exit_px'] / sig['entry_px'] - 1) * 100:+.2f}% (cerrada)"
+        return f"{k * (sig['exit_px'] / sig['entry_px'] - 1) * 100:+.2f}% (cerrada)"
     return "-"
 
 
 def fila_vacia(sym, motivo):
     return {"Activo": sym.replace("/USDT", ""), "Sector": get_crypto_sector(sym), "Estado señal": "SIN CÁLCULO ⚪",
-            "Precio": "-", "Régimen 4H": "-", "MACD 4H": "-", "RSI PRO 4H": "-", "Motivo": motivo}
+            "Precio": "-", "Dirección": "-", "Régimen 4H": "-", "MACD 4H": "-", "RSI PRO 4H": "-", "Motivo": motivo}
 
 
-def procesar_simbolo(ex, sym, tf_mid, bear_longs, solo_cerradas):
+def procesar_simbolo(ex, sym, tf_mid, solo_cerradas):
     lbl_mid = tf_mid.upper()
     try:
         raw4 = fetch_tf(ex, sym, TF_MAIN)
@@ -214,7 +233,10 @@ def procesar_simbolo(ex, sym, tf_mid, bear_longs, solo_cerradas):
     data4, motivo = get_sly_indicators(d4)
     if data4.empty:
         return fila_vacia(sym, f"4H: {motivo}")
-    sig4 = find_last_signal(data4, bear_longs)
+    # La dirección la decide el régimen de 4H: alcista -> LONG, bajista -> SHORT (vale para 4H, 1H/2H y 30M)
+    alcista = bool(data4["ema52"].iloc[-1] > data4["ema260"].iloc[-1])
+    direccion = "LONG" if alcista else "SHORT"
+    sig4 = find_last_signal(data4, direccion)
     motivos = []
     row = {"Activo": sym.replace("/USDT", ""), "Sector": get_crypto_sector(sym)}
     extra = {}
@@ -225,19 +247,20 @@ def procesar_simbolo(ex, sym, tf_mid, bear_longs, solo_cerradas):
             data, mot = get_sly_indicators(d)
             if data.empty:
                 raise ValueError(mot)
-            extra[lbl] = (find_last_signal(data, bear_longs), px)
+            extra[lbl] = (find_last_signal(data, direccion), px)
         except Exception as e:
             extra[lbl] = None
             motivos.append(f"{lbl}: {str(e)[:100]}")
     # precio más fresco disponible: 30M, si no 1H/2H, si no 4H
     px_now = (extra.get("30M") or extra.get(lbl_mid) or (None, px4))[1]
-    est = f"VIGENTE 🟢 · {sig4['verdict']}" if sig4["active"] else "CERRADA 🔴"
+    est = f"{direccion} VIGENTE 🟢 · {sig4['verdict']}" if sig4["active"] else f"{direccion} CERRADA 🔴"
     if sig4["entry_date"] is None:
         est = "SIN SEÑAL ⚪"
     row.update({
         "Estado señal": est,
         "Precio": f"{px_now:.6g}",
-        "Régimen 4H": "ALCISTA" if data4["ema52"].iloc[-1] > data4["ema260"].iloc[-1] else "BAJISTA",
+        "Dirección": "LONG ▲" if alcista else "SHORT ▼",
+        "Régimen 4H": "ALCISTA" if alcista else "BAJISTA",
         "MACD 4H": macd_label(data4),
         "RSI PRO 4H": f"{data4['rsi_state'].iloc[-1]} ({data4['rsi_smooth'].iloc[-1]:.0f})",
         "Última señal 4H": senal_txt(sig4, TF_MAIN),
@@ -261,6 +284,10 @@ def estilo_celda(val):
     rojo = "background-color: #FFCDD2; color: #B71C1C; font-weight: bold;"
     rojo2 = "background-color: #EF9A9A; color: #B71C1C; font-weight: bold;"
     amar = "background-color: #FFF9C4; color: #827717; font-weight: bold;"
+    if s == "LONG ▲":
+        return verde2
+    if s == "SHORT ▼":
+        return rojo2
     if re.match(r"^[+-]\d", s):
         return verde if s.startswith("+") else rojo
     if "VIGENTE" in s and ("pierde" in s or "cerrar" in s):
@@ -310,7 +337,7 @@ with st.sidebar:
     st.header("⚙️ Configuración")
     mid_lbl = st.selectbox("Temporalidad intermedia:", ["1H", "2H"], index=0)
     TF_MID = mid_lbl.lower()
-    bear_longs = st.checkbox("Habilitar Bear-Longs", value=True)
+    st.caption("Dirección automática: régimen 4H alcista → señales LONG · bajista → señales SHORT.")
     solo_cerradas = st.checkbox("Solo velas cerradas", value=True,
                                 help="Evita señales que aparecen y desaparecen mientras la vela se forma. "
                                      "Desmarcá para ver señales en tiempo real (pueden cambiar).")
@@ -345,7 +372,7 @@ with st.sidebar:
         for i, sym in enumerate(run_symbols):
             prog.progress((i + 1) / len(run_symbols), text=f"Analizando {sym}")
             try:
-                st.session_state["tr_results"][sym] = procesar_simbolo(ex, sym, TF_MID, bear_longs, solo_cerradas)
+                st.session_state["tr_results"][sym] = procesar_simbolo(ex, sym, TF_MID, solo_cerradas)
             except Exception as e:
                 st.session_state["tr_results"][sym] = fila_vacia(sym, f"{type(e).__name__}: {str(e)[:150]}")
             time.sleep(0.05)
@@ -359,7 +386,7 @@ if not res:
     st.stop()
 
 df = pd.DataFrame(list(res.values()))
-cols = ["Activo", "Sector", "Estado señal", "Precio", "Régimen 4H", "MACD 4H", "RSI PRO 4H",
+cols = ["Activo", "Sector", "Estado señal", "Precio", "Dirección", "Régimen 4H", "MACD 4H", "RSI PRO 4H",
         "Última señal 4H", f"Última señal {mid_lbl}", "Última señal 30M",
         "PnL 4H", f"PnL {mid_lbl}", "PnL 30M", "Motivo"]
 for c in cols:
@@ -377,19 +404,19 @@ sect = f3.multiselect("Sector", sorted(df["Sector"].unique()))
 
 v = df
 if solo_vig:
-    v = v[v["Estado señal"].str.startswith("VIGENTE")]
+    v = v[v["Estado señal"].str.contains("VIGENTE")]
 if solo_alin:
-    v = v[v["Estado señal"].str.startswith("VIGENTE") & v[f"Última señal {mid_lbl}"].str.contains("VIGENTE")
+    v = v[v["Estado señal"].str.contains("VIGENTE") & v[f"Última señal {mid_lbl}"].str.contains("VIGENTE")
           & v["Última señal 30M"].str.contains("VIGENTE")]
 if sect:
     v = v[v["Sector"].isin(sect)]
 
 orden = {"VIGENTE": 0, "CERRADA": 1, "SIN SEÑAL": 2, "SIN CÁLCULO": 3}
-v = v.assign(_o=v["Estado señal"].map(lambda s: next((o for k, o in orden.items() if s.startswith(k)), 4)))
+v = v.assign(_o=v["Estado señal"].map(lambda s: next((o for k, o in orden.items() if k in s), 4)))
 v = v.sort_values(["_o", "Activo"]).drop(columns="_o")
 
 c1, c2, c3 = st.columns(3)
-c1.metric("Vigentes en 4H", int(df["Estado señal"].str.startswith("VIGENTE").sum()))
+c1.metric("Vigentes en 4H", int(df["Estado señal"].str.contains("VIGENTE").sum()))
 c2.metric(f"Vigentes en {mid_lbl}", int(df[f"Última señal {mid_lbl}"].str.contains("VIGENTE").sum()))
 c3.metric("Vigentes en 30M", int(df["Última señal 30M"].str.contains("VIGENTE").sum()))
 
