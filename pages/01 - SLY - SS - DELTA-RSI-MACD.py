@@ -26,7 +26,7 @@ N_DELTA_FINA = {"30m": 100, "1h": 100, "4h": 100, "1d": 100, "1w": 52, "1M": 24}
 # Modo "pine": exactamente los timeframes del indicador (intradía 1m, diario 5m, resto 60m).
 # Es lento, para verificar pares puntuales: menos velas del timeframe = menos consultas.
 LTF_PINE = {"30m": "1m", "1h": "1m", "4h": "1m", "1d": "5m", "1w": "1h", "1M": "1h"}
-N_DELTA_PINE = {"30m": 100, "1h": 100, "4h": 40, "1d": 30, "1w": 60, "1M": 12}
+N_DELTA_PINE = {"30m": 100, "1h": 100, "4h": 40, "1d": 60, "1w": 60, "1M": 12}
 LTF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000}
 
 N_IND = 320          # velas del timeframe para MACD/RSI (calentamiento)
@@ -159,7 +159,7 @@ def semanal_desde_diario(d):
     return pd.DataFrame({"o": g.o.first(), "h": g.h.max(), "l": g.l.min(), "c": g.c.last(), "v": g.v.sum()}).reset_index()
 
 
-def analizar(ex, sym, tf, solo_cerradas, ventana, modo="std"):
+def analizar(ex, sym, tf, solo_cerradas, ventana, modo="std", detalle=False):
     """Devuelve dict con la fila de resultados o lanza Exception con el motivo."""
     ms = TF_MS[tf]
     ahora = ex.milliseconds()
@@ -198,6 +198,21 @@ def analizar(ex, sym, tf, solo_cerradas, ventana, modo="std"):
     pl_, pr_ = PIV_D.get(tf, (5, 5))
     ev = divergencias(w.h.values, w.l.values, cvd, pl_, pr_)
 
+    det = None
+    if detalle:
+        pivH = set(pivotes(cvd, pl_, pr_, True))
+        pivL = set(pivotes(cvd, pl_, pr_, False))
+        conf = {i: t for i, t in ev}
+        marca = {i - pr_: t for i, t in ev}
+        det = pd.DataFrame({
+            "Apertura (UTC)": [x.strftime("%Y-%m-%d %H:%M") for x in w.index],
+            "Máx": w.h.values, "Mín": w.l.values, "Cierre": w.c.values,
+            "Volumen": w.v.values, "Delta": dl.values, "CVD": cvd,
+            "Pivote CVD": ["alto" if k in pivH else ("bajo" if k in pivL else "") for k in range(len(w))],
+            "DIV (marcador, en el pivote)": [marca.get(k, "") for k in range(len(w))],
+            "DIV confirmada (aviso)": [conf.get(k, "") for k in range(len(w))],
+            "Hist MACD": w["hist"].values, "RSI PRO": w["rsi"].values,
+        })
     hist, rsi = ind["hist"].values, ind["rsi"].values
     macd_up = hist[-1] > hist[-2]
     rsi_up = rsi[-1] > rsi[-2]
@@ -228,7 +243,7 @@ def analizar(ex, sym, tf, solo_cerradas, ventana, modo="std"):
             faltan.append("MACD")
         if rsi_up != quiere_up:
             faltan.append("RSI")
-    return {
+    fila = {
         "Activo": sym.replace("/USDT", ""),
         "Sector": get_sector(sym),
         "Estado": estado,
@@ -240,6 +255,7 @@ def analizar(ex, sym, tf, solo_cerradas, ventana, modo="std"):
         "Delta última vela": "COMPRADOR" if dl.iloc[-1] > 0 else ("VENDEDOR" if dl.iloc[-1] < 0 else "-"),
         "Motivo": ("Falta: " + " y ".join(faltan)) if faltan else "OK",
     }
+    return (fila, det) if detalle else fila
 
 
 # ===== UI =====
@@ -368,3 +384,23 @@ if res:
     st.dataframe(sty, use_container_width=True, height=620, hide_index=True)
 else:
     st.info("👈 Sincronizá el mercado, elegí un lote y tocá ACTUALIZAR Y ACUMULAR.")
+
+
+# ─────────────────────────────────────────────
+# DIAGNÓSTICO: comparar barra por barra con TradingView
+# ─────────────────────────────────────────────
+with st.expander("🔬 Diagnóstico de un par (comparar con TradingView)"):
+    st.caption("Muestra, vela por vela, el delta, el CVD, los pivotes y las divergencias que calcula el scanner con la "
+               "temporalidad y la precisión elegidas en la barra lateral. Compará con la Data Window del indicador "
+               "(Delta por vela, CVD, Div alcista/bajista) pasando el mouse sobre cada vela.")
+    c1, c2 = st.columns([2, 1])
+    par = c1.text_input("Par (ej. AAVE o AAVE/USDT)", value="AAVE").upper().strip()
+    n_filas = c2.number_input("Últimas filas", 10, 150, 40)
+    if st.button("Calcular diagnóstico"):
+        sym = par if "/" in par else f"{par}/USDT"
+        try:
+            fila, det = analizar(get_exchange(), sym, tf, solo_cerradas, ventana, modo, detalle=True)
+            st.write(f"**{sym}** · {tf_label} · delta con velas de {ltf_sel} · estado: {fila['Estado']}")
+            st.dataframe(det.tail(int(n_filas)), use_container_width=True, hide_index=True)
+        except Exception as e:
+            st.error(f"{type(e).__name__}: {e}")
