@@ -23,6 +23,10 @@ TF_MS = {"30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000, 
 LTF = {"30m": "5m", "1h": "5m", "4h": "15m", "1d": "1h", "1w": "1d", "1M": "1d"}          # timeframe menor para el delta
 LTF_FINA = {"30m": "1m", "1h": "1m", "4h": "5m", "1d": "15m", "1w": "1h", "1M": "4h"}   # precisión "fina"
 N_DELTA_FINA = {"30m": 100, "1h": 100, "4h": 100, "1d": 100, "1w": 52, "1M": 24}      # menos velas = menos consultas
+# Modo "pine": exactamente los timeframes del indicador (intradía 1m, diario 5m, resto 60m).
+# Es lento, para verificar pares puntuales: menos velas del timeframe = menos consultas.
+LTF_PINE = {"30m": "1m", "1h": "1m", "4h": "1m", "1d": "5m", "1w": "1h", "1M": "1h"}
+N_DELTA_PINE = {"30m": 100, "1h": 100, "4h": 40, "1d": 30, "1w": 60, "1M": 12}
 LTF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000}
 
 N_IND = 320          # velas del timeframe para MACD/RSI (calentamiento)
@@ -106,7 +110,13 @@ def delta_por_vela(low_df, t_ms, index):
     """Delta por vela del timeframe: suma(signo(c-o) x volumen) de las velas menores que caen en cada vela
     (se asignan por hora de apertura, sirve también para semanal y mensual). NaN si no hay datos."""
     d = low_df.copy()
-    d["dl"] = np.where(d.c >= d.o, d.v, -d.v)
+    # Dirección de cada vela chica: cierre vs apertura; si empata, cierre vs cierre anterior; si sigue
+    # empatando, se mantiene la dirección anterior (misma lógica que ta.requestVolumeDelta).
+    d = d.sort_values("t").reset_index(drop=True)
+    sg = np.sign(d.c - d.o)
+    sg = sg.where(sg != 0, np.sign(d.c - d.c.shift(1)))
+    sg = sg.replace(0, np.nan).ffill().fillna(1.0)
+    d["dl"] = sg * d.v
     pos = np.searchsorted(t_ms, d.t.values, side="right") - 1
     d = d[pos >= 0]
     d["bin"] = t_ms[pos[pos >= 0]]
@@ -149,7 +159,7 @@ def semanal_desde_diario(d):
     return pd.DataFrame({"o": g.o.first(), "h": g.h.max(), "l": g.l.min(), "c": g.c.last(), "v": g.v.sum()}).reset_index()
 
 
-def analizar(ex, sym, tf, solo_cerradas, ventana, fina=False):
+def analizar(ex, sym, tf, solo_cerradas, ventana, modo="std"):
     """Devuelve dict con la fila de resultados o lanza Exception con el motivo."""
     ms = TF_MS[tf]
     ahora = ex.milliseconds()
@@ -170,8 +180,13 @@ def analizar(ex, sym, tf, solo_cerradas, ventana, fina=False):
     ind = indicadores(df)
 
     # Delta sobre las últimas N_DELTA velas
-    w = ind.iloc[-(N_DELTA_FINA[tf] if fina else N_DELTA_D.get(tf, 150)):]
-    ltf = LTF_FINA[tf] if fina else LTF[tf]
+    if modo == "pine":
+        n_d, ltf = N_DELTA_PINE[tf], LTF_PINE[tf]
+    elif modo == "fina":
+        n_d, ltf = N_DELTA_FINA[tf], LTF_FINA[tf]
+    else:
+        n_d, ltf = N_DELTA_D.get(tf, 150), LTF[tf]
+    w = ind.iloc[-n_d:]
     low = bajar(ex, sym, ltf, int(w.t.iloc[0]), fin_vela(int(w.t.iloc[-1]), tf))
     if low.empty:
         raise ValueError("Sin velas del timeframe menor para calcular delta")
@@ -264,10 +279,15 @@ with st.sidebar:
     st.header("⚙️ Configuración")
     tf_label = st.selectbox("Temporalidad:", list(TF_OPTIONS.keys()), index=2)
     tf = TF_OPTIONS[tf_label]
-    fina = st.radio("Precisión del delta", ["Estándar (rápida)", "Fina (más lenta)"], index=0,
+    prec = st.radio("Precisión del delta", ["Estándar (rápida)", "Fina", "Igual al Pine (lenta)"], index=0,
                     help="El delta de cada vela de la temporalidad elegida se arma sumando compras y ventas de velas más chicas. "
-                         "Fina usa velas más chicas: más exacto, pero más consultas a KuCoin por par.") .startswith("Fina")
-    st.caption(f"Delta de cada vela de {tf_label}, calculado con velas de {LTF_FINA[tf] if fina else LTF[tf]}.")
+                         "Fina usa velas más chicas. 'Igual al Pine' usa los mismos timeframes que el indicador de TradingView "
+                         "(1m intradía, 5m diario, 1h semanal/mensual): sirve para verificar pares puntuales, tarda 10 o más "
+                         "consultas por par y mira menos historia.")
+    modo = "pine" if prec.startswith("Igual") else ("fina" if prec == "Fina" else "std")
+    ltf_sel = {"pine": LTF_PINE, "fina": LTF_FINA, "std": LTF}[modo][tf]
+    n_sel = {"pine": N_DELTA_PINE, "fina": N_DELTA_FINA}.get(modo, N_DELTA_D).get(tf, 150)
+    st.caption(f"Delta de cada vela de {tf_label}, calculado con velas de {ltf_sel} (últimas {n_sel} velas).")
     solo_cerradas = st.checkbox("Solo velas cerradas", value=True)
     ventana = st.slider("Divergencia vigente hasta (velas)", 1, 30, 10,
                         help="La divergencia se confirma 5 velas después del pivote. Cuanto más vieja, menos vale.")
@@ -288,7 +308,7 @@ with st.sidebar:
             for k, sym in enumerate(sub):
                 prog.progress((k + 1) / len(sub), text=f"{tf_label}: {sym}")
                 try:
-                    r = analizar(ex, sym, tf, solo_cerradas, ventana, fina)
+                    r = analizar(ex, sym, tf, solo_cerradas, ventana, modo)
                 except Exception as e:
                     r = {"Activo": sym.replace("/USDT", ""), "Sector": get_sector(sym), "Estado": "SIN CÁLCULO ⚪",
                          "Precio": "-", "Divergencia delta": "-", "Fecha divergencia": "-", "MACD": "-",
