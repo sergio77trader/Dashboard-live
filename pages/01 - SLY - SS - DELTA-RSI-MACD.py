@@ -18,14 +18,16 @@ import ccxt
 # ─────────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────────
-TF_OPTIONS = {"30 MIN": "30m", "1 HS": "1h", "4 HS": "4h", "1 DIA": "1d"}
-TF_MS = {"30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
-LTF = {"30m": "5m", "1h": "5m", "4h": "15m", "1d": "1h"}          # timeframe menor para el delta
+TF_OPTIONS = {"30 MIN": "30m", "1 HS": "1h", "4 HS": "4h", "1 DIA": "1d", "1 SEMANA": "1w", "1 MES": "1M"}
+TF_MS = {"30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000, "1w": 604_800_000, "1M": 2_592_000_000}  # 1M aprox. (solo para estimar)
+LTF = {"30m": "5m", "1h": "5m", "4h": "15m", "1d": "1h", "1w": "1d", "1M": "1d"}          # timeframe menor para el delta
 LTF_MS = {"5m": 300_000, "15m": 900_000, "1h": 3_600_000}
 
 N_IND = 320          # velas del timeframe para MACD/RSI (calentamiento)
-N_DELTA = 150        # velas del timeframe sobre las que se arma el CVD
-PV_L, PV_R, MAX_GAP = 5, 5, 60
+N_DELTA_D = {"1w": 100, "1M": 48}   # velas sobre las que se arma el CVD (por defecto 150)
+MIN_VELAS_D = {"1w": 60, "1M": 30}  # historial mínimo (por defecto 150)
+PIV_D = {"1M": (3, 3)}              # pivotes izq/der (por defecto 5/5; en mensual 3/3 para que haya divergencias)
+MAX_GAP = 60
 MIN_COBERTURA = 0.8  # % mínimo de velas con delta disponible
 
 CRYPTO_SECTORS = {
@@ -82,7 +84,7 @@ def pivotes(arr, l, r, alto=True):
     return res
 
 
-def divergencias(h, l, cvd):
+def divergencias(h, l, cvd, PV_L=5, PV_R=5):
     """Divergencias regulares precio vs CVD. Devuelve [(indice_confirmacion, 'ALCISTA'|'BAJISTA')]."""
     ev = []
     prev = None
@@ -98,13 +100,23 @@ def divergencias(h, l, cvd):
     return sorted(ev)
 
 
-def delta_por_vela(low_df, tf_ms, t_ms, index):
-    """Delta por vela del timeframe: suma(signo(c-o) x volumen) de las velas menores. NaN si no hay datos."""
+def delta_por_vela(low_df, t_ms, index):
+    """Delta por vela del timeframe: suma(signo(c-o) x volumen) de las velas menores que caen en cada vela
+    (se asignan por hora de apertura, sirve también para semanal y mensual). NaN si no hay datos."""
     d = low_df.copy()
     d["dl"] = np.where(d.c >= d.o, d.v, -d.v)
-    d["bin"] = (d.t // tf_ms) * tf_ms
+    pos = np.searchsorted(t_ms, d.t.values, side="right") - 1
+    d = d[pos >= 0]
+    d["bin"] = t_ms[pos[pos >= 0]]
     s = d.groupby("bin").dl.sum()
     return pd.Series(s.reindex(t_ms).values, index=index)
+
+
+def fin_vela(t_ms, tf):
+    """Hora de cierre de una vela (mensual con calendario real)."""
+    if tf == "1M":
+        return int((pd.Timestamp(t_ms, unit="ms") + pd.DateOffset(months=1)).timestamp() * 1000)
+    return t_ms + TF_MS[tf]
 
 
 def bajar(ex, sym, tf, desde_ms, hasta_ms):
@@ -131,27 +143,29 @@ def analizar(ex, sym, tf, solo_cerradas, ventana):
     ahora = ex.milliseconds()
     raw = ex.fetch_ohlcv(sym, tf, limit=N_IND)
     df = pd.DataFrame(raw, columns=["t", "o", "h", "l", "c", "v"]).drop_duplicates("t")
-    if solo_cerradas and len(df) and df.t.iloc[-1] + ms > ahora:
+    if solo_cerradas and len(df) and fin_vela(int(df.t.iloc[-1]), tf) > ahora:
         df = df.iloc[:-1]
     df = df.reset_index(drop=True)
-    if len(df) < 150:
-        raise ValueError(f"Historial insuficiente: {len(df)} velas (se necesitan ≥150)")
+    min_v = MIN_VELAS_D.get(tf, 150)
+    if len(df) < min_v:
+        raise ValueError(f"Historial insuficiente: {len(df)} velas (se necesitan ≥{min_v})")
 
     df.index = pd.to_datetime(df.t, unit="ms", utc=True)
     ind = indicadores(df)
 
     # Delta sobre las últimas N_DELTA velas
-    w = ind.iloc[-N_DELTA:]
+    w = ind.iloc[-N_DELTA_D.get(tf, 150):]
     ltf = LTF[tf]
-    low = bajar(ex, sym, ltf, int(w.t.iloc[0]), int(w.t.iloc[-1]) + ms)
+    low = bajar(ex, sym, ltf, int(w.t.iloc[0]), fin_vela(int(w.t.iloc[-1]), tf))
     if low.empty:
         raise ValueError("Sin velas del timeframe menor para calcular delta")
-    dl = delta_por_vela(low, ms, w.t.values, w.index)
+    dl = delta_por_vela(low, w.t.values, w.index)
     cobertura = dl.notna().mean()
     if cobertura < MIN_COBERTURA:
         raise ValueError(f"Delta incompleto ({cobertura:.0%} de velas con datos)")
     cvd = dl.fillna(0).cumsum().values
-    ev = divergencias(w.h.values, w.l.values, cvd)
+    pl_, pr_ = PIV_D.get(tf, (5, 5))
+    ev = divergencias(w.h.values, w.l.values, cvd, pl_, pr_)
 
     hist, rsi = ind["hist"].values, ind["rsi"].values
     macd_up = hist[-1] > hist[-2]
@@ -167,7 +181,7 @@ def analizar(ex, sym, tf, solo_cerradas, ventana):
         i, div_tipo = ev[-1]
         edad = len(w) - 1 - i
         div_txt = f"{div_tipo} (hace {edad} velas)"
-        div_fecha = w.index[i].tz_convert("America/Argentina/Tucuman").strftime("%d/%m %H:%M")
+        div_fecha = w.index[i].tz_convert("America/Argentina/Tucuman").strftime("%d/%m/%y %H:%M")
 
     vigente = div_tipo is not None and edad <= ventana
     estado = "SIN SEÑAL ⚪"
