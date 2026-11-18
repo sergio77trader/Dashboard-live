@@ -21,7 +21,9 @@ import ccxt
 TF_OPTIONS = {"30 MIN": "30m", "1 HS": "1h", "4 HS": "4h", "1 DIA": "1d", "1 SEMANA": "1w", "1 MES": "1M"}
 TF_MS = {"30m": 1_800_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000, "1w": 604_800_000, "1M": 2_592_000_000}  # 1M aprox. (solo para estimar)
 LTF = {"30m": "5m", "1h": "5m", "4h": "15m", "1d": "1h", "1w": "1d", "1M": "1d"}          # timeframe menor para el delta
-LTF_MS = {"5m": 300_000, "15m": 900_000, "1h": 3_600_000}
+LTF_FINA = {"30m": "1m", "1h": "1m", "4h": "5m", "1d": "15m", "1w": "1h", "1M": "4h"}   # precisión "fina"
+N_DELTA_FINA = {"30m": 100, "1h": 100, "4h": 100, "1d": 100, "1w": 52, "1M": 24}      # menos velas = menos consultas
+LTF_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000, "4h": 14_400_000}
 
 N_IND = 320          # velas del timeframe para MACD/RSI (calentamiento)
 N_DELTA_D = {"1w": 100, "1M": 48}   # velas sobre las que se arma el CVD (por defecto 150)
@@ -137,12 +139,26 @@ def bajar(ex, sym, tf, desde_ms, hasta_ms):
     return d.reset_index(drop=True)
 
 
-def analizar(ex, sym, tf, solo_cerradas, ventana):
+def semanal_desde_diario(d):
+    """Velas semanales ancladas al LUNES 00:00 UTC (como TradingView), armadas con velas diarias.
+    Las velas '1w' de la API de KuCoin abren los jueves y no coinciden con las del gráfico."""
+    dia = 86_400_000
+    d = d.copy()
+    d["t"] = d.t - (((d.t // dia) + 3) % 7) * dia          # el día 0 de epoch fue jueves
+    g = d.groupby("t")
+    return pd.DataFrame({"o": g.o.first(), "h": g.h.max(), "l": g.l.min(), "c": g.c.last(), "v": g.v.sum()}).reset_index()
+
+
+def analizar(ex, sym, tf, solo_cerradas, ventana, fina=False):
     """Devuelve dict con la fila de resultados o lanza Exception con el motivo."""
     ms = TF_MS[tf]
     ahora = ex.milliseconds()
-    raw = ex.fetch_ohlcv(sym, tf, limit=N_IND)
-    df = pd.DataFrame(raw, columns=["t", "o", "h", "l", "c", "v"]).drop_duplicates("t")
+    if tf == "1w":
+        df = semanal_desde_diario(bajar(ex, sym, "1d", ahora - (N_IND + 1) * 7 * 86_400_000, ahora))
+    else:
+        raw = ex.fetch_ohlcv(sym, tf, limit=N_IND)
+        df = pd.DataFrame(raw, columns=["t", "o", "h", "l", "c", "v"]).drop_duplicates("t")
+    px_now = float(df.c.iloc[-1]) if len(df) else float("nan")   # precio actual (vela en curso)
     if solo_cerradas and len(df) and fin_vela(int(df.t.iloc[-1]), tf) > ahora:
         df = df.iloc[:-1]
     df = df.reset_index(drop=True)
@@ -154,8 +170,8 @@ def analizar(ex, sym, tf, solo_cerradas, ventana):
     ind = indicadores(df)
 
     # Delta sobre las últimas N_DELTA velas
-    w = ind.iloc[-N_DELTA_D.get(tf, 150):]
-    ltf = LTF[tf]
+    w = ind.iloc[-(N_DELTA_FINA[tf] if fina else N_DELTA_D.get(tf, 150)):]
+    ltf = LTF_FINA[tf] if fina else LTF[tf]
     low = bajar(ex, sym, ltf, int(w.t.iloc[0]), fin_vela(int(w.t.iloc[-1]), tf))
     if low.empty:
         raise ValueError("Sin velas del timeframe menor para calcular delta")
@@ -201,7 +217,7 @@ def analizar(ex, sym, tf, solo_cerradas, ventana):
         "Activo": sym.replace("/USDT", ""),
         "Sector": get_sector(sym),
         "Estado": estado,
-        "Precio": f"{df.c.iloc[-1]:.6g}",
+        "Precio": f"{px_now:.6g}",
         "Divergencia delta": div_txt,
         "Fecha divergencia": div_fecha,
         "MACD": macd_txt,
@@ -248,7 +264,10 @@ with st.sidebar:
     st.header("⚙️ Configuración")
     tf_label = st.selectbox("Temporalidad:", list(TF_OPTIONS.keys()), index=2)
     tf = TF_OPTIONS[tf_label]
-    st.caption(f"Delta calculado con velas de {LTF[tf]}.")
+    fina = st.radio("Precisión del delta", ["Estándar (rápida)", "Fina (más lenta)"], index=0,
+                    help="El delta de cada vela de la temporalidad elegida se arma sumando compras y ventas de velas más chicas. "
+                         "Fina usa velas más chicas: más exacto, pero más consultas a KuCoin por par.") .startswith("Fina")
+    st.caption(f"Delta de cada vela de {tf_label}, calculado con velas de {LTF_FINA[tf] if fina else LTF[tf]}.")
     solo_cerradas = st.checkbox("Solo velas cerradas", value=True)
     ventana = st.slider("Divergencia vigente hasta (velas)", 1, 30, 10,
                         help="La divergencia se confirma 5 velas después del pivote. Cuanto más vieja, menos vale.")
@@ -269,7 +288,7 @@ with st.sidebar:
             for k, sym in enumerate(sub):
                 prog.progress((k + 1) / len(sub), text=f"{tf_label}: {sym}")
                 try:
-                    r = analizar(ex, sym, tf, solo_cerradas, ventana)
+                    r = analizar(ex, sym, tf, solo_cerradas, ventana, fina)
                 except Exception as e:
                     r = {"Activo": sym.replace("/USDT", ""), "Sector": get_sector(sym), "Estado": "SIN CÁLCULO ⚪",
                          "Precio": "-", "Divergencia delta": "-", "Fecha divergencia": "-", "MACD": "-",
