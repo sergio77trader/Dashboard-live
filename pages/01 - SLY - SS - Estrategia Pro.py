@@ -1,11 +1,11 @@
 """
 SLY | RADAR DE DERIVADOS  (Streamlit)
 =====================================================================
-Lee datos PUBLICOS de futuros perpetuos de Binance (sin API key) y, por moneda,
+Lee datos PUBLICOS de futuros perpetuos de Binance u OKX (sin API key; si Binance bloquea la IP, pasa a OKX) y, por moneda,
 te dice qué hacer: LONG / SHORT / EVITAR LONGS / ESPERAR REBOTE / ESPERAR,
 con una referencia de stop y tamaño de posición.
 
-DATOS (todos de Binance USD-M Futures, endpoints públicos):
+DATOS (Binance USD-M Futures u OKX perpetuos lineales, endpoints públicos):
   - Funding rate actual e historial  -> cuán apiñados están longs o shorts
   - Open interest (historial ~30 d)  -> si entra o sale dinero apalancado
   - Ratio long/short de cuentas      -> sentimiento
@@ -29,6 +29,7 @@ EJECUTAR
 """
 import math
 import os
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -75,13 +76,47 @@ def api(path, params=None):
     return r.json()
 
 
+OKX = "https://www.okx.com"
+OKX_BAR = {"1h": "1H", "2h": "2H", "4h": "4H", "6h": "6H", "12h": "12H", "1d": "1D"}
+_okx_lock = threading.Lock()
+_okx_ultimo = [0.0]
+
+
+def _okx_espera(gap):
+    """Separa las llamadas a OKX (los endpoints 'rubik' tienen límite estricto)."""
+    with _okx_lock:
+        dt = time.time() - _okx_ultimo[0]
+        if dt < gap:
+            time.sleep(gap - dt)
+        _okx_ultimo[0] = time.time()
+
+
+def api_okx(path, params=None, gap=0.0):
+    if gap:
+        _okx_espera(gap)
+    r = SESION.get(OKX + path, params=params, timeout=15)
+    if r.status_code in (403, 451):
+        raise BloqueoRegional(
+            "OKX bloqueó el acceso desde esta conexión (HTTP %d)." % r.status_code)
+    r.raise_for_status()
+    j = r.json()
+    if str(j.get("code")) != "0":
+        raise RuntimeError("OKX: %s" % j.get("msg"))
+    return j["data"]
+
+
+def okx_inst(sym):
+    """BTCUSDT -> BTC-USDT-SWAP"""
+    return sym[:-4] + "-USDT-SWAP"
+
+
 def _df(lista, cols_num, tcol):
     df = pd.DataFrame(lista)
     if df.empty:
         return df
     for c in cols_num:
         df[c] = pd.to_numeric(df[c], errors="coerce")
-    df["t"] = pd.to_datetime(df[tcol], unit="ms")
+    df["t"] = pd.to_datetime(pd.to_numeric(df[tcol], errors="coerce"), unit="ms")
     return df.set_index("t").sort_index()
 
 
@@ -149,10 +184,7 @@ def demo_btc():
 # ---------------------------------------------------------------------------
 # Descarga
 # ---------------------------------------------------------------------------
-@st.cache_data(ttl=600, show_spinner=False)
-def listar_universo(demo=False):
-    if demo:
-        return demo_universo()
+def _universo_binance():
     info = api("/fapi/v1/exchangeInfo")
     perp = {s["symbol"]: s["baseAsset"] for s in info["symbols"]
             if s.get("contractType") == "PERPETUAL" and s.get("quoteAsset") == "USDT"
@@ -162,28 +194,73 @@ def listar_universo(demo=False):
     for c in ("lastPrice", "priceChangePercent", "quoteVolume"):
         tick[c] = pd.to_numeric(tick[c], errors="coerce")
     tick["base"] = tick["symbol"].map(perp)
+    return tick
+
+
+def _universo_okx():
+    inst = api_okx("/api/v5/public/instruments", {"instType": "SWAP"})
+    perp = {}
+    for i in inst:
+        if i.get("settleCcy") == "USDT" and i.get("ctType") == "linear" and i.get("state") == "live":
+            base = i["instId"].split("-")[0]
+            perp[i["instId"]] = base
+    tk = pd.DataFrame(api_okx("/api/v5/market/tickers", {"instType": "SWAP"}))
+    tk = tk[tk["instId"].isin(perp)].copy()
+    for c in ("last", "open24h", "volCcy24h"):
+        tk[c] = pd.to_numeric(tk[c], errors="coerce")
+    tk["base"] = tk["instId"].map(perp)
+    tk["symbol"] = tk["base"] + "USDT"
+    tk["lastPrice"] = tk["last"]
+    tk["priceChangePercent"] = (tk["last"] / tk["open24h"] - 1) * 100
+    tk["quoteVolume"] = tk["volCcy24h"] * tk["last"]   # volCcy24h está en moneda base
+    return tk[["symbol", "base", "lastPrice", "priceChangePercent", "quoteVolume"]]
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def listar_universo(fuente="binance", demo=False):
+    if demo:
+        return demo_universo()
+    tick = _universo_binance() if fuente == "binance" else _universo_okx()
     tick = tick[~tick["base"].isin(EXCLUIR_BASES)]
+    tick = tick.dropna(subset=["quoteVolume"]).drop_duplicates("symbol")
     return tick.sort_values("quoteVolume", ascending=False).reset_index(drop=True)
 
 
 @st.cache_data(ttl=60, show_spinner=False)
-def cargar_premium(symbols_tuple, demo=False):
+def cargar_premium(symbols_tuple, fuente="binance", demo=False):
     if demo:
         return demo_premium(symbols_tuple)
-    df = pd.DataFrame(api("/fapi/v1/premiumIndex"))
-    for c in ("markPrice", "indexPrice", "lastFundingRate"):
-        df[c] = pd.to_numeric(df[c], errors="coerce")
+    if fuente == "binance":
+        df = pd.DataFrame(api("/fapi/v1/premiumIndex"))
+        for c in ("markPrice", "indexPrice", "lastFundingRate"):
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        return df.set_index("symbol")
+    mk = pd.DataFrame(api_okx("/api/v5/public/mark-price", {"instType": "SWAP"}))
+    ix = pd.DataFrame(api_okx("/api/v5/market/index-tickers", {"quoteCcy": "USDT"}))
+    mk["symbol"] = mk["instId"].str.split("-").str[0] + "USDT"
+    mk = mk[mk["instId"].str.endswith("-USDT-SWAP")]
+    mk["markPrice"] = pd.to_numeric(mk["markPx"], errors="coerce")
+    ix["symbol"] = ix["instId"].str.split("-").str[0] + "USDT"
+    ix["indexPrice"] = pd.to_numeric(ix["idxPx"], errors="coerce")
+    df = mk[["symbol", "markPrice"]].drop_duplicates("symbol").merge(
+        ix[["symbol", "indexPrice"]].drop_duplicates("symbol"), on="symbol", how="left")
+    df["lastFundingRate"] = np.nan      # en OKX el funding se pide por instrumento (raw["fund_now"])
     return df.set_index("symbol")
 
 
 @st.cache_data(ttl=600, show_spinner=False)
-def regimen_btc(demo=False):
+def regimen_btc(fuente="binance", demo=False):
     """BTC sobre su SMA 200 diaria (cierre de la vela diaria anterior)."""
     if demo:
         return demo_btc()
-    k = api("/fapi/v1/klines", {"symbol": "BTCUSDT", "interval": "1d", "limit": 260})
-    c = pd.Series([float(x[4]) for x in k])
-    c = c.iloc[:-1]  # sin la vela en curso
+    if fuente == "binance":
+        k = api("/fapi/v1/klines", {"symbol": "BTCUSDT", "interval": "1d", "limit": 260})
+        c = pd.Series([float(x[4]) for x in k])
+        c = c.iloc[:-1]  # sin la vela en curso
+    else:
+        k = api_okx("/api/v5/market/candles", {"instId": "BTC-USDT-SWAP", "bar": "1D", "limit": 300})
+        k = [x for x in k if str(x[8]) == "1"]            # solo velas confirmadas
+        c = pd.Series([float(x[4]) for x in reversed(k)])  # OKX entrega la más nueva primero
     return bool(c.iloc[-1] > c.rolling(200).mean().iloc[-1]), float(c.iloc[-1])
 
 
@@ -203,7 +280,59 @@ def bajar_moneda(sym, period):
     return {"k": k, "oi": oi, "ls": ls, "tk": tk, "fr": fr}
 
 
-def bajar_todo(symbols, period, demo=False, progreso=None):
+def _rubik(path, params, cols, resample_h):
+    """Serie de OKX 'rubik' (OI, long/short, taker). Opcional: si falla devuelve vacío."""
+    try:
+        rows = api_okx(path, params, gap=0.45)
+        df = pd.DataFrame(rows).iloc[:, :len(cols) + 1]
+        df.columns = ["ts"] + cols
+        for c in cols:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+        df["t"] = pd.to_datetime(pd.to_numeric(df["ts"], errors="coerce"), unit="ms")
+        df = df.drop(columns="ts").set_index("t").sort_index()
+        if resample_h and 1 < resample_h < 24:
+            rs = df.resample("%dh" % resample_h)
+            df = rs.sum(min_count=1) if "buyVol" in cols else rs.last()
+        return df.dropna(how="all")
+    except BloqueoRegional:
+        raise
+    except Exception:
+        return pd.DataFrame()
+
+
+def bajar_moneda_okx(sym, period):
+    inst = okx_inst(sym)
+    ccy = sym[:-4]
+    h = PERIOD_H[period]
+    rows = api_okx("/api/v5/market/candles", {"instId": inst, "bar": OKX_BAR[period], "limit": 220})
+    k = pd.DataFrame([r[:6] for r in rows], columns=["t", "o", "h", "l", "c", "v"])
+    for c in ("o", "h", "l", "c", "v"):
+        k[c] = pd.to_numeric(k[c], errors="coerce")
+    k["t"] = pd.to_datetime(pd.to_numeric(k["t"], errors="coerce"), unit="ms")
+    k = k.set_index("t").sort_index()
+
+    fr = _df(api_okx("/api/v5/public/funding-rate-history", {"instId": inst, "limit": 100}),
+             ["fundingRate"], "fundingTime")
+    fn = api_okx("/api/v5/public/funding-rate", {"instId": inst})
+    fund_now = float(fn[0]["fundingRate"]) if fn else np.nan
+
+    rp = "1D" if h >= 24 else "1H"
+    rh = h if rp == "1H" else None
+    oi = _rubik("/api/v5/rubik/stat/contracts/open-interest-volume", {"ccy": ccy, "period": rp},
+                ["oiUsd", "volUsd"], rh)
+    if not oi.empty:
+        oi["sumOpenInterestValue"] = oi["oiUsd"]
+        oi["sumOpenInterest"] = oi["oiUsd"]
+    ls = _rubik("/api/v5/rubik/stat/contracts/long-short-account-ratio", {"ccy": ccy, "period": rp},
+                ["longShortRatio"], rh)
+    tk = _rubik("/api/v5/rubik/stat/taker-volume", {"ccy": ccy, "instType": "CONTRACTS", "period": rp},
+                ["sellVol", "buyVol"], rh)   # OKX entrega primero ventas y luego compras
+    if not tk.empty:
+        tk["buySellRatio"] = tk["buyVol"] / tk["sellVol"].replace(0, np.nan)
+    return {"k": k, "oi": oi, "ls": ls, "tk": tk, "fr": fr, "fund_now": fund_now}
+
+
+def bajar_todo(symbols, period, fuente="binance", demo=False, progreso=None):
     raw, errores = {}, {}
     if demo:
         for i, s in enumerate(symbols):
@@ -211,14 +340,18 @@ def bajar_todo(symbols, period, demo=False, progreso=None):
             if progreso:
                 progreso((i + 1) / len(symbols))
         return raw, errores
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        futs = {ex.submit(bajar_moneda, s, period): s for s in symbols}
+    fn = bajar_moneda if fuente == "binance" else bajar_moneda_okx
+    workers = 6 if fuente == "binance" else 3
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = {ex.submit(fn, s, period): s for s in symbols}
         hechos = 0
         for f in as_completed(futs):
             s = futs[f]
             try:
                 raw[s] = f.result()
             except BloqueoRegional:
+                for g in futs:
+                    g.cancel()
                 raise
             except Exception as e:  # moneda sin datos (recién listada, etc.)
                 errores[s] = str(e)[:120]
@@ -271,7 +404,9 @@ def metricas(raw, prem, p):
         if w["sellVol"].sum() > 0:
             tk_ratio = float(w["buyVol"].sum() / w["sellVol"].sum())
 
-    fund_now = float(prem["lastFundingRate"]) if prem is not None else np.nan
+    fund_now = raw.get("fund_now")
+    if fund_now is None or pd.isna(fund_now):
+        fund_now = float(prem["lastFundingRate"]) if prem is not None else np.nan
     interval_h = 8.0
     fund_pct = np.nan
     if not raw["fr"].empty:
@@ -437,7 +572,7 @@ def normalizar(txt):
 def main():
     st.set_page_config(page_title="SLY | Radar de derivados", layout="wide")
     st.title("SLY | Radar de derivados")
-    st.caption("Funding, open interest, ratio long/short, flujo agresivo y base de futuros perpetuos de Binance. "
+    st.caption("Funding, open interest, ratio long/short, flujo agresivo y base de futuros perpetuos (Binance u OKX). "
                "Herramienta de contexto: no es una recomendación de inversión ni garantiza resultados.")
 
     demo_env = os.environ.get("SLY_DEMO") == "1"
@@ -445,6 +580,9 @@ def main():
         st.header("Configuración")
         demo = st.checkbox("Modo demo (datos sintéticos)", value=demo_env,
                            help="Para ver cómo funciona la app sin conexión. Los datos NO son reales.")
+        fuente_sel = st.selectbox("Fuente de datos", ["Automática (Binance → OKX)", "Binance", "OKX"],
+                                  help="Binance bloquea las IP de EE.UU. (HTTP 451), típicas de Streamlit Cloud. "
+                                       "En Automática la app pasa sola a OKX si Binance la rechaza.")
         period = st.selectbox("Temporalidad", list(PERIOD_H.keys()), index=2)
         lookback_h = st.number_input("Ventana de análisis (horas)", 4, 240, 24, step=4,
                                      help="Para medir cambios de precio, open interest y flujo.")
@@ -475,22 +613,52 @@ def main():
              ls_hi=ls_hi, ls_lo=ls_lo, tk_bull=tk_bull, tk_bear=tk_bear, min_pts=min_pts,
              capital=capital, riesgo=riesgo, stop_mult=stop_mult, max_lev=max_lev, solo_long=solo_long)
 
-    # --- Universo
-    try:
-        uni = listar_universo(demo)
-    except BloqueoRegional as e:
-        st.error(str(e))
+    # --- Universo (con cambio automático de fuente)
+    ss = st.session_state
+    if refrescar:
+        ss.pop("binance_bloqueado", None)
+    if demo:
+        orden = ["binance"]
+    elif fuente_sel == "Binance":
+        orden = ["binance"]
+    elif fuente_sel == "OKX":
+        orden = ["okx"]
+    else:
+        orden = ["okx"] if ss.get("binance_bloqueado") else ["binance", "okx"]
+    uni, fuente, ultimo_error = None, None, None
+    for f in orden:
+        try:
+            uni = listar_universo(f, demo)
+            fuente = f
+            break
+        except BloqueoRegional as e:
+            ultimo_error = e
+            if f == "binance":
+                ss["binance_bloqueado"] = True
+        except Exception as e:
+            ultimo_error = e
+    if uni is None:
+        st.error("No pude obtener datos: %s" % ultimo_error)
+        if isinstance(ultimo_error, BloqueoRegional):
+            st.info("Probá con otra fuente en la barra lateral, o ejecutá la app en tu PC (`streamlit run "
+                    "sly_radar_derivados.py`) desde tu conexión de Argentina.")
         st.stop()
-    except Exception as e:
-        st.error("No pude conectar con Binance: %s" % e)
-        st.stop()
+    NOMBRE = {"binance": "Binance", "okx": "OKX"}[fuente]
+    if demo:
+        st.warning("MODO DEMO: datos sintéticos, no reales.")
+    elif fuente_sel.startswith("Autom") and fuente == "okx":
+        st.info("Binance rechazó la conexión (probablemente por la ubicación del servidor): "
+                "uso datos de OKX automáticamente.")
+    if fuente == "okx" and not demo:
+        st.caption("Fuente: OKX (perpetuos lineales USDT). Open interest, long/short y taker vienen de las "
+                   "estadísticas agregadas por moneda de OKX; el historial puede diferir del de Binance.")
 
     if custom.strip():
         pedidos = normalizar(custom)
         validos = [s for s in pedidos if s in set(uni["symbol"])]
         faltan = [s for s in pedidos if s not in validos]
         if faltan:
-            st.warning("No encontré perpetuos USDT en Binance para: " + ", ".join(faltan))
+            st.warning("No encontré perpetuos USDT en %s para: " % NOMBRE + ", ".join(faltan))
         symbols = validos
     else:
         symbols = uni[uni["quoteVolume"] >= min_vol * 1e6]["symbol"].head(top_n).tolist()
@@ -499,13 +667,12 @@ def main():
         st.stop()
 
     # --- Descarga (se reutiliza unos minutos)
-    clave = (tuple(symbols), period, demo)
-    ss = st.session_state
+    clave = (tuple(symbols), period, demo, fuente)
     vencido = time.time() - ss.get("raw_ts", 0) > TTL_RAW
     if refrescar or ss.get("raw_key") != clave or vencido:
         barra = st.progress(0.0, text="Descargando datos de derivados…")
         try:
-            raw, errores = bajar_todo(symbols, period, demo, lambda x: barra.progress(min(x, 1.0)))
+            raw, errores = bajar_todo(symbols, period, fuente, demo, lambda x: barra.progress(min(x, 1.0)))
         except BloqueoRegional as e:
             barra.empty()
             st.error(str(e))
@@ -516,8 +683,8 @@ def main():
     raw, errores = ss["raw"], ss.get("raw_err", {})
 
     try:
-        prem = cargar_premium(tuple(symbols), demo)
-        btc_bull, btc_px = regimen_btc(demo)
+        prem = cargar_premium(tuple(symbols), fuente, demo)
+        btc_bull, btc_px = regimen_btc(fuente, demo)
     except Exception as e:
         st.error("No pude leer funding/base actuales: %s" % e)
         st.stop()
