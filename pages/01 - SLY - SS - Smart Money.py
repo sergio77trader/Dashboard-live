@@ -32,31 +32,37 @@ BASE = "https://api.kucoin.com"
 
 
 # ───────────────────────────── Datos (KuCoin) ─────────────────────────────
-def kucoin_universo(min_vol_usd=500_000, top=100):
-    r = requests.get(BASE + "/api/v1/market/allTickers", timeout=20)
+EXCLUIR = ["3L", "3S", "USDC", "DAI", "PAX", "TUSD"]
+
+
+def kucoin_universo():
+    """Mismo criterio que tu monitor: pares spot ACTIVOS contra USDT (sin ':' de perpetuos), excluyendo
+    apalancados (3L/3S) y estables (USDC/DAI/PAX/TUSD); orden alfabético. Devuelve símbolos tipo 'BTC/USDT'."""
+    try:
+        import ccxt
+        ex = ccxt.kucoin({"enableRateLimit": True})
+        mk = ex.load_markets()
+        syms = [x for x in mk if "/USDT" in x and mk[x].get("active")]
+        syms = [x for x in syms if not any(e in x for e in EXCLUIR) and ":" not in x]
+        return sorted(syms)
+    except ImportError:
+        pass
+    r = requests.get(BASE + "/api/v2/symbols", timeout=30)      # respaldo sin ccxt
     r.raise_for_status()
     j = r.json()
     if str(j.get("code")) != "200000":
         raise RuntimeError("KuCoin: %s" % j.get("msg"))
-    rows = []
-    for t in j["data"]["ticker"]:
-        sym = t.get("symbol", "")
-        if not sym.endswith("-USDT"):
-            continue
-        base = sym[:-5]
-        if base in STABLES or base.endswith(("3L", "3S", "UP", "DOWN")):
-            continue
-        try:
-            v = float(t.get("volValue") or 0)
-        except ValueError:
-            continue
-        if v >= min_vol_usd:
-            rows.append((sym, v))
-    rows.sort(key=lambda x: -x[1])
-    return [s for s, _ in rows[:top]]
+    out = []
+    for t in j["data"]:
+        if t.get("quoteCurrency") == "USDT" and t.get("enableTrading"):
+            sym = "%s/USDT" % t["baseCurrency"]
+            if not any(e in sym for e in EXCLUIR):
+                out.append(sym)
+    return sorted(out)
 
 
 def kucoin_velas(sym, tf, n_velas=1500):
+    sym = sym.replace("/", "-")
     typ, step = TF[tf]
     end = int(time.time())
     start = end - step * n_velas
@@ -82,8 +88,8 @@ def kucoin_velas(sym, tf, n_velas=1500):
     return df
 
 
-def demo_universo(n=40):
-    return ["DEMO%02d-USDT" % i for i in range(n)]
+def demo_universo(n=120):
+    return ["DEMO%03d/USDT" % i for i in range(n)]
 
 
 def demo_velas(sym, tf, n_velas=1500):
@@ -340,17 +346,33 @@ def main():
     st.caption("Señal = régimen (EMA 52/260) + zona Smart Money a favor + gatillo SS (HA vira + MACD + RSI). Datos: KuCoin spot. "
                "Es un scanner, no un backtest: no garantiza rentabilidad.")
     S = st.session_state
+    if "res" not in S:
+        S.res, S.err, S.univ, S.tf_res = {}, {}, None, None
     with st.sidebar:
-        st.header("Datos")
+        st.header("Configuración")
+        st.subheader("1. Parámetros de tiempo")
         fuente = st.selectbox("Fuente", ["KuCoin", "Demo (sintético)"])
         tf = st.selectbox("Temporalidad", ["4h", "1h", "1d"], index=0)
         n_velas = st.slider("Velas por par", 600, 1500, 1500, 100, help="La EMA 260 necesita historia: no bajes de ~1000 si podés.")
-        st.header("Lotes")
-        top = st.number_input("Universo: top N pares por volumen", 10, 600, 100, 10)
-        min_vol = st.number_input("Volumen 24h mínimo (USD)", 0, 100_000_000, 500_000, 100_000)
-        lote = st.slider("Pares por lote", 5, 50, 20, 5)
-        manual = st.text_area("O pegá tus pares (uno por línea, ej. BTC-USDT)", "")
-        st.header("Señal")
+        if st.button("📡 Sincronizar mercado KuCoin"):
+            try:
+                S.univ = demo_universo() if fuente.startswith("Demo") else kucoin_universo()
+            except Exception as e:
+                S.univ = None
+                st.error("No pude traer los mercados de KuCoin: %s" % e)
+            st.rerun()
+        batch_idx, lote_size = 0, 50
+        ejecutar = False
+        if S.univ:
+            st.subheader("2. Ejecución")
+            lote_size = st.number_input("Tamaño de lote:", 10, 100, 50)
+            total_lotes = (len(S.univ) // int(lote_size)) + 1
+            batch_idx = st.selectbox("Seleccionar lote:", list(range(total_lotes)), format_func=lambda x: "Lote %d" % (x + 1))
+            ejecutar = st.button("🚀 ACTUALIZAR Y ACUMULAR", type="primary")
+        if st.button("🗑️ Limpiar memoria"):
+            S.res, S.err = {}, {}
+            st.rerun()
+        st.subheader("3. Señal")
         ventana = st.slider("Señal vigente: últimas N velas cerradas", 1, 10, 3)
         zone_win = st.slider("Tolerancia de zona (velas)", 1, 6, 3)
         usar_fvg = st.checkbox("Incluir FVG además de Order Blocks", True)
@@ -360,51 +382,33 @@ def main():
             fvg_min = st.number_input("FVG mínimo (x ATR)", 0.0, 3.0, 0.3, 0.1)
             buf = st.number_input("Colchón del stop (x ATR)", 0.0, 2.0, 0.1, 0.05)
 
-    firma = (fuente, tf, n_velas, int(top), int(min_vol), manual.strip(), lote)
-    if S.get("firma") != firma:
-        S.firma, S.pos, S.res, S.err, S.univ = firma, 0, {}, {}, None
-    if S.univ is None:
-        try:
-            if manual.strip():
-                S.univ = [x.strip().upper().replace("/", "-") for x in manual.splitlines() if x.strip()]
-            elif fuente.startswith("Demo"):
-                S.univ = demo_universo(int(top) if top < 60 else 40)
-            else:
-                S.univ = kucoin_universo(min_vol, int(top))
-        except Exception as e:
-            st.error("No pude traer el universo de KuCoin: %s" % e)
-            S.univ = []
-    univ = S.univ
+    # los resultados de otra temporalidad no se mezclan
+    if S.tf_res is not None and S.tf_res != (tf, fuente):
+        S.res, S.err = {}, {}
+    univ = S.univ or []
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Universo", len(univ))
-    c2.metric("Analizados", S.pos)
+    c1.metric("Cripto en el universo", len(univ))
+    c2.metric("Analizadas (acumuladas)", len(S.res))
     c3.metric("Errores", len(S.err))
-    b1, b2, b3 = st.columns(3)
-    sig_lote = b1.button("Analizar siguiente lote", type="primary", disabled=S.pos >= len(univ))
-    todo = b2.button("Analizar todos los lotes", disabled=S.pos >= len(univ))
-    if b3.button("Reiniciar"):
-        S.pos, S.res, S.err = 0, {}, {}
-        st.rerun()
 
     params = dict(n=int(piv), zone_win=int(zone_win), max_zones=int(maxz), min_fvg_atr=float(fvg_min), usar_fvg=usar_fvg, stop_buf=float(buf))
-    if sig_lote or todo:
+    if ejecutar and univ:
+        S.tf_res = (tf, fuente)
+        subset = univ[int(batch_idx) * int(lote_size):(int(batch_idx) + 1) * int(lote_size)]
         barra = st.progress(0.0, text="Analizando...")
-        while S.pos < len(univ):
-            lote_syms = univ[S.pos:S.pos + lote]
-            for j, sym in enumerate(lote_syms):
-                try:
-                    df = demo_velas(sym, tf, n_velas) if fuente.startswith("Demo") else kucoin_velas(sym, tf, n_velas)
-                    if len(df) < 400:
-                        raise ValueError("pocas velas (%d)" % len(df))
-                    S.res[sym] = analizar(df, **params)
-                except Exception as e:
-                    S.err[sym] = str(e)[:120]
-                if not fuente.startswith("Demo"):
-                    time.sleep(0.12)
-                barra.progress((j + 1) / len(lote_syms), text="%s (%d/%d)" % (sym, S.pos + j + 1, len(univ)))
-            S.pos += len(lote_syms)
-            if not todo:
-                break
+        for j, sym in enumerate(subset):
+            barra.progress((j + 1) / len(subset), text="Auditando %s: %s" % (tf, sym))
+            try:
+                df = demo_velas(sym, tf, n_velas) if fuente.startswith("Demo") else kucoin_velas(sym, tf, n_velas)
+                if len(df) < 400:
+                    raise ValueError("historial insuficiente: %d velas" % len(df))
+                S.res[sym] = analizar(df, **params)
+                S.err.pop(sym, None)
+            except Exception as e:
+                S.err[sym] = str(e)[:120]
+                S.res.pop(sym, None)
+            if not fuente.startswith("Demo"):
+                time.sleep(0.12)
         barra.empty()
         st.rerun()
 
@@ -417,7 +421,7 @@ def main():
                               Stop=s["stop"], Dist_stop_pct=round(s["dist_stop"], 2) if s["dist_stop"] else None, Zona=s["zona"]))
     c4.metric("Con señal", len({f["Par"] for f in filas}))
     if not S.res:
-        st.info("Apretá **Analizar siguiente lote** para empezar.")
+        st.info("👈 Sincronizá el mercado KuCoin, elegí un lote y apretá ACTUALIZAR Y ACUMULAR.")
         return
     if filas:
         tabla = pd.DataFrame(filas).sort_values(["Hace_velas", "Par"]).reset_index(drop=True)
