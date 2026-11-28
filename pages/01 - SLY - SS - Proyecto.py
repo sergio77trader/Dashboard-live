@@ -642,7 +642,7 @@ cfg = dict(R.CFG0, capital=capital, risk_pct=risk, max_lev=lev, fee=fee, slip=sl
 @st.cache_data(show_spinner=False, ttl=3600)
 def datos(fuente, simbolo, tf, years):
     if fuente.startswith("demo"):
-        return R.synthetic(int(24 * 365 * years / R.TF_HOURS[tf]), tf, seed=7, tendencia=0.1), ""
+        return R.synthetic(int(24 * 365 * years / R.TF_HOURS[tf]), tf, seed=sum(map(ord, simbolo)), tendencia=0.1), ""
     orden = [fuente] + [x for x in ("okx", "kucoin", "binance") if x != fuente]
     err = []
     for f in orden:
@@ -653,7 +653,7 @@ def datos(fuente, simbolo, tf, years):
     raise RuntimeError(" | ".join(err))
 
 
-t1, t2, t3 = st.tabs(["Calculadora", "Backtest", "Validación (la prueba de verdad)"])
+t1, t2, t3, t4 = st.tabs(["Calculadora", "Backtest", "Validación (la prueba de verdad)", "Multi-par"])
 
 with t1:
     st.subheader("¿Cuánto comprar y dónde está mi liquidación?")
@@ -742,3 +742,33 @@ with t3:
             st.caption("Ojo: cuantas más estrategias/pares pruebes, más probable que alguno pase por casualidad. Exigí que pase en varios pares.")
         except Exception as e:
             st.error("No se pudo validar: %s" % e)
+
+with t4:
+    st.write("Corre la validación de una estrategia en varios pares. Si solo pasa en uno, probablemente fue casualidad.")
+    nombre4 = st.selectbox("Estrategia", list(R.STRATS), key="e4")
+    elegidos = st.multiselect("Pares", SIMBOLOS, default=SIMBOLOS)
+    if st.button("Validar en todos los pares", type="primary") and elegidos:
+        filas, barra = [], st.progress(0.0)
+        for j, sym in enumerate(elegidos):
+            try:
+                df, _ = datos(fuente, sym, tf, years)
+                v = R.validar(df, nombre4, cfg)
+                s, vd = v["oos"]["stats"], v["veredicto"]
+                filas.append(dict(Par=sym, Veredicto=vd["texto"].split(":")[0], Pruebas="%d/%d" % (vd["ok"], vd["total"]),
+                                  Operaciones=s["operaciones"], Retorno_pct=round(s["retorno_pct"], 1),
+                                  Profit_factor=round(s["profit_factor"], 2) if np.isfinite(s["profit_factor"]) else None,
+                                  Caida_max_pct=round(s["max_dd_pct"], 1), Buy_hold_pct=round(s["buy_hold_pct"], 1)))
+            except Exception as e:
+                filas.append(dict(Par=sym, Veredicto="ERROR: %s" % e))
+            barra.progress((j + 1) / len(elegidos))
+        tabla = pd.DataFrame(filas)
+        st.dataframe(tabla, use_container_width=True)
+        okn = sum(1 for f in filas if f.get("Veredicto") == "PASA")
+        dud = sum(1 for f in filas if f.get("Veredicto") == "DUDOSA")
+        msg = "%d pares PASAN, %d DUDOSOS, de %d probados." % (okn, dud, len(filas))
+        if okn >= max(2, len(filas) * 0.5):
+            st.success(msg + " Pasa en la mayoría: es una señal más fuerte que un solo par.")
+        elif okn >= 1:
+            st.warning(msg + " Pasa solo en algunos: puede ser casualidad o depender del activo.")
+        else:
+            st.error(msg + " No hay ventaja consistente.")
