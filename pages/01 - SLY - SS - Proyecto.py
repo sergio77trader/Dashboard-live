@@ -238,6 +238,62 @@ def strat_rsi_dip(df, rsi_len=14, lo=30, exit_rsi=55, stop_mult=2.5, max_bars=30
     return _pack(df, enter, r > exit_rsi, r < 100 - exit_rsi, stop_mult, max_bars=max_bars)
 
 
+def _ha(df):
+    """Heikin Ashi recursivo igual que el Pine: haOpen[0]=(o+c)/2, luego (haOpen[1]+haClose[1])/2."""
+    o, h, l, c = (df[k].to_numpy(float) for k in ("open", "high", "low", "close"))
+    hc = (o + h + l + c) / 4
+    ho = np.empty(len(df))
+    ho[0] = (o[0] + c[0]) / 2
+    for i in range(1, len(df)):
+        ho[i] = (ho[i - 1] + hc[i - 1]) / 2
+    return hc, ho
+
+
+def _dema(s, n):
+    e1 = ema(s, n)
+    return 2 * e1 - ema(e1, n)
+
+
+def strat_sly_ss(df, ema_fast=52, ema_slow=260, bear_longs=True, fast=12, slow=26, sig=9,
+                 rsi_len=14, smooth=5, stop_mult=3.0):
+    """Port de 'SLY - ESTRATEGIA - SS' (solo largos). Entrada: HA vira a verde + hist MACD(DEMA) sube + RSI(DEMA) sube.
+    Salida: HA rojo + hist baja + RSI baja. Se agrega un stop ATR (el original no tiene), necesario para dimensionar y liquidar."""
+    c = df["close"]
+    hc, ho = _ha(df)
+    green = pd.Series(hc > ho, index=df.index)
+    macd = _dema(c, fast) - _dema(c, slow)
+    hist = macd - ema(macd, sig)
+    rs = _dema(rsi_f(c, rsi_len), smooth)
+    bull = ema(c, ema_fast) > ema(c, ema_slow)
+    auth = bull | bool(bear_longs)
+    flip = green & ~green.shift(1, fill_value=False)
+    entry = auth & flip & (hist > hist.shift()) & (rs > rs.shift())
+    exit_ = (~green) & (hist < hist.shift()) & (rs < rs.shift())
+    return _pack(df, np.where(entry, 1, 0), exit_, np.zeros(len(df), bool), stop_mult)
+
+
+def strat_supertrend(df, period=10, mult=3.0, stop_mult=3.0, regime=True, shorts=True):
+    """Supertrend: sigue la tendencia con bandas de ATR; cambia de lado cuando el precio las cruza."""
+    h, l, c = df["high"].to_numpy(float), df["low"].to_numpy(float), df["close"].to_numpy(float)
+    a = atr_f(df, period).to_numpy(float)
+    hl2 = (h + l) / 2
+    ub, lb = hl2 + mult * a, hl2 - mult * a
+    n = len(c)
+    d = np.ones(n, int)
+    fu, fl = ub.copy(), lb.copy()
+    for i in range(1, n):
+        if not np.isfinite(a[i]):
+            continue
+        fu[i] = ub[i] if (ub[i] < fu[i - 1] or c[i - 1] > fu[i - 1]) else fu[i - 1]
+        fl[i] = lb[i] if (lb[i] > fl[i - 1] or c[i - 1] < fl[i - 1]) else fl[i - 1]
+        d[i] = 1 if c[i] > fu[i - 1] else (-1 if c[i] < fl[i - 1] else d[i - 1])
+    d = pd.Series(d, index=df.index)
+    reg = ema(df["close"], 200)
+    up = (d == 1) & (d.shift() == -1) & ((df["close"] > reg) | (not regime))
+    dn = (d == -1) & (d.shift() == 1) & ((df["close"] < reg) | (not regime)) & bool(shorts)
+    return _pack(df, np.where(up, 1, np.where(dn, -1, 0)), d == -1, d == 1, stop_mult)
+
+
 STRATS = {
     "Tendencia Donchian (Turtle)": dict(
         fn=strat_donchian, defaults=dict(N=55, M=20, stop_mult=2.5, regime=True, shorts=True),
@@ -245,6 +301,12 @@ STRATS = {
     "Cruce de EMAs + ADX": dict(
         fn=strat_ema_adx, defaults=dict(fast=20, slow=100, adx_thr=22, stop_mult=3.0, regime=True, shorts=True),
         grid=dict(fast=[10, 20, 30], slow=[50, 100], adx_thr=[18, 25], stop_mult=[2.5, 3.5])),
+    "SLY SS (HA + MACD + RSI DEMA)": dict(
+        fn=strat_sly_ss, defaults=dict(ema_fast=52, ema_slow=260, bear_longs=True, fast=12, slow=26, sig=9, rsi_len=14, smooth=5, stop_mult=3.0),
+        grid=dict(ema_fast=[34, 52], bear_longs=[True, False], smooth=[3, 5], stop_mult=[2.0, 3.0, 5.0])),
+    "Supertrend": dict(
+        fn=strat_supertrend, defaults=dict(period=10, mult=3.0, stop_mult=3.0, regime=True, shorts=True),
+        grid=dict(period=[7, 10, 14], mult=[2.0, 3.0, 4.0], stop_mult=[2.5, 4.0], regime=[True, False])),
     "Rebote RSI en tendencia": dict(
         fn=strat_rsi_dip, defaults=dict(rsi_len=14, lo=30, exit_rsi=55, stop_mult=2.5, max_bars=30, shorts=False),
         grid=dict(rsi_len=[7, 14], lo=[25, 30, 35], exit_rsi=[50, 60], stop_mult=[2.0, 3.0])),
@@ -347,19 +409,21 @@ def backtest(df, sig, cfg, i0=0, i1=None):
             if np.isfinite(a) and a > 0 and cash > 0:
                 px = o[i] * (1 + side * slip)
                 sd = smult * a
+                # apalancamiento efectivo: la liquidación debe quedar al menos 20% más lejos que el stop
+                Lu = max(1.0, min(L, 1.0 / (1.2 * sd / px + maint)))
                 q = cash * risk / sd
                 nt = q * px
-                if nt > cash * L:
-                    nt = cash * L
+                if nt > cash * Lu:
+                    nt = cash * Lu
                     q = nt / px
                 if nt < cfg["min_notional"]:
                     skipped += 1
                 else:
                     pos, qty, entry, notional = side, q, px, nt
-                    margin = nt / L
+                    margin = nt / Lu
                     stop = px - side * sd
                     tgt = px + side * tmult * a if tmult else None
-                    liq = liq_price(px, side, L, maint)
+                    liq = liq_price(px, side, Lu, maint)
                     fee_in = nt * fee
                     cash -= fee_in
                     fees_total += fee_in
@@ -473,7 +537,7 @@ def monte_carlo(rets, capital, n_trades=100, paths=3000, seed=0):
 def validar(df, name, cfg, split=0.7, top=5):
     n = len(df)
     cut = int(n * split)
-    warm = 250                                       # velas de calentamiento para los indicadores
+    warm = 300                                       # velas de calentamiento para los indicadores
     tabla = grid_search(df, name, cfg, warm, cut)
     mejor = tabla.iloc[0]
     spec = STRATS[name]
@@ -485,14 +549,16 @@ def validar(df, name, cfg, split=0.7, top=5):
     for _, r in tabla.head(top).iterrows():
         s = backtest(df, spec["fn"](df, **r["params"]), cfg, cut, n)["stats"]
         top_oos.append(dict(params=r["params"], is_retorno=r["retorno_pct"], oos_retorno=s["retorno_pct"], oos_pf=s["profit_factor"], oos_dd=s["max_dd_pct"], oos_ops=s["operaciones"]))
+    cfg2 = dict(cfg, fee=cfg["fee"] * 2, slip=cfg["slip"] * 2)
+    oos2 = backtest(df, sig, cfg2, cut, n)["stats"]
     mc = monte_carlo(oos["trades"]["ret"].to_numpy() if len(oos["trades"]) else [], cfg["capital"])
     anual = oos["equity"].resample("YE").last().pct_change().dropna() * 100 if len(oos["equity"]) > 50 else pd.Series(dtype=float)
     return dict(tabla=tabla, mejor=mejor["params"], ins=ins, oos=oos, top_oos=pd.DataFrame(top_oos), mc=mc,
                 combinaciones=len(tabla), corte=df.index[cut], anual=anual, split=split,
-                veredicto=veredicto(oos["stats"], mc, pd.DataFrame(top_oos), len(tabla)))
+                veredicto=veredicto(oos["stats"], mc, pd.DataFrame(top_oos), len(tabla), oos2))
 
 
-def veredicto(st, mc, top_oos, ncomb):
+def veredicto(st, mc, top_oos, ncomb, st_costos2=None):
     chk = []
     chk.append(("Operaciones fuera de muestra ≥ 30", st["operaciones"] >= 30, "%d operaciones" % st["operaciones"]))
     chk.append(("Retorno fuera de muestra positivo", st["retorno_pct"] > 0, "%+.1f%%" % st["retorno_pct"]))
@@ -500,6 +566,8 @@ def veredicto(st, mc, top_oos, ncomb):
     chk.append(("Profit factor fuera de muestra ≥ 1,3", bool(np.isfinite(pf) and pf >= 1.3), "%.2f" % pf if np.isfinite(pf) else "n/d"))
     chk.append(("Caída máxima fuera de muestra ≤ 40%", st["max_dd_pct"] <= 40, "%.0f%%" % st["max_dd_pct"]))
     chk.append(("Sin liquidaciones", st["liquidaciones"] == 0, "%d" % st["liquidaciones"]))
+    if st_costos2 is not None:
+        chk.append(("Sigue ganando con costos x2 (comisión y slippage)", st_costos2["retorno_pct"] > 0, "%+.1f%%" % st_costos2["retorno_pct"]))
     if len(top_oos):
         pos = int((top_oos["oos_retorno"] > 0).sum())
         chk.append(("Robusto: ≥ 3 de las 5 mejores combinaciones ganan fuera de muestra", pos >= 3, "%d de %d" % (pos, len(top_oos))))
@@ -601,7 +669,7 @@ with t2:
         try:
             with st.spinner("Descargando y simulando..."):
                 df, aviso = datos(fuente, simbolo, tf, years)
-                res = R.backtest(df, spec["fn"](df, **prm), cfg, 250)
+                res = R.backtest(df, spec["fn"](df, **prm), cfg, 300)
             if aviso:
                 st.info(aviso)
             s = res["stats"]
@@ -615,7 +683,7 @@ with t2:
             fig, ax = plt.subplots(2, 1, figsize=(10, 6), sharex=True, gridspec_kw=dict(height_ratios=[3, 1]))
             eq = res["equity"]
             ax[0].plot(eq.index, eq.values, label="Estrategia")
-            bh = capital * df["close"].reindex(eq.index) / df["open"].iloc[250]
+            bh = capital * df["close"].reindex(eq.index) / df["open"].iloc[300]
             ax[0].plot(bh.index, bh.values, label="Comprar y mantener (x1)", alpha=.6)
             ax[0].set_yscale("log"); ax[0].legend(); ax[0].set_ylabel("USD (log)")
             ax[1].fill_between(eq.index, -(1 - eq / eq.cummax()) * 100, color="tab:red", alpha=.5); ax[1].set_ylabel("Drawdown %")
