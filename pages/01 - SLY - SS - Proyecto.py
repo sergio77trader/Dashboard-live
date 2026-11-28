@@ -294,6 +294,22 @@ def strat_supertrend(df, period=10, mult=3.0, stop_mult=3.0, regime=True, shorts
     return _pack(df, np.where(up, 1, np.where(dn, -1, 0)), d == -1, d == 1, stop_mult)
 
 
+def strat_squeeze(df, bb_len=20, bb_k=2.0, ventana=120, pct=20, recien=6, stop_mult=2.5, regime=True, shorts=False):
+    """Squeeze de volatilidad: tras una compresión (ancho de Bollinger entre los más bajos de `ventana` velas),
+    entra cuando el precio rompe la banda. Sale al volver a la media."""
+    c = df["close"]
+    m = c.rolling(bb_len).mean()
+    sd = c.rolling(bb_len).std(ddof=0)
+    up_b, lo_b = m + bb_k * sd, m - bb_k * sd
+    bw = (up_b - lo_b) / m
+    rank = bw.rolling(ventana).apply(lambda x: (x[:-1] < x[-1]).mean() * 100, raw=True)
+    sq = (rank <= pct).astype(float).rolling(recien).max() > 0
+    reg = ema(c, 200)
+    up = (c > up_b) & sq.shift(1, fill_value=False) & ((c > reg) | (not regime))
+    dn = (c < lo_b) & sq.shift(1, fill_value=False) & ((c < reg) | (not regime)) & bool(shorts)
+    return _pack(df, np.where(up, 1, np.where(dn, -1, 0)), c < m, c > m, stop_mult)
+
+
 STRATS = {
     "Tendencia Donchian (Turtle)": dict(
         fn=strat_donchian, defaults=dict(N=55, M=20, stop_mult=2.5, regime=True, shorts=True),
@@ -307,6 +323,9 @@ STRATS = {
     "Supertrend": dict(
         fn=strat_supertrend, defaults=dict(period=10, mult=3.0, stop_mult=3.0, regime=True, shorts=True),
         grid=dict(period=[7, 10, 14], mult=[2.0, 3.0, 4.0], stop_mult=[2.5, 4.0], regime=[True, False])),
+    "Squeeze de volatilidad (Bollinger)": dict(
+        fn=strat_squeeze, defaults=dict(bb_len=20, bb_k=2.0, ventana=120, pct=20, recien=6, stop_mult=2.5, regime=True, shorts=False),
+        grid=dict(bb_len=[20, 30], pct=[15, 30], recien=[3, 8], stop_mult=[2.0, 3.0], regime=[True, False])),
     "Rebote RSI en tendencia": dict(
         fn=strat_rsi_dip, defaults=dict(rsi_len=14, lo=30, exit_rsi=55, stop_mult=2.5, max_bars=30, shorts=False),
         grid=dict(rsi_len=[7, 14], lo=[25, 30, 35], exit_rsi=[50, 60], stop_mult=[2.0, 3.0])),
@@ -560,7 +579,7 @@ def validar(df, name, cfg, split=0.7, top=5):
 
 def veredicto(st, mc, top_oos, ncomb, st_costos2=None):
     chk = []
-    chk.append(("Operaciones fuera de muestra ≥ 30", st["operaciones"] >= 30, "%d operaciones" % st["operaciones"]))
+    chk.append(("Operaciones fuera de muestra ≥ 40", st["operaciones"] >= 40, "%d operaciones" % st["operaciones"]))
     chk.append(("Retorno fuera de muestra positivo", st["retorno_pct"] > 0, "%+.1f%%" % st["retorno_pct"]))
     pf = st["profit_factor"]
     chk.append(("Profit factor fuera de muestra ≥ 1,3", bool(np.isfinite(pf) and pf >= 1.3), "%.2f" % pf if np.isfinite(pf) else "n/d"))
