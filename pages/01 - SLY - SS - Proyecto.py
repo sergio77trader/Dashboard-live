@@ -310,6 +310,18 @@ def strat_squeeze(df, bb_len=20, bb_k=2.0, ventana=120, pct=20, recien=6, stop_m
     return _pack(df, np.where(up, 1, np.where(dn, -1, 0)), c < m, c > m, stop_mult)
 
 
+def strat_tsmom(df, lookback=180, z_thr=0.5, stop_mult=3.0, regime=True, shorts=False):
+    """Momentum de serie temporal: entra cuando el retorno de las últimas `lookback` velas, medido en
+    unidades de volatilidad (z), cruza `z_thr`. Sale cuando el momentum se da vuelta (z < 0). Opera poco."""
+    c = df["close"]
+    r = np.log(c).diff()
+    z = np.log(c / c.shift(lookback)) / (r.rolling(lookback).std() * math.sqrt(lookback))
+    reg = ema(c, 200)
+    up = (z > z_thr) & (z.shift() <= z_thr) & ((c > reg) | (not regime))
+    dn = (z < -z_thr) & (z.shift() >= -z_thr) & ((c < reg) | (not regime)) & bool(shorts)
+    return _pack(df, np.where(up, 1, np.where(dn, -1, 0)), z < 0, z > 0, stop_mult)
+
+
 STRATS = {
     "Tendencia Donchian (Turtle)": dict(
         fn=strat_donchian, defaults=dict(N=55, M=20, stop_mult=2.5, regime=True, shorts=True),
@@ -326,6 +338,9 @@ STRATS = {
     "Squeeze de volatilidad (Bollinger)": dict(
         fn=strat_squeeze, defaults=dict(bb_len=20, bb_k=2.0, ventana=120, pct=20, recien=6, stop_mult=2.5, regime=True, shorts=False),
         grid=dict(bb_len=[20, 30], pct=[15, 30], recien=[3, 8], stop_mult=[2.0, 3.0], regime=[True, False])),
+    "Momentum de tendencia (TSMOM)": dict(
+        fn=strat_tsmom, defaults=dict(lookback=180, z_thr=0.5, stop_mult=3.0, regime=True, shorts=False),
+        grid=dict(lookback=[90, 180, 360], z_thr=[0.0, 0.5, 1.0], stop_mult=[2.5, 4.0], regime=[True, False])),
     "Rebote RSI en tendencia": dict(
         fn=strat_rsi_dip, defaults=dict(rsi_len=14, lo=30, exit_rsi=55, stop_mult=2.5, max_bars=30, shorts=False),
         grid=dict(rsi_len=[7, 14], lo=[25, 30, 35], exit_rsi=[50, 60], stop_mult=[2.0, 3.0])),
